@@ -1,0 +1,21 @@
+[package]
+name = "investigation"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/investigation.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+project.workspace = true
+ui.workspace = true
+util.workspace = true
+workspace.workspace = true

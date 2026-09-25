@@ -8898,6 +8898,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "investigation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "project",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "io-extras"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22447,6 +22459,7 @@ dependencies = [
  "input_latency_ui",
  "inspector_ui",
  "install_cli",
+ "investigation",
  "itertools 0.14.0",
  "journal",
  "json_schema_store",
