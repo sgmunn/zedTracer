@@ -112,6 +112,7 @@ members = [
     "crates/http_proxy",
     "crates/icons",
     "crates/image_viewer",
+    "crates/investigation",
     "crates/input_latency_ui",
     "crates/inspector_ui",
     "crates/install_cli",
@@ -384,6 +385,7 @@ http_client_tls = { path = "crates/http_client_tls" }
 http_proxy = { path = "crates/http_proxy" }
 icons = { path = "crates/icons" }
 image_viewer = { path = "crates/image_viewer" }
+investigation = { path = "crates/investigation" }
 input_latency_ui = { path = "crates/input_latency_ui" }
 inspector_ui = { path = "crates/inspector_ui" }
 install_cli = { path = "crates/install_cli" }
