@@ -19,9 +19,29 @@ after rebuilding it.
 
 Completion includes Kusto keywords, built-in functions, and names declared in
 the current query. Hover shows Kusto's quick information for supported symbols.
-Diagnostics cover syntax only. Without a cluster schema, the server cannot
-complete or validate real table and column names; adding a schema source is the
-next step toward full IntelliSense.
+Diagnostics cover syntax only.
+
+For offline table and column completion, put a `.kusto-schema.json` file in the
+Zed project root and restart the language server:
+
+```json
+{
+  "database": "Samples",
+  "tables": {
+    "StormEvents": {
+      "State": "string",
+      "StartTime": "datetime",
+      "DamageProperty": "long"
+    }
+  }
+}
+```
+
+Open `examples/offline-schema` as a Zed project to try the included snapshot
+and query. The server reads the first workspace root at startup and reports an
+invalid schema in the language server log. It does not connect to a cluster,
+refresh schema files automatically, or validate table and column references.
+Connecting a schema source and adding semantic diagnostics are later steps.
 
 To run the language server protocol tests:
 
@@ -39,7 +59,7 @@ that grammar, and run:
 ./test-highlighting.sh /path/to/tree-sitter-kusto
 ```
 
-The grammar has incomplete coverage of
-Kusto, so complex or newer query forms may parse with errors and lose some
+The grammar has incomplete coverage of Kusto, so complex or newer query forms
+may parse with errors and lose some
 highlighting. Grammar coverage and cluster schema integration need evaluation
 before shipping this as default language support.
