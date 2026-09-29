@@ -1,0 +1,7 @@
+// Representative query for checking syntax colors in the editor.
+let threshold = 5;
+StormEvents
+| where State == "TEXAS" and DamageProperty > threshold
+| extend DescriptionLength = strlen(EventNarrative)
+| summarize Events = count() by State
+| sort by Events desc
