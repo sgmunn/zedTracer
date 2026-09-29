@@ -258,6 +258,7 @@ members = [
 
     "extensions/glsl",
     "extensions/html",
+    "extensions/kusto",
     "extensions/proto",
     "extensions/test-extension",
 
