@@ -1,0 +1,10 @@
+{
+  "database": "Samples",
+  "tables": {
+    "StormEvents": {
+      "State": "string",
+      "StartTime": "datetime",
+      "DamageProperty": "long"
+    }
+  }
+}

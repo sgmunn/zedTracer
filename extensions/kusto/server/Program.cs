@@ -2,12 +2,14 @@ using System.Text;
 using System.Text.Json;
 using Kusto.Language;
 using Kusto.Language.Editor;
+using Kusto.Language.Symbols;
 
 await new KustoLanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput()).RunAsync();
 
 internal sealed class KustoLanguageServer(Stream input, Stream output)
 {
     private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
+    private GlobalState globals = GlobalState.Default;
 
     public async Task RunAsync()
     {
@@ -53,6 +55,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         switch (method)
         {
             case "initialize":
+                globals = LoadGlobals(parameters);
                 return new
                 {
                     capabilities = new
@@ -115,7 +118,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return [];
 
-        var completions = new KustoCodeService(document.Text, GlobalState.Default)
+        var completions = new KustoCodeService(document.Text, globals)
             .GetCompletionItems(offset);
         var start = Math.Clamp(completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
@@ -142,7 +145,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return null;
 
-        var info = new KustoCodeService(document.Text, GlobalState.Default).GetQuickInfo(offset);
+        var info = new KustoCodeService(document.Text, globals).GetQuickInfo(offset);
         return string.IsNullOrWhiteSpace(info.Text)
             ? null
             : new { contents = new { kind = "plaintext", value = info.Text } };
@@ -212,6 +215,56 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         "Database" or "Cluster" => 9,
         _ => 1
     };
+
+    private static GlobalState LoadGlobals(JsonElement parameters)
+    {
+        string? rootUriText = null;
+        if (parameters.TryGetProperty("rootUri", out var rootUriElement)
+            && rootUriElement.ValueKind == JsonValueKind.String)
+            rootUriText = rootUriElement.GetString();
+        else if (parameters.TryGetProperty("workspaceFolders", out var folders)
+            && folders.ValueKind == JsonValueKind.Array
+            && folders.GetArrayLength() > 0)
+            rootUriText = folders[0].GetProperty("uri").GetString();
+
+        if (!Uri.TryCreate(rootUriText, UriKind.Absolute, out var rootUri)
+            || !rootUri.IsFile)
+            return GlobalState.Default;
+
+        var path = Path.Combine(rootUri.LocalPath, ".kusto-schema.json");
+        if (!File.Exists(path))
+            return GlobalState.Default;
+
+        try
+        {
+            using var schema = JsonDocument.Parse(File.ReadAllText(path));
+            var databaseName = schema.RootElement.GetProperty("database").GetString();
+            if (string.IsNullOrWhiteSpace(databaseName))
+                throw new InvalidDataException("Schema database name is empty");
+
+            var tables = new List<TableSymbol>();
+            foreach (var table in schema.RootElement.GetProperty("tables").EnumerateObject())
+            {
+                var columns = new List<ColumnSymbol>();
+                foreach (var column in table.Value.EnumerateObject())
+                {
+                    var typeName = column.Value.GetString();
+                    var type = ScalarTypes.GetSymbol(typeName);
+                    if (type is null)
+                        throw new InvalidDataException($"Unknown type '{typeName}' for {table.Name}.{column.Name}");
+                    columns.Add(new ColumnSymbol(column.Name, type));
+                }
+                tables.Add(new TableSymbol(table.Name, columns));
+            }
+
+            return GlobalState.Default.WithDatabase(new DatabaseSymbol(databaseName, tables));
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"Could not load Kusto schema from {path}: {exception.Message}");
+            return GlobalState.Default;
+        }
+    }
 
     private async Task SendAsync(object message)
     {

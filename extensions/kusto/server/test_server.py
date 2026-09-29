@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,16 +15,22 @@ URI = "file:///offline-test.kql"
 
 class LanguageServerTest(unittest.TestCase):
     def setUp(self):
+        self.start_server()
+
+    def start_server(self, root_uri=None):
         self.process = subprocess.Popen(
             SERVER_COMMAND,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self.send(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}})
+        self.send(1, "initialize", {"processId": None, "rootUri": root_uri, "capabilities": {}})
         self.assertIn("capabilities", self.receive()["result"])
 
     def tearDown(self):
+        self.stop_server()
+
+    def stop_server(self):
         self.process.terminate()
         try:
             self.process.communicate(timeout=5)
@@ -110,6 +117,30 @@ class LanguageServerTest(unittest.TestCase):
         threshold = next(item for item in self.complete(2, 22) if item["label"] == "threshold")
         self.assertEqual(threshold["textEdit"]["range"]["start"],
                          {"line": 2, "character": 20})
+
+    def test_offline_schema_table_and_column_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            schema_path = Path(directory) / ".kusto-schema.json"
+            schema_path.write_text(json.dumps({
+                "database": "Samples",
+                "tables": {
+                    "StormEvents": {"State": "string", "StartTime": "datetime"}
+                },
+            }))
+            self.stop_server()
+            self.start_server(Path(directory).as_uri())
+
+            self.open_document("StormEv")
+            self.assertIn("StormEvents", [item["label"] for item in self.complete(0, 7)])
+
+            self.send(
+                None,
+                "textDocument/didChange",
+                {"textDocument": {"uri": URI, "version": 2},
+                 "contentChanges": [{"text": "StormEvents | where Sta"}]},
+            )
+            self.receive()
+            self.assertIn("State", [item["label"] for item in self.complete(0, 23)])
 
 
 if __name__ == "__main__":
