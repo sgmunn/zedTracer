@@ -5,6 +5,7 @@
 //! crate, so everything in it can be tested without a window.
 
 pub mod activity;
+pub mod activity_tree;
 pub mod export;
 pub mod filter;
 pub mod inspector;

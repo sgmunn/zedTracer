@@ -128,6 +128,13 @@ struct Group {
     issue: Option<HierarchyIssue>,
 }
 
+/// Whether the table has the two columns the structured view needs. Cheap, unlike building
+/// the projection.
+pub fn has_activity_columns(table: &Table) -> bool {
+    table.column_index(CURRENT_ACTIVITY_COLUMN).is_some()
+        && table.column_index(PARENT_ACTIVITY_COLUMN).is_some()
+}
+
 /// Builds the projection, or `None` when the table lacks either activity column.
 pub fn build_projection(table: &Table) -> Option<ActivityProjection> {
     let current_column = table.column_index(CURRENT_ACTIVITY_COLUMN)?;
