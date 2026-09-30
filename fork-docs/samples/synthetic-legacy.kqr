@@ -1,0 +1,230 @@
+{
+  "query": "declare query_parameters(raid:string);\ndatatable(Id:long, Flag:bool, Name:string, Stamp:datetime, Elapsed:timespan)\n[\n    1, true, 'Step2', datetime(2026-01-01), 30s\n]\n| where Name has raid",
+  "cluster": "example.kusto.windows.net",
+  "database": "Samples",
+  "parameters": {
+    "raid": "f8a285c1-fcce-5b0a-8da8-1c9700937031"
+  },
+  "tables": [
+    {
+      "name": "PrimaryResult",
+      "columns": [
+        {
+          "name": "Id",
+          "type": "long"
+        },
+        {
+          "name": "Flag",
+          "type": "bool"
+        },
+        {
+          "name": "Small",
+          "type": "int"
+        },
+        {
+          "name": "Big",
+          "type": "long"
+        },
+        {
+          "name": "Ratio",
+          "type": "real"
+        },
+        {
+          "name": "Money",
+          "type": "decimal"
+        },
+        {
+          "name": "Name",
+          "type": "string"
+        },
+        {
+          "name": "Stamp",
+          "type": "datetime"
+        },
+        {
+          "name": "Elapsed",
+          "type": "timespan"
+        },
+        {
+          "name": "Correlation",
+          "type": "guid"
+        },
+        {
+          "name": "Payload",
+          "type": "dynamic"
+        },
+        {
+          "name": "Note",
+          "type": "string"
+        }
+      ],
+      "rows": [
+        [
+          1,
+          true,
+          -2147483648,
+          9007199254740993,
+          5.0,
+          12.5,
+          "Step2",
+          "2026-01-01T00:00:00.0000000Z",
+          "00:00:30",
+          "fb37cda7-809e-5e29-b1e8-c98678518c85",
+          {
+            "a": 1,
+            "b": [
+              1,
+              2,
+              3
+            ],
+            "c": {
+              "d": null
+            }
+          },
+          "has\ttab"
+        ],
+        [
+          2,
+          false,
+          2147483647,
+          9223372036854775807,
+          5,
+          0,
+          "Step10",
+          "2026-01-01T00:00:00.0000007Z",
+          "1.00:00:00",
+          "d4e76f71-317a-5db1-8cfe-6a65ca42a8fe",
+          [
+            1,
+            "two",
+            {
+              "three": 3
+            }
+          ],
+          "line1\nline2"
+        ],
+        [
+          3,
+          null,
+          0,
+          -9223372036854775808,
+          0.1,
+          null,
+          "step1",
+          "2026-01-01T00:00:00.0000001Z",
+          "-00:00:05",
+          "d10afa71-add3-5578-aa58-d177712efb33",
+          {
+            "b": 1,
+            "a": 2
+          },
+          "quote \"x\" inside"
+        ],
+        [
+          4,
+          true,
+          null,
+          0,
+          1e-07,
+          79228162514264337593543950335,
+          "Step 3",
+          "2025-12-31T23:59:59.9999999Z",
+          "00:00:59",
+          "01f10c19-508e-52a1-91dd-b40a862d0f15",
+          {
+            "10": "x",
+            "2": "y"
+          },
+          "pipe | char"
+        ],
+        [
+          5,
+          false,
+          7,
+          null,
+          1.7976931348623157e+308,
+          -0.01,
+          "a-b",
+          "2025-01-01T00:00:00.0000000Z",
+          "00:01:00",
+          "aa78cea5-289b-52ac-9701-4bfc228da290",
+          "{\"a\":1}",
+          "<b>html</b> & \"amp\""
+        ],
+        [
+          6,
+          null,
+          -2147483648,
+          -1,
+          -0.0,
+          100,
+          "ab",
+          "2025-01-01T00:00:00.0000007Z",
+          "10.00:00:00",
+          null,
+          "{\"k\":1,\"k\":2}",
+          "George <gw@x.com>"
+        ],
+        [
+          7,
+          true,
+          2147483647,
+          1,
+          null,
+          12.5,
+          "Éclair",
+          "2025-01-01T00:00:01.0000000Z",
+          "00:00:00.0000001",
+          "7e2c7f41-60b3-59ea-babe-35dc927545c7",
+          "{\"n\":9007199254740993,\"r\":5.0}",
+          "  leading and trailing  "
+        ],
+        [
+          8,
+          false,
+          0,
+          9007199254740992,
+          2.5,
+          0,
+          "eclair",
+          null,
+          null,
+          "f6079f1f-da0e-5bf9-af21-eb15d9271113",
+          42,
+          "😀 emoji and 日本語"
+        ],
+        [
+          9,
+          null,
+          null,
+          42,
+          10.25,
+          null,
+          "",
+          "2024-02-29T12:00:00.0000000Z",
+          "23:59:59.9999999",
+          "291d866b-715d-5239-af40-b5f2baf0c928",
+          "plain text",
+          "true"
+        ],
+        [
+          10,
+          true,
+          7,
+          9007199254740993,
+          -3.75,
+          79228162514264337593543950335,
+          null,
+          "2026-06-15T08:30:00.5000000Z",
+          "2.03:04:05.5000000",
+          "2327daca-a515-568a-9ce5-ea7da68c7279",
+          null,
+          "1"
+        ]
+      ]
+    }
+  ],
+  "executionStartedAt": "2026-01-01T12:00:00.000Z",
+  "executionDurationMs": 1234,
+  "clientRequestId": "KustoTraceTools;b2166bbc-e232-5122-843e-4e128f2def7b"
+}

@@ -1,0 +1,6 @@
+# Real telemetry captured from a production cluster; not to be committed.
+sample1.ktt
+sample2.ktt
+
+# Scale fixture written by `generate_samples.py --large`; regenerate instead of committing.
+generated/

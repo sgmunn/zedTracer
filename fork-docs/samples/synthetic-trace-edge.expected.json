@@ -1,0 +1,1610 @@
+{
+  "description": "Expected outcomes for synthetic-trace-edge.ktt. Source row numbers are zero-based indexes into tables[0].rows; the grid shows them plus one.",
+  "sourceTable": "PrimaryResult",
+  "rowCount": 525,
+  "severityColumn": "level",
+  "severityRows": {
+    "untintedRows": [
+      38,
+      39,
+      41,
+      42,
+      43
+    ],
+    "tintedCountByLevel": {
+      "1": 2,
+      "2": 19,
+      "3": 15,
+      "4": 478,
+      "5": 6
+    },
+    "note": "level values 0, 9 and null are not tinted; every other row is tinted by its level"
+  },
+  "structured": {
+    "rootsInFirstObservedOrder": [
+      "t1_root",
+      "t2_root",
+      "anom_pa",
+      "anom_pb",
+      "anom_conflict",
+      "anom_orphan",
+      "ws_parent",
+      "cyc_a",
+      "cyc3_x",
+      "cyc_self",
+      "missing_0",
+      "missing_1",
+      "missing_2",
+      "missing_3",
+      "hv_parent",
+      "mp_M01_complete_ordered",
+      "mp_M02_complete_source_order_shuffled",
+      "mp_M03_incomplete",
+      "mp_M04_mismatched_totals",
+      "mp_M05_duplicate_part",
+      "mp_M06_spacing_variant",
+      "mp_M07_total_of_one",
+      "mp_M08_ordinary_row_among_parts",
+      "mp_M09_marker_not_at_start",
+      "mp_M10_extra_space_after_colon",
+      "mp_M11_six_part_plain_text",
+      "mp_M12_interleaved",
+      "cs_C01_noise_and_generated_names",
+      "cs_C02_lambda_frame_and_escaped_newlines",
+      "cs_C03_only_framework_frame",
+      "cs_C04_every_frame_has_source_location",
+      "cs_C05_path_with_r_and_n_directories",
+      "cs_C06_unc_path",
+      "cs_C07_posix_path_left_alone",
+      "cs_C08_nested_and_array",
+      "cs_C09_key_casing_and_non_string",
+      "cs_C10_real_newlines_between_frames",
+      "cs_C11_callstack_in_dynamic_column",
+      "cs_C12_scalar_json_strings",
+      "cs_C13_invalid_json",
+      "cs_C14_plain_text_with_escaped_newline"
+    ],
+    "deepest": {
+      "depth": 5,
+      "activities": [
+        "t1_c5",
+        "t1_d5"
+      ],
+      "note": "Deepest cycles between these two; depth counted from the root at 0"
+    },
+    "activities": [
+      {
+        "name": "t1_root",
+        "activityId": "b4168acd-ca64-5e9b-82e0-f7bec832b9d8",
+        "eventCount": 2,
+        "firstSourceRow": 0,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 11,
+        "maxDescendantDepth": 5,
+        "note": null
+      },
+      {
+        "name": "t1_c1",
+        "activityId": "cc6d215b-4676-51de-a12f-488d2d3a2d16",
+        "eventCount": 2,
+        "firstSourceRow": 2,
+        "parent": "t1_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 5,
+        "maxDescendantDepth": 4,
+        "note": null
+      },
+      {
+        "name": "t1_d1",
+        "activityId": "a5a39685-5033-5660-b43a-0303d12f508c",
+        "eventCount": 1,
+        "firstSourceRow": 3,
+        "parent": "t1_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 5,
+        "maxDescendantDepth": 4,
+        "note": null
+      },
+      {
+        "name": "t1_d2",
+        "activityId": "d53aeef8-710d-5e54-9af7-6a0d84fd48c5",
+        "eventCount": 1,
+        "firstSourceRow": 5,
+        "parent": "t1_d1",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 4,
+        "maxDescendantDepth": 3,
+        "note": null
+      },
+      {
+        "name": "t1_c2",
+        "activityId": "820b496d-3914-5ada-a5b7-6c10403b29bd",
+        "eventCount": 2,
+        "firstSourceRow": 6,
+        "parent": "t1_c1",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 4,
+        "maxDescendantDepth": 3,
+        "note": null
+      },
+      {
+        "name": "t1_d3",
+        "activityId": "ece6de84-b7ba-5635-b9f3-393f2003111f",
+        "eventCount": 1,
+        "firstSourceRow": 7,
+        "parent": "t1_d2",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 5,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 3,
+        "maxDescendantDepth": 2,
+        "note": null
+      },
+      {
+        "name": "t1_d4",
+        "activityId": "0acb3849-87b5-58b3-8553-65994e8895c8",
+        "eventCount": 1,
+        "firstSourceRow": 9,
+        "parent": "t1_d3",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "t1_c3",
+        "activityId": "688c014c-9ff4-5ea2-8ea4-75909e86ddbf",
+        "eventCount": 3,
+        "firstSourceRow": 10,
+        "parent": "t1_c2",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 3,
+        "maxDescendantDepth": 2,
+        "note": null
+      },
+      {
+        "name": "t1_d5",
+        "activityId": "29f27950-ed7c-5f77-b33d-10f4373400ad",
+        "eventCount": 2,
+        "firstSourceRow": 11,
+        "parent": "t1_d4",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t1_c4",
+        "activityId": "079a6431-52aa-5a52-8fb6-88eda281f60b",
+        "eventCount": 1,
+        "firstSourceRow": 15,
+        "parent": "t1_c3",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "t1_c5",
+        "activityId": "5a69ec4a-dea9-5f7b-94da-f7267c2b6dcd",
+        "eventCount": 2,
+        "firstSourceRow": 16,
+        "parent": "t1_c4",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_root",
+        "activityId": "e48e73f8-d37e-57c5-8c83-ee25a5806701",
+        "eventCount": 1,
+        "firstSourceRow": 18,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 16,
+        "maxDescendantDepth": 2,
+        "note": null
+      },
+      {
+        "name": "t2_final_error",
+        "activityId": "8dacd3aa-b5c6-5454-84cd-4984dbc9d225",
+        "eventCount": 2,
+        "firstSourceRow": 19,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_final_warning",
+        "activityId": "f65eb3f5-85f7-54e4-b367-4f3cda49be64",
+        "eventCount": 2,
+        "firstSourceRow": 21,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 3,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_final_critical",
+        "activityId": "60bd5082-a893-5986-85d1-a46626e898c2",
+        "eventCount": 2,
+        "firstSourceRow": 23,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 1,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_handled_warning",
+        "activityId": "a112e11f-6f63-52c5-a5a5-a459dea9827d",
+        "eventCount": 2,
+        "firstSourceRow": 25,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 3,
+          "strength": "muted"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_handled_worst_error",
+        "activityId": "7c6a7712-7963-5340-941d-8a25e1c8e8b2",
+        "eventCount": 3,
+        "firstSourceRow": 27,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "muted"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_handled_then_verbose",
+        "activityId": "030c5ceb-c073-55f6-9b17-eef62bd8086f",
+        "eventCount": 2,
+        "firstSourceRow": 30,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "muted"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_normal_then_verbose",
+        "activityId": "ef5080ee-b56c-5378-96cd-550f4e1d971e",
+        "eventCount": 2,
+        "firstSourceRow": 32,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 5,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_verbose_then_normal",
+        "activityId": "63b07c1e-c407-57ad-b373-f25d693152a4",
+        "eventCount": 2,
+        "firstSourceRow": 34,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_only_normal",
+        "activityId": "172bda42-8aaf-506a-862a-f12526aadc88",
+        "eventCount": 2,
+        "firstSourceRow": 36,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_no_level",
+        "activityId": "e59e290c-8194-54cf-b188-f9d4b1282833",
+        "eventCount": 2,
+        "firstSourceRow": 38,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": null,
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_invalid_final_after_warning",
+        "activityId": "5b5536a7-27cd-5ed8-9daa-966d2602eebe",
+        "eventCount": 2,
+        "firstSourceRow": 40,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 3,
+          "strength": "muted"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_all_invalid",
+        "activityId": "55a02808-ae61-5091-98a5-b1358cfcde2a",
+        "eventCount": 2,
+        "firstSourceRow": 42,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": null,
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_final_warning_after_critical",
+        "activityId": "794a9eb4-e777-5eea-bdc3-b4b2178db7e0",
+        "eventCount": 2,
+        "firstSourceRow": 44,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 3,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "t2_parent_of_error",
+        "activityId": "ca13b602-ef73-5dfa-9ae5-f6b9f1b4290b",
+        "eventCount": 2,
+        "firstSourceRow": 46,
+        "parent": "t2_root",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "t2_child_error",
+        "activityId": "84ffdb36-87f9-5e51-a9aa-8947673ca231",
+        "eventCount": 2,
+        "firstSourceRow": 48,
+        "parent": "t2_parent_of_error",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "anom_pa",
+        "activityId": "0d0b7d5f-225d-5689-adcb-193f46555843",
+        "eventCount": 1,
+        "firstSourceRow": 50,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "anom_pb",
+        "activityId": "f19c7783-52e0-57ad-99e7-775d634a5da1",
+        "eventCount": 1,
+        "firstSourceRow": 51,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "anom_conflict",
+        "activityId": "3a138231-9ff3-5de7-ae3c-6fee4dc1d633",
+        "eventCount": 2,
+        "firstSourceRow": 52,
+        "parent": null,
+        "hierarchyIssue": "conflictingParents",
+        "severity": {
+          "level": 3,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "anom_orphan",
+        "activityId": "49fb56d0-eb5b-5d60-b85b-55ee321c354c",
+        "eventCount": 1,
+        "firstSourceRow": 54,
+        "parent": null,
+        "hierarchyIssue": "orphan",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "anom_orphan_child",
+        "activityId": "0a200589-ad65-5d9a-b806-4cc47c44ec08",
+        "eventCount": 1,
+        "firstSourceRow": 55,
+        "parent": "anom_orphan",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "anom_partial",
+        "activityId": "1da3f6da-108d-5485-8781-4686c570b2d5",
+        "eventCount": 2,
+        "firstSourceRow": 56,
+        "parent": "anom_pa",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "ws_parent",
+        "activityId": "07c970f4-4bd6-5de6-967a-4709b857ea8d",
+        "eventCount": 1,
+        "firstSourceRow": 58,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "ws_child",
+        "activityId": "af632557-4e68-57da-878e-4026f6596b28",
+        "eventCount": 1,
+        "firstSourceRow": 59,
+        "parent": "ws_parent",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cyc_a",
+        "activityId": "7645f490-4359-5c3a-9aa9-e024d81c7f84",
+        "eventCount": 1,
+        "firstSourceRow": 60,
+        "parent": null,
+        "hierarchyIssue": "cycle",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": "earliest-observed activity of the cycle becomes the root"
+      },
+      {
+        "name": "cyc_b",
+        "activityId": "0cea180b-9a15-5174-ae73-a03efcdaae00",
+        "eventCount": 1,
+        "firstSourceRow": 61,
+        "parent": "cyc_a",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cyc3_x",
+        "activityId": "5bcd3943-f9bf-596d-8270-f0a9b0f4543e",
+        "eventCount": 1,
+        "firstSourceRow": 62,
+        "parent": null,
+        "hierarchyIssue": "cycle",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 3,
+        "maxDescendantDepth": 2,
+        "note": null
+      },
+      {
+        "name": "cyc3_y",
+        "activityId": "6634e064-5003-5899-b9f6-c7051c7e995e",
+        "eventCount": 1,
+        "firstSourceRow": 63,
+        "parent": "cyc3_x",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 2,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "cyc3_z",
+        "activityId": "a5f94641-efd3-5cde-bd20-9b548efe7665",
+        "eventCount": 1,
+        "firstSourceRow": 64,
+        "parent": "cyc3_y",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cyc_self",
+        "activityId": "034c3f8f-2f5d-561f-b10a-151066aa4a62",
+        "eventCount": 1,
+        "firstSourceRow": 65,
+        "parent": null,
+        "hierarchyIssue": "cycle",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": "an activity that names itself as parent"
+      },
+      {
+        "name": "missing_0",
+        "activityId": null,
+        "eventCount": 1,
+        "firstSourceRow": 66,
+        "parent": null,
+        "hierarchyIssue": "missingCurrentActivityId",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "missing_1",
+        "activityId": null,
+        "eventCount": 1,
+        "firstSourceRow": 67,
+        "parent": null,
+        "hierarchyIssue": "missingCurrentActivityId",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "missing_2",
+        "activityId": null,
+        "eventCount": 1,
+        "firstSourceRow": 68,
+        "parent": null,
+        "hierarchyIssue": "missingCurrentActivityId",
+        "severity": {
+          "level": 3,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "missing_3",
+        "activityId": null,
+        "eventCount": 1,
+        "firstSourceRow": 69,
+        "parent": null,
+        "hierarchyIssue": "missingCurrentActivityId",
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "hv_parent",
+        "activityId": "4bce2a39-afa3-5e9b-b119-d8d2dc2adaa0",
+        "eventCount": 400,
+        "firstSourceRow": 70,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 3,
+          "strength": "muted"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 4,
+        "maxDescendantDepth": 1,
+        "note": null
+      },
+      {
+        "name": "hv_child1",
+        "activityId": "acc27b9d-8714-539b-8fc3-81663ed3a81d",
+        "eventCount": 2,
+        "firstSourceRow": 470,
+        "parent": "hv_parent",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "hv_child2",
+        "activityId": "b8c08e2c-3298-557c-9274-a7dec39bff0b",
+        "eventCount": 2,
+        "firstSourceRow": 472,
+        "parent": "hv_parent",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "hv_child3",
+        "activityId": "1d0c1ca2-655c-52ea-94b5-a8bd38aea9f7",
+        "eventCount": 2,
+        "firstSourceRow": 474,
+        "parent": "hv_parent",
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M01_complete_ordered",
+        "activityId": "727508f4-faa2-5201-a254-edebeed5bd44",
+        "eventCount": 3,
+        "firstSourceRow": 476,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M02_complete_source_order_shuffled",
+        "activityId": "49bada99-8111-5598-b0dd-ab56ab0cf8a0",
+        "eventCount": 3,
+        "firstSourceRow": 479,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M03_incomplete",
+        "activityId": "b27ba633-0ae1-5bcc-bd76-f606be76d579",
+        "eventCount": 2,
+        "firstSourceRow": 482,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M04_mismatched_totals",
+        "activityId": "02de0534-b438-565e-b588-7770ea71d2bf",
+        "eventCount": 2,
+        "firstSourceRow": 484,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M05_duplicate_part",
+        "activityId": "a185bbab-c944-5501-a497-8901930a7776",
+        "eventCount": 2,
+        "firstSourceRow": 486,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M06_spacing_variant",
+        "activityId": "dca5041e-3798-5ea8-a935-2c960003ab81",
+        "eventCount": 2,
+        "firstSourceRow": 488,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M07_total_of_one",
+        "activityId": "0ee1430f-4022-5cdb-8bd3-02e2d4ca8988",
+        "eventCount": 2,
+        "firstSourceRow": 490,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M08_ordinary_row_among_parts",
+        "activityId": "abbd4733-c4bc-51a4-aa55-9c76931fcb33",
+        "eventCount": 2,
+        "firstSourceRow": 492,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M09_marker_not_at_start",
+        "activityId": "7c3d34db-b289-5aa4-ba1c-5511eb12f0d8",
+        "eventCount": 3,
+        "firstSourceRow": 494,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M10_extra_space_after_colon",
+        "activityId": "693767ed-0bd8-5b9e-abc0-06664dbb8fa8",
+        "eventCount": 2,
+        "firstSourceRow": 497,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M11_six_part_plain_text",
+        "activityId": "f0f4eb84-9cd2-532a-a505-6851560b2879",
+        "eventCount": 6,
+        "firstSourceRow": 499,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "mp_M12_interleaved",
+        "activityId": "e4d643dc-8061-5da0-b4c4-c874fc8b1303",
+        "eventCount": 6,
+        "firstSourceRow": 505,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 4,
+          "strength": "full"
+        },
+        "warningTriangle": false,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C01_noise_and_generated_names",
+        "activityId": "5f018722-dbdc-57e7-9969-1b320e63ff58",
+        "eventCount": 1,
+        "firstSourceRow": 511,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C02_lambda_frame_and_escaped_newlines",
+        "activityId": "df29e078-00be-5a07-810a-d26444609ca7",
+        "eventCount": 1,
+        "firstSourceRow": 512,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C03_only_framework_frame",
+        "activityId": "1b399a77-458d-5612-85c3-c1b082a370b9",
+        "eventCount": 1,
+        "firstSourceRow": 513,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C04_every_frame_has_source_location",
+        "activityId": "dccb79f0-df68-51f2-9b5f-f62756f81df2",
+        "eventCount": 1,
+        "firstSourceRow": 514,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C05_path_with_r_and_n_directories",
+        "activityId": "0ed6ddf4-f42e-547a-a783-9bd433c72a36",
+        "eventCount": 1,
+        "firstSourceRow": 515,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C06_unc_path",
+        "activityId": "199e0cf8-50d0-55a7-97ef-e5eb493a595d",
+        "eventCount": 1,
+        "firstSourceRow": 516,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C07_posix_path_left_alone",
+        "activityId": "f8e4d05c-e11d-5cc4-aae1-991fd98a67d9",
+        "eventCount": 1,
+        "firstSourceRow": 517,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C08_nested_and_array",
+        "activityId": "19874d9e-0705-587c-96df-c6b8ba4170e5",
+        "eventCount": 1,
+        "firstSourceRow": 518,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C09_key_casing_and_non_string",
+        "activityId": "33d7068d-69ac-52cd-965e-e93bfc2eedb1",
+        "eventCount": 1,
+        "firstSourceRow": 519,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C10_real_newlines_between_frames",
+        "activityId": "a00f9c75-7871-5824-89d4-01715852c4e5",
+        "eventCount": 1,
+        "firstSourceRow": 520,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C11_callstack_in_dynamic_column",
+        "activityId": "0ff317b7-b1cb-5d47-9813-55852ab3d126",
+        "eventCount": 1,
+        "firstSourceRow": 521,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C12_scalar_json_strings",
+        "activityId": "f65d9fb4-2373-5f88-aa77-fd7a802f185b",
+        "eventCount": 1,
+        "firstSourceRow": 522,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C13_invalid_json",
+        "activityId": "5473fa70-9690-566e-aab1-ac785a94fa7e",
+        "eventCount": 1,
+        "firstSourceRow": 523,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      },
+      {
+        "name": "cs_C14_plain_text_with_escaped_newline",
+        "activityId": "44136911-4a49-5634-9d5e-4c87cf606c52",
+        "eventCount": 1,
+        "firstSourceRow": 524,
+        "parent": null,
+        "hierarchyIssue": null,
+        "severity": {
+          "level": 2,
+          "strength": "full"
+        },
+        "warningTriangle": true,
+        "subtreeActivityCount": 1,
+        "maxDescendantDepth": 0,
+        "note": null
+      }
+    ],
+    "note": "Activities not listed here do not exist. For missingCurrentActivityId each row is its own root and is labelled '(missing CurrentActivityId)'."
+  },
+  "multipart": [
+    {
+      "case": "M01_complete_ordered",
+      "activity": "mp_M01_complete_ordered",
+      "expect": {
+        "assembled": true,
+        "text": "{\"type\": \"AggregateException\", \"message\": \"Provisioning failed\", \"callStack\": \"at App.Provision() in D:\\\\a\\\\_work\\\\1\\\\s\\\\Core\\\\Provision.cs :line 88 at System.Threading.Tasks.Task.Execute()\", \"innerExceptions\": [{\"type\": \"SqlTimeout\", \"callStack\": \"at Db.Query() at System.Net.Http.HttpClient.SendAsync()\"}]}",
+        "isJson": true
+      },
+      "note": null,
+      "rows": [
+        476,
+        477,
+        478
+      ]
+    },
+    {
+      "case": "M02_complete_source_order_shuffled",
+      "activity": "mp_M02_complete_source_order_shuffled",
+      "expect": {
+        "assembled": true,
+        "text": "{\"type\": \"AggregateException\", \"message\": \"Provisioning failed\", \"callStack\": \"at App.Provision() in D:\\\\a\\\\_work\\\\1\\\\s\\\\Core\\\\Provision.cs :line 88 at System.Threading.Tasks.Task.Execute()\", \"innerExceptions\": [{\"type\": \"SqlTimeout\", \"callStack\": \"at Db.Query() at System.Net.Http.HttpClient.SendAsync()\"}]}",
+        "isJson": true
+      },
+      "note": "parts appear out of order in the source; assembly sorts by part number",
+      "rows": [
+        479,
+        480,
+        481
+      ]
+    },
+    {
+      "case": "M03_incomplete",
+      "activity": "mp_M03_incomplete",
+      "expect": {
+        "assembled": false
+      },
+      "note": null,
+      "rows": [
+        482,
+        483
+      ]
+    },
+    {
+      "case": "M04_mismatched_totals",
+      "activity": "mp_M04_mismatched_totals",
+      "expect": {
+        "assembled": false
+      },
+      "note": null,
+      "rows": [
+        484,
+        485
+      ]
+    },
+    {
+      "case": "M05_duplicate_part",
+      "activity": "mp_M05_duplicate_part",
+      "expect": {
+        "assembled": false
+      },
+      "note": null,
+      "rows": [
+        486,
+        487
+      ]
+    },
+    {
+      "case": "M06_spacing_variant",
+      "activity": "mp_M06_spacing_variant",
+      "expect": {
+        "assembled": true,
+        "text": "xy",
+        "isJson": false
+      },
+      "note": null,
+      "rows": [
+        488,
+        489
+      ]
+    },
+    {
+      "case": "M07_total_of_one",
+      "activity": "mp_M07_total_of_one",
+      "expect": {
+        "assembled": false,
+        "note": "N must be at least 2"
+      },
+      "note": null,
+      "rows": [
+        490,
+        491
+      ]
+    },
+    {
+      "case": "M08_ordinary_row_among_parts",
+      "activity": "mp_M08_ordinary_row_among_parts",
+      "expect": {
+        "assembled": false
+      },
+      "note": null,
+      "rows": [
+        492,
+        493
+      ]
+    },
+    {
+      "case": "M09_marker_not_at_start",
+      "activity": "mp_M09_marker_not_at_start",
+      "expect": {
+        "assembled": false
+      },
+      "note": null,
+      "rows": [
+        494,
+        495,
+        496
+      ]
+    },
+    {
+      "case": "M10_extra_space_after_colon",
+      "activity": "mp_M10_extra_space_after_colon",
+      "expect": {
+        "assembled": true,
+        "text": " two spacesend",
+        "isJson": false,
+        "note": "only one space after the colon belongs to the marker"
+      },
+      "note": null,
+      "rows": [
+        497,
+        498
+      ]
+    },
+    {
+      "case": "M11_six_part_plain_text",
+      "activity": "mp_M11_six_part_plain_text",
+      "expect": {
+        "assembled": true,
+        "text": "part1;part2;part3;part4;part5;part6;",
+        "isJson": false
+      },
+      "note": null,
+      "rows": [
+        499,
+        500,
+        501,
+        502,
+        503,
+        504
+      ]
+    },
+    {
+      "case": "M12_interleaved_all_six",
+      "activity": "mp_M12_interleaved",
+      "expect": {
+        "assembled": false
+      },
+      "note": "six rows selected but each marker declares 3",
+      "rows": [
+        505,
+        506,
+        507,
+        508,
+        509,
+        510
+      ]
+    },
+    {
+      "case": "M12_interleaved_set_a",
+      "activity": "mp_M12_interleaved",
+      "expect": {
+        "assembled": true,
+        "text": "A1;A2;A3;",
+        "isJson": false
+      },
+      "rows": [
+        505,
+        507,
+        509
+      ]
+    },
+    {
+      "case": "M12_interleaved_set_b",
+      "activity": "mp_M12_interleaved",
+      "expect": {
+        "assembled": true,
+        "text": "B1;B2;B3;",
+        "isJson": false
+      },
+      "rows": [
+        506,
+        508,
+        510
+      ]
+    }
+  ],
+  "callStacks": [
+    {
+      "case": "C01_noise_and_generated_names",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at Contoso.Service.Handler.HandleAsync()\nat Contoso.Service.Program.Main()"
+      ],
+      "note": "from the VS Code unit tests",
+      "row": 511
+    },
+    {
+      "case": "C02_lambda_frame_and_escaped_newlines",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "t.LoadIntoBufferAsync()"
+      ],
+      "note": "the callStack holds the four-character escape sequences",
+      "row": 512
+    },
+    {
+      "case": "C03_only_framework_frame",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at System.Net.Http.HttpClient.SendAsync()"
+      ],
+      "note": "never erase a stack (EXC-6)",
+      "row": 513
+    },
+    {
+      "case": "C04_every_frame_has_source_location",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at App.A() in A.cs:line 10\nat App.B() in B.cs:line 20\nat App.C() in C.cs:line 30"
+      ],
+      "note": "Zed (Q-13): one frame per line. VS Code chains all three onto one line.",
+      "row": 514
+    },
+    {
+      "case": "C05_path_with_r_and_n_directories",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at App.Run() in Foo.cs:line 12\nat App.Next()"
+      ],
+      "note": "VS Code corrupts the path to 'D: epos ode\\src\\Foo.cs' (spec section 7, row 2)",
+      "row": 515
+    },
+    {
+      "case": "C06_unc_path",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at App.Share() in Unc.cs:line 5"
+      ],
+      "note": null,
+      "row": 516
+    },
+    {
+      "case": "C07_posix_path_left_alone",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at App.Posix() in /mnt/build/src/Posix.cs:line 7"
+      ],
+      "note": "POSIX paths are not shortened (EXC-2)",
+      "row": 517
+    },
+    {
+      "case": "C08_nested_and_array",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at A.Outer()",
+        "at Inner.Work()",
+        "at One.Go()",
+        "at Two.Go()"
+      ],
+      "note": "any depth, including inside arrays (JSN-5)",
+      "row": 518
+    },
+    {
+      "case": "C09_key_casing_and_non_string",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at Upper.Case()",
+        "at Lower.Case()"
+      ],
+      "note": "matched case-insensitively on the exact key name; callStackHash is left alone",
+      "row": 519
+    },
+    {
+      "case": "C10_real_newlines_between_frames",
+      "isJson": true,
+      "column": "MessageText",
+      "expectedCallStacks": [
+        "at App.X()\nat App.Y()"
+      ],
+      "note": null,
+      "row": 520
+    },
+    {
+      "case": "C11_callstack_in_dynamic_column",
+      "isJson": true,
+      "column": "CustomData",
+      "expectedCallStacks": [
+        "at Column.Work()"
+      ],
+      "note": "the same rules apply to a dynamic column's object",
+      "row": 521
+    },
+    {
+      "case": "C12_scalar_json_strings",
+      "isJson": false,
+      "column": "MessageText",
+      "expectedCallStacks": [],
+      "note": "JSON scalars are ordinary values, not reformatted (JSN-1)",
+      "row": 522
+    },
+    {
+      "case": "C13_invalid_json",
+      "isJson": false,
+      "column": "MessageText",
+      "expectedCallStacks": [],
+      "note": "starts with { but does not parse: plain text",
+      "row": 523
+    },
+    {
+      "case": "C14_plain_text_with_escaped_newline",
+      "isJson": false,
+      "column": "MessageText",
+      "expectedCallStacks": [],
+      "note": "not JSON: shown as it is",
+      "row": 524
+    }
+  ]
+}
