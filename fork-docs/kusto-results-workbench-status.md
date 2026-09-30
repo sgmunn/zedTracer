@@ -57,7 +57,9 @@ Built and tested headlessly: search box and Clear all filters (toolbar), severit
 
 Copy as datatable (`kusto_results::export::datatable`) was ported from `KustoGenerator.cs` in the VS Code fork and checked against the real Kusto.Language 12.4.0 library, using a throwaway .NET console project that referenced the DLL from `~/.nuget/packages/microsoft.azure.kusto.language/12.4.0` and called `KustoFacts.GetStringLiteral`, `KustoFacts.BracketNameIfNecessary` and `KustoGenerator` directly. The project was not kept; the vectors it produced are in the tests in `export.rs`, and the keyword list is in `BRACKETED_NAMES`. After a library upgrade, rebuild such a harness and compare.
 
-Not built: severity colour settings (SET-4) and any other Zed settings for this feature (the settings plumbing is a change to the settings crates, to be decided), shift-drag across headers to select several columns (a drag on a header reorders; shift-click ranges work), HTML on the clipboard (CPY-11).
+Phase B, beyond what phase A already gave (sort, filter, search, severity tint): a busy indicator in the footer for work still running after 250 ms (`Sorting 200000 rows…`, with a progress-indicator accessibility role and the same text as its label; GPUI has no busy property, so this is the closest signal), a search toggle (hidden by default, focuses on show, clears on hide, Escape clears the text, Cmd/Ctrl+F) with the Toggle Search and Clear All Filters actions, and severity colours as a setting (`kusto_results.severity_colors` in `settings_content`, `assets/settings/default.json` and `ResultsSettings`; an empty or unreadable colour leaves that level untinted).
+
+Not built: shift-drag across headers to select several columns (a drag on a header reorders; shift-click ranges work), HTML on the clipboard (CPY-11), a settings-UI page for the new setting.
 
 ## Not proven yet
 
