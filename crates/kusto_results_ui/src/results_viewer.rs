@@ -13,11 +13,12 @@ use gpui::{
     Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
+use kusto_results::activity::{build_projection, has_activity_columns};
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use text::LineEnding;
-use ui::{Icon, IconName};
+use ui::{Button, Icon, IconName, prelude::*};
 use util::rel_path::RelPath;
 use workspace::Pane;
 use workspace::Workspace;
@@ -26,6 +27,7 @@ use worktree::Worktree;
 
 use crate::grid::{ResultGrid, ResultGridEvent};
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
+use crate::structured_view::StructuredView;
 
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
@@ -302,12 +304,31 @@ impl project::ProjectItem for ResultsFile {
     }
 }
 
+/// Which view of the table the tab shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    Data,
+    Structured,
+}
+
+/// The structured view is built when it is first asked for: the projection of a large trace
+/// takes a moment, and most tabs never need it.
+enum Structured {
+    Building { _task: Task<()> },
+    Ready(Entity<StructuredView>),
+}
+
 pub struct ResultsViewer {
     focus_handle: FocusHandle,
     results_file: Entity<ResultsFile>,
     grid: Option<Entity<ResultGrid>>,
     problem: Option<&'static str>,
+    mode: ViewMode,
+    /// Whether the table has the columns the structured view needs.
+    can_show_structured: bool,
+    structured: Option<Structured>,
     _grid_subscription: Option<Subscription>,
+    _structured_subscription: Option<Subscription>,
     _reload_subscription: Subscription,
 }
 
@@ -366,7 +387,11 @@ impl WorkspaceProjectItem for ResultsViewer {
             results_file: item.clone(),
             grid: None,
             problem: None,
+            mode: ViewMode::Data,
+            can_show_structured: false,
+            structured: None,
             _grid_subscription: None,
+            _structured_subscription: None,
             _reload_subscription: reload,
         };
         viewer.show(&item, window, cx);
@@ -380,30 +405,133 @@ impl ResultsViewer {
         let result = item.read(cx).result.clone();
         self.problem = item.read(cx).problem;
         self.grid = (self.problem.is_none() && !result.tables.is_empty())
-            .then(|| cx.new(|cx| ResultGrid::new(result, 0, window, cx)));
-        self._grid_subscription = self.grid.as_ref().map(|grid| {
-            cx.subscribe(grid, |this, _, event: &ResultGridEvent, cx| {
-                if let ResultGridEvent::LayoutChanged(layout) = event {
-                    this.results_file
-                        .update(cx, |file, cx| file.save_layout(layout.clone(), cx));
-                }
-            })
+            .then(|| cx.new(|cx| ResultGrid::new(result.clone(), 0, window, cx)));
+        self._grid_subscription = self
+            .grid
+            .as_ref()
+            .map(|grid| Self::save_layouts_of(grid, cx));
+        self.can_show_structured =
+            self.grid.is_some() && result.tables.first().is_some_and(has_activity_columns);
+        // What the structured view was built from has changed.
+        self.structured = None;
+        self._structured_subscription = None;
+        if !self.can_show_structured {
+            self.mode = ViewMode::Data;
+        } else if self.mode == ViewMode::Structured {
+            self.build_structured(window, cx);
+        }
+    }
+
+    fn save_layouts_of(grid: &Entity<ResultGrid>, cx: &mut Context<Self>) -> Subscription {
+        cx.subscribe(grid, |this, _, event: &ResultGridEvent, cx| {
+            if let ResultGridEvent::LayoutChanged(layout) = event {
+                this.results_file
+                    .update(cx, |file, cx| file.save_layout(layout.clone(), cx));
+            }
+        })
+    }
+
+    pub fn mode(&self) -> ViewMode {
+        self.mode
+    }
+
+    pub fn structured_view(&self) -> Option<&Entity<StructuredView>> {
+        match &self.structured {
+            Some(Structured::Ready(view)) => Some(view),
+            _ => None,
+        }
+    }
+
+    fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
+        if mode == ViewMode::Structured && !self.can_show_structured {
+            return;
+        }
+        self.mode = mode;
+        if mode == ViewMode::Structured && self.structured.is_none() {
+            self.build_structured(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Builds the activity projection away from the window, then the view.
+    fn build_structured(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        self.structured = Some(Structured::Building {
+            _task: cx.spawn_in(window, async move |this, cx| {
+                let for_projection = result.clone();
+                let projection = cx
+                    .background_spawn(async move {
+                        for_projection.tables.first().and_then(build_projection)
+                    })
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    let Some(projection) = projection else {
+                        this.structured = None;
+                        this.can_show_structured = false;
+                        this.mode = ViewMode::Data;
+                        cx.notify();
+                        return;
+                    };
+                    let view = cx
+                        .new(|cx| StructuredView::new(result, 0, Arc::new(projection), window, cx));
+                    let grid = view.read(cx).grid().clone();
+                    this._structured_subscription = Some(Self::save_layouts_of(&grid, cx));
+                    this.structured = Some(Structured::Ready(view));
+                    cx.notify();
+                })
+                .log_err();
+            }),
         });
     }
 }
 
 impl Render for ResultsViewer {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let body = match &self.grid {
-            Some(grid) => div().size_full().child(grid.clone()),
-            None => div()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match (self.mode, &self.structured, &self.grid) {
+            (ViewMode::Structured, Some(Structured::Ready(view)), _) => {
+                div().size_full().child(view.clone())
+            }
+            (ViewMode::Structured, _, _) => div()
+                .p_4()
+                .child(ui::Label::new("Building the activity tree…")),
+            (ViewMode::Data, _, Some(grid)) => div().size_full().child(grid.clone()),
+            (ViewMode::Data, _, None) => div()
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
-        div()
+        let mode = self.mode;
+        v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
-            .child(body)
+            .when(self.can_show_structured, |viewer| {
+                viewer.child(
+                    h_flex()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(cx.theme().colors().border)
+                        .child(
+                            div().debug_selector(|| "data-tab".to_string()).child(
+                                Button::new("results-data-tab", "Data")
+                                    .toggle_state(mode == ViewMode::Data)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.set_mode(ViewMode::Data, window, cx)
+                                    })),
+                            ),
+                        )
+                        .child(
+                            div().debug_selector(|| "structured-tab".to_string()).child(
+                                Button::new("results-structured-tab", "Structured")
+                                    .toggle_state(mode == ViewMode::Structured)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.set_mode(ViewMode::Structured, window, cx)
+                                    })),
+                            ),
+                        ),
+                )
+            })
+            .child(div().flex_1().min_h_0().child(body))
     }
 }
 
@@ -678,6 +806,112 @@ mod tests {
         assert_eq!(
             viewer.read_with(cx, |viewer, _| viewer.problem),
             Some("Invalid result file.")
+        );
+    }
+
+    /// ACT-6, PER-4: a trace offers a Structured tab next to Data, built when first asked for;
+    /// a table without activity columns offers none.
+    #[gpui::test]
+    async fn a_trace_offers_a_structured_tab(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/root",
+            json!({
+                "trace.ktt": sample("synthetic-trace-edge.ktt").expect("fixture"),
+                "types.ktt": sample("synthetic-types.ktt").expect("fixture"),
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let plain = open("types.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("structured-tab").is_none(),
+            "no activity columns, no tab"
+        );
+        assert!(!plain.read_with(cx, |viewer, _| viewer.can_show_structured));
+
+        let trace = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(trace.read_with(cx, |viewer, _| viewer.can_show_structured));
+        assert_eq!(
+            trace.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data
+        );
+        assert!(trace.read_with(cx, |viewer, _| viewer.structured_view().is_none()));
+
+        let tab = cx
+            .debug_bounds("structured-tab")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            trace.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Structured
+        );
+        let view = trace
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built");
+        assert!(
+            view.read_with(cx, |view, cx| view.grid().read(cx).visible_row_count()) > 0,
+            "the first root's events show"
+        );
+
+        let data = cx
+            .debug_bounds("data-tab")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(data, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            trace.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data
+        );
+        assert!(
+            trace.read_with(cx, |viewer, _| viewer.structured_view().is_some()),
+            "switching back keeps the structured view"
         );
     }
 }
