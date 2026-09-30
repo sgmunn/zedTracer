@@ -6,12 +6,14 @@
 use std::ops::Range;
 
 use editor::Editor;
+use editor::SelectionEffects;
 use editor::display_map::HighlightKey;
+use editor::scroll::Autoscroll;
 use gpui::{
-    AppContext as _, Context, Entity, HighlightStyle, Hsla, IntoElement, Render, Window, div,
-    prelude::*,
+    AppContext as _, Context, Entity, FontStyle, FontWeight, HighlightStyle, Hsla, IntoElement,
+    Render, Window, div, prelude::*,
 };
-use kusto_results::inspector::{JsonTokenKind, highlight_json};
+use kusto_results::inspector::{InspectorDocument, JsonTokenKind, highlight_json};
 use language::language_settings::SoftWrap;
 use multi_buffer::MultiBufferOffset;
 
@@ -24,6 +26,16 @@ fn token_key(kind: JsonTokenKind) -> HighlightKey {
         JsonTokenKind::Boolean => 3,
         JsonTokenKind::Null => 4,
     })
+}
+
+const HEADER_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(5);
+const NULL_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(6);
+
+/// The colours an inspector document is drawn with.
+pub struct InspectorPalette {
+    pub token: Box<dyn Fn(JsonTokenKind) -> Hsla>,
+    pub header: Hsla,
+    pub null: Hsla,
 }
 
 const TOKEN_KINDS: [JsonTokenKind; 5] = [
@@ -73,40 +85,96 @@ impl InspectorText {
     pub fn set_text(
         &mut self,
         text: &str,
-        colours: impl Fn(JsonTokenKind) -> Hsla,
+        colours: impl Fn(JsonTokenKind) -> Hsla + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let tokens = highlight_json(text);
+        let document = InspectorDocument {
+            text: text.to_string(),
+            json_tokens: highlight_json(text),
+            ..Default::default()
+        };
+        let palette = InspectorPalette {
+            token: Box::new(colours),
+            header: Hsla::default(),
+            null: Hsla::default(),
+        };
+        self.set_document(&document, &palette, window, cx);
+    }
+
+    /// Shows a whole inspector document: its text, with field headers, nulls and JSON tokens
+    /// styled. Styling never touches the text.
+    pub fn set_document(
+        &mut self,
+        document: &InspectorDocument,
+        palette: &InspectorPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editor.update(cx, |editor, cx| {
             editor.set_read_only(false);
-            editor.set_text(text, window, cx);
+            editor.set_text(document.text.as_str(), window, cx);
             editor.set_read_only(true);
             let snapshot = editor.buffer().read(cx).snapshot(cx);
-            for kind in TOKEN_KINDS {
-                let ranges = tokens
-                    .iter()
-                    .filter(|token| token.kind == kind)
-                    .map(|token| {
-                        snapshot.anchor_after(MultiBufferOffset(token.range.start))
-                            ..snapshot.anchor_before(MultiBufferOffset(token.range.end))
+            let anchors = |ranges: &mut dyn Iterator<Item = &Range<usize>>| {
+                ranges
+                    .map(|range| {
+                        snapshot.anchor_after(MultiBufferOffset(range.start))
+                            ..snapshot.anchor_before(MultiBufferOffset(range.end))
                     })
-                    .collect();
+                    .collect::<Vec<_>>()
+            };
+            for kind in TOKEN_KINDS {
+                let ranges = anchors(
+                    &mut document
+                        .json_tokens
+                        .iter()
+                        .filter(|token| token.kind == kind)
+                        .map(|token| &token.range),
+                );
                 editor.highlight_text(
                     token_key(kind),
                     ranges,
                     HighlightStyle {
-                        color: Some(colours(kind)),
+                        color: Some((palette.token)(kind)),
                         ..Default::default()
                     },
                     cx,
                 );
             }
+            editor.highlight_text(
+                HEADER_KEY,
+                anchors(&mut document.headers.iter()),
+                HighlightStyle {
+                    color: Some(palette.header),
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    ..Default::default()
+                },
+                cx,
+            );
+            editor.highlight_text(
+                NULL_KEY,
+                anchors(&mut document.nulls.iter()),
+                HighlightStyle {
+                    color: Some(palette.null),
+                    font_style: Some(FontStyle::Italic),
+                    ..Default::default()
+                },
+                cx,
+            );
         });
     }
 
     /// Highlights every case-insensitive match of `query` and returns how many there are.
-    pub fn find(&mut self, query: &str, colour: Hsla, cx: &mut Context<Self>) -> usize {
+    ///
+    /// The first match is selected and scrolled into view.
+    pub fn find(
+        &mut self,
+        query: &str,
+        colour: Hsla,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
         let matches = find_matches(&self.editor.read(cx).text(cx), query);
         self.editor.update(cx, |editor, cx| {
             if matches.is_empty() {
@@ -127,6 +195,18 @@ impl InspectorText {
                 move |_, _| colour,
                 cx,
             );
+            if let Some(first) = matches.first() {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::center()),
+                    window,
+                    cx,
+                    |selections| {
+                        selections.select_ranges([
+                            MultiBufferOffset(first.start)..MultiBufferOffset(first.end)
+                        ])
+                    },
+                );
+            }
         });
         matches.len()
     }
@@ -230,8 +310,8 @@ mod tests {
         view.update_in(cx, |view, window, cx| {
             view.set_text(&text, colour, window, cx)
         });
-        let matches = view.update(cx, |view, cx| {
-            view.find("CALLSTACK", hsla(0.1, 1., 0.5, 0.4), cx)
+        let matches = view.update_in(cx, |view, window, cx| {
+            view.find("CALLSTACK", hsla(0.1, 1., 0.5, 0.4), window, cx)
         });
         assert_eq!(matches, 1);
         let editor = view.read_with(cx, |view, _| view.editor().clone());
@@ -288,7 +368,9 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             let first_draw = started.elapsed();
             let started = Instant::now();
-            let matches = view.update(cx, |view, cx| view.find("id", hsla(0.1, 1., 0.5, 0.4), cx));
+            let matches = view.update_in(cx, |view, window, cx| {
+                view.find("id", hsla(0.1, 1., 0.5, 0.4), window, cx)
+            });
             cx.update(|window, cx| window.draw(cx).clear(cx));
             println!(
                 "{:>8} bytes: set text {:.1} ms, first frame {:.1} ms, find ({matches} matches) and redraw {:.1} ms",

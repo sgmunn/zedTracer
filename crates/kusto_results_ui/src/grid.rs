@@ -99,6 +99,21 @@ impl ResultGrid {
             column_count,
         ));
 
+        cx.on_release(|grid, cx| {
+            let active = ActiveSelection::shared(cx);
+            active.update(cx, |active, cx| {
+                let owns_subject = active
+                    .result
+                    .as_ref()
+                    .is_some_and(|result| Arc::ptr_eq(result, &grid.result));
+                if owns_subject {
+                    *active = ActiveSelection::default();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+
         Self {
             result,
             table_index,
@@ -1143,6 +1158,27 @@ mod tests {
         click(cx, "gutter-5", Modifiers::shift());
         let rows = cx.update(|_, cx| ActiveSelection::shared(cx).read(cx).rows.clone());
         assert_eq!(rows, [3, 4, 5]);
+    }
+
+    /// RDT-11: closing the grid that owns the inspector's subject empties the inspector.
+    #[gpui::test]
+    async fn closing_the_grid_empties_the_inspector(cx: &mut TestAppContext) {
+        init_test(cx);
+        let result = Arc::new(generated_result(20, 3));
+        let grid = cx.new(|cx| ResultGrid::new(result, 0, cx));
+        grid.update(cx, |grid, cx| {
+            grid.set_selection(Some(CellSelection::rows(2, 2, 3)), cx)
+        });
+        let shown = |cx: &mut TestAppContext| {
+            cx.update(|cx| ActiveSelection::shared(cx).read(cx).rows.clone())
+        };
+        assert_eq!(shown(cx), [2]);
+        drop(grid);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert!(shown(cx).is_empty());
+        let has_result = cx.update(|cx| ActiveSelection::shared(cx).read(cx).result.is_some());
+        assert!(!has_result);
     }
 
     /// Frame cost of building, laying out and painting the grid for 200,000 rows by 20 columns.

@@ -7,5 +7,5 @@ mod row_details_panel;
 
 pub use filter_popover::{FilterChanged, FilterPopover};
 pub use grid::{ResultGrid, ResultGridEvent};
-pub use inspector_text::InspectorText;
+pub use inspector_text::{InspectorPalette, InspectorText};
 pub use row_details_panel::{ActiveSelection, RowDetailsPanel, ToggleRowDetails};

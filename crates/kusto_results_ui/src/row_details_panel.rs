@@ -3,16 +3,25 @@
 
 use std::sync::Arc;
 
+use editor::Editor;
+use editor::actions::Cancel;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Global, Pixels, Subscription,
-    Window, actions, px,
+    App, AppContext as _, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, Global, Hsla, Pixels, Subscription, WeakEntity, Window, actions, px,
 };
 use kusto_results::ResultSet;
-use kusto_results::inspector::{InspectorSubject, resolve_subject};
-use ui::{IconName, Label, prelude::*};
+use kusto_results::inspector::{
+    InspectorDocument, InspectorSubject, JsonTokenKind, build_document, resolve_subject,
+};
+use ui::{Button, ButtonCommon, ButtonSize, Clickable, IconName, Label, prelude::*};
+use workspace::Workspace;
+
+use crate::inspector_text::{InspectorPalette, InspectorText};
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
-actions!(row_details, [ToggleRowDetails]);
+actions!(row_details, [ToggleRowDetails, FocusFind]);
+
+const EMPTY_STATE: &str = "Select a result row to inspect its values here.";
 
 /// The selection the inspector follows: the rows last selected in any results grid.
 #[derive(Default)]
@@ -45,11 +54,11 @@ impl ActiveSelection {
             .as_ref()
             .and_then(|result| result.tables.get(self.table_index))
         else {
-            return vec!["Select a result row to inspect its values here.".to_string()];
+            return vec![EMPTY_STATE.to_string()];
         };
         match resolve_subject(table, &self.rows) {
             InspectorSubject::Empty => {
-                vec!["Select a result row to inspect its values here.".to_string()]
+                vec![EMPTY_STATE.to_string()]
             }
             InspectorSubject::Row { row } => vec![
                 table.name.clone(),
@@ -83,22 +92,162 @@ impl ActiveSelection {
 pub struct RowDetailsPanel {
     focus_handle: FocusHandle,
     selection: Entity<ActiveSelection>,
-    _subscription: Subscription,
+    inspector: Entity<InspectorText>,
+    find_editor: Entity<Editor>,
+    /// What the inspector currently shows, so a repeated selection does not reset its scroll.
+    shown: InspectorDocument,
+    headline: Vec<String>,
+    match_count: usize,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl RowDetailsPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub async fn load(
+        workspace: WeakEntity<Workspace>,
+        mut cx: AsyncWindowContext,
+    ) -> anyhow::Result<Entity<Self>> {
+        workspace.update_in(&mut cx, |_workspace, window, cx| {
+            cx.new(|cx| Self::new(window, cx))
+        })
+    }
+
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let selection = ActiveSelection::shared(cx);
-        let subscription = cx.observe(&selection, |_, _, cx| cx.notify());
-        Self {
+        let inspector = cx.new(|cx| InspectorText::new(window, cx));
+        let find_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Find in row", window, cx);
+            editor
+        });
+        let subscriptions = vec![
+            cx.observe_in(&selection, window, |this, _, window, cx| {
+                this.refresh(window, cx)
+            }),
+            cx.subscribe_in(&find_editor, window, |this, _, event, window, cx| {
+                if matches!(event, editor::EditorEvent::BufferEdited) {
+                    this.apply_find(window, cx);
+                }
+            }),
+        ];
+        let mut panel = Self {
             focus_handle: cx.focus_handle(),
             selection,
-            _subscription: subscription,
-        }
+            inspector,
+            find_editor,
+            shown: InspectorDocument::default(),
+            headline: Vec::new(),
+            match_count: 0,
+            _subscriptions: subscriptions,
+        };
+        panel.refresh(window, cx);
+        panel
     }
 
     pub fn headline(&self, cx: &App) -> Vec<String> {
         self.selection.read(cx).headline()
+    }
+
+    pub fn inspector(&self) -> &Entity<InspectorText> {
+        &self.inspector
+    }
+
+    pub fn find_editor(&self) -> &Entity<Editor> {
+        &self.find_editor
+    }
+
+    pub fn match_count(&self) -> usize {
+        self.match_count
+    }
+
+    fn palette(cx: &App) -> InspectorPalette {
+        let theme = cx.theme();
+        let text = theme.colors().text;
+        let syntax = theme.syntax().clone();
+        let token = move |name: &str| {
+            syntax
+                .style_for_name(name)
+                .and_then(|style| style.color)
+                .unwrap_or(text)
+        };
+        let keys = token("property");
+        let strings = token("string");
+        let numbers = token("number");
+        let booleans = token("boolean");
+        let nulls = token("constant");
+        InspectorPalette {
+            token: Box::new(move |kind| match kind {
+                JsonTokenKind::Key => keys,
+                JsonTokenKind::String => strings,
+                JsonTokenKind::Number => numbers,
+                JsonTokenKind::Boolean => booleans,
+                JsonTokenKind::Null => nulls,
+            }),
+            header: theme.colors().text_accent,
+            null: theme.colors().text_muted,
+        }
+    }
+
+    fn find_colour(cx: &App) -> Hsla {
+        cx.theme().colors().search_match_background
+    }
+
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.selection.read(cx);
+        let headline = selection.headline();
+        let document = selection
+            .result
+            .as_ref()
+            .and_then(|result| result.tables.get(selection.table_index))
+            .map(|table| build_document(table, &resolve_subject(table, &selection.rows)))
+            .unwrap_or_default();
+        if headline != self.headline {
+            self.headline = headline;
+            cx.notify();
+        }
+        if document == self.shown {
+            return;
+        }
+        let palette = Self::palette(cx);
+        self.inspector.update(cx, |inspector, cx| {
+            inspector.set_document(&document, &palette, window, cx)
+        });
+        self.shown = document;
+        self.apply_find(window, cx);
+        cx.notify();
+    }
+
+    fn apply_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.find_editor.read(cx).text(cx);
+        let colour = Self::find_colour(cx);
+        self.match_count = self.inspector.update(cx, |inspector, cx| {
+            inspector.find(&query, colour, window, cx)
+        });
+        cx.notify();
+    }
+
+    fn focus_find(&mut self, _: &FocusFind, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_editor.update(cx, |editor, cx| {
+            editor.select_all(&editor::actions::SelectAll, window, cx)
+        });
+        window.focus(&self.find_editor.focus_handle(cx), cx);
+    }
+
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        let find_focused = self.find_editor.focus_handle(cx).is_focused(window);
+        if !find_focused || self.find_editor.read(cx).text(cx).is_empty() {
+            cx.propagate();
+            return;
+        }
+        self.find_editor
+            .update(cx, |editor, cx| editor.clear(window, cx));
+    }
+
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.inspector.update(cx, |inspector, cx| {
+            let wrap = !inspector.wrap();
+            inspector.set_wrap(wrap, cx);
+        });
+        cx.notify();
     }
 }
 
@@ -152,16 +301,77 @@ impl Panel for RowDetailsPanel {
 
 impl Render for RowDetailsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .p_3()
+        let has_subject = !self.shown.text.is_empty();
+        let colors = cx.theme().colors();
+        let wrap_label = if self.inspector.read(cx).wrap() {
+            "Wrap lines: On"
+        } else {
+            "Wrap lines: Off"
+        };
+        let find_text_present = !self.find_editor.read(cx).text(cx).is_empty();
+        let match_label = match (find_text_present, self.match_count) {
+            (false, _) => None,
+            (true, 0) => Some("No matches".to_string()),
+            (true, 1) => Some("1 match".to_string()),
+            (true, count) => Some(format!("{count} matches")),
+        };
+
+        let header = v_flex()
             .gap_1()
-            .children(
-                self.headline(cx)
-                    .into_iter()
-                    .map(|line| Label::new(line).into_any_element()),
-            )
+            .p_2()
+            .border_b_1()
+            .border_color(colors.border)
+            .children(self.headline.iter().enumerate().map(|(index, line)| {
+                let label = Label::new(line.clone());
+                if index == 0 && has_subject {
+                    label.weight(gpui::FontWeight::SEMIBOLD).into_any_element()
+                } else {
+                    label.color(Color::Muted).into_any_element()
+                }
+            }))
+            .when(has_subject, |header| {
+                header
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.editor_background)
+                            .child(self.find_editor.clone()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("row-details-wrap", wrap_label)
+                                    .size(ButtonSize::Compact)
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))),
+                            )
+                            .children(
+                                match_label.map(|label| Label::new(label).color(Color::Muted)),
+                            ),
+                    )
+            });
+
+        v_flex()
+            .key_context("RowDetailsPanel")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::focus_find))
+            .on_action(cx.listener(Self::cancel))
+            .size_full()
+            .child(header)
+            .when(has_subject, |panel| {
+                panel.child(
+                    div()
+                        .id("row-details-body")
+                        .flex_1()
+                        .min_h_0()
+                        .p_2()
+                        .child(self.inspector.clone()),
+                )
+            })
     }
 }
 
@@ -200,13 +410,15 @@ mod tests {
     async fn shares_the_right_dock_and_follows_the_selection(cx: &mut TestAppContext) {
         cx.update(|cx| {
             AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
         });
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
 
-        let details = cx.update(|_, cx| cx.new(RowDetailsPanel::new));
+        let details = cx.update(|window, cx| cx.new(|cx| RowDetailsPanel::new(window, cx)));
         let window_cx = cx.update(|window, cx| window.to_async(cx));
         let investigation = InvestigationPanel::load(workspace.downgrade(), window_cx)
             .await
@@ -287,5 +499,102 @@ mod tests {
             headline(cx),
             ["Select a result row to inspect its values here."]
         );
+    }
+
+    fn exception_result() -> Arc<ResultSet> {
+        Arc::new(ResultSet {
+            tables: vec![Table {
+                name: "PrimaryResult".into(),
+                columns: vec![
+                    Column::new("Message", "string"),
+                    Column::new("Exception", "dynamic"),
+                    Column::new("Trace", "string"),
+                ],
+                rows: vec![vec![
+                    Cell::Text("Timeout talking to sql-01".into()),
+                    Cell::Text(
+                        "{\"type\":\"SqlException\",\"message\":\"Timeout expired\"}".into(),
+                    ),
+                    Cell::Null,
+                ]],
+            }],
+            ..Default::default()
+        })
+    }
+
+    /// RDT-3 to RDT-6 and RDT-12: field blocks, find, wrap, and a find text that survives.
+    #[gpui::test]
+    async fn shows_field_blocks_and_finds_in_them(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| RowDetailsPanel::new(window, cx));
+        cx.simulate_resize(gpui::size(px(360.), px(600.)));
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        let shown_text = |cx: &mut gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                panel.inspector().read(cx).editor().read(cx).text(cx)
+            })
+        };
+        assert_eq!(shown_text(cx), "");
+
+        active.update(cx, |active, cx| {
+            active.result = Some(exception_result());
+            active.table_index = 0;
+            active.rows = vec![0];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            shown_text(cx),
+            "Message · string\nTimeout talking to sql-01\n\nException · dynamic\n{\n  \"type\": \"SqlException\",\n  \"message\": \"Timeout expired\"\n}\n\nTrace · string\nnull"
+        );
+
+        let find_editor = panel.read_with(cx, |panel, _| panel.find_editor().clone());
+        find_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("TIMEOUT", window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(panel.read_with(cx, |panel, _| panel.match_count()), 2);
+
+        active.update(cx, |active, cx| {
+            active.rows = vec![0, 0];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.match_count()),
+            2,
+            "the find text survives a selection change"
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            window.focus(&panel.find_editor().focus_handle(cx), cx);
+        });
+        cx.dispatch_action(Cancel);
+        assert_eq!(find_editor.read_with(cx, |editor, cx| editor.text(cx)), "");
+        assert_eq!(panel.read_with(cx, |panel, _| panel.match_count()), 0);
+
+        panel.update(cx, |panel, cx| panel.toggle_wrap(cx));
+        let wrapped = panel.read_with(cx, |panel, cx| panel.inspector().read(cx).wrap());
+        assert!(!wrapped);
+
+        panel.update_in(cx, |panel, window, cx| {
+            window.focus(&panel.inspector().read(cx).editor().focus_handle(cx), cx);
+        });
+        cx.dispatch_action(FocusFind);
+        let focused = panel.update_in(cx, |panel, window, cx| {
+            panel.find_editor().focus_handle(cx).is_focused(window)
+        });
+        assert!(focused);
+
+        active.update(cx, |active, cx| {
+            *active = ActiveSelection::default();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(shown_text(cx), "");
     }
 }

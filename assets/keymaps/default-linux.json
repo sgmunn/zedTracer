@@ -1677,4 +1677,10 @@
       "shift-tab": "skill_creator::FocusPreviousField",
     },
   },
+  {
+    "context": "RowDetailsPanel > Editor",
+    "bindings": {
+      "ctrl-f": "row_details::FocusFind",
+    },
+  },
 ]
