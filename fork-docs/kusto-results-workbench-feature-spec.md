@@ -396,7 +396,7 @@ Wireframe: W-12. Zed setting names are not fixed here; the behaviours are.
 | SET-1 | P1 | Results location | panel | `panel` (bottom dock), `beside` (editor tab beside the query), `main` (editor tab in the main area). |
 | SET-2 | P1 | Editor result mode | new tab | With `beside` or `main`: `new tab` opens each completed run in its own history-backed tab; `reuse` replaces one shared tab. |
 | SET-3 | Dropped | Page size | | Went with paging (GRD-5). |
-| SET-4 | P0 | Severity colours | see SEV-2 | Five colours, critical to verbose. Empty means theme default. |
+| SET-4 | P0 | Severity colours | see SEV-2 | Five colours, critical to verbose. Empty means theme default. **Built** as `kusto_results.severity_colors` (`critical`, `error`, `warning`, `normal`, `verbose`). |
 | SET-5 | P1 | Call stack noise list | built-in list (EXC-5) | Extra frame prefixes to hide (EXC-9). |
 
 ### 4.15 Commands and shortcuts (CMD)

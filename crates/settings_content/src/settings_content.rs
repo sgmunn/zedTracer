@@ -241,6 +241,9 @@ pub struct SettingsContent {
     /// The settings for the image viewer.
     pub image_viewer: Option<ImageViewerSettingsContent>,
 
+    /// The settings for the Kusto results grid.
+    pub kusto_results: Option<KustoResultsSettingsContent>,
+
     /// The settings for the markdown preview.
     pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
 
@@ -407,7 +410,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
-        global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
+        global_lsp_settings, image_viewer, kusto_results, markdown_preview, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -1325,6 +1328,32 @@ pub struct MarkdownPreviewSettingsContent {
     ///
     /// Default: 800
     pub max_width: Option<PixelSetting>,
+}
+
+/// The settings for the Kusto results grid.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoResultsSettingsContent {
+    /// The tint of a row whose `Level` or `Severity` column holds 1 (critical) to 5 (verbose).
+    /// A colour is a hex string such as "#f14c4c40", and an empty string leaves that level
+    /// without a tint.
+    pub severity_colors: Option<KustoSeverityColorsContent>,
+}
+
+/// One row tint for each severity level of a Kusto result.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoSeverityColorsContent {
+    /// Level 1.
+    pub critical: Option<String>,
+    /// Level 2.
+    pub error: Option<String>,
+    /// Level 3.
+    pub warning: Option<String>,
+    /// Level 4.
+    pub normal: Option<String>,
+    /// Level 5.
+    pub verbose: Option<String>,
 }
 
 /// The settings for the image viewer.

@@ -110,6 +110,18 @@
     // The unit for image file sizes: "binary" (KiB, MiB) or decimal (KB, MB)
     "unit": "binary",
   },
+  // Kusto results grid settings
+  "kusto_results": {
+    // The tint of a row by severity level, from a `Level` or `Severity` column holding 1 to 5.
+    // Hex colours with an opacity, or "" for no tint.
+    "severity_colors": {
+      "critical": "#f14c4c40",
+      "error": "#f4877133",
+      "warning": "#cca7002e",
+      "normal": "#89d1851f",
+      "verbose": "#75beff17",
+    },
+  },
   // Markdown preview settings
   "markdown_preview": {
     // The default font size for the markdown preview. Falls back to the UI font size if unset.

@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use editor::{Editor, EditorEvent};
 use gpui::{
     Anchor, AnyElement, Bounds, ClickEvent, ClipboardItem, Context, DefiniteLength, DismissEvent,
-    DragMoveEvent, Empty, Entity, EventEmitter, FocusHandle, Focusable, Hsla, Length, Modifiers,
+    DragMoveEvent, Empty, Entity, EventEmitter, FocusHandle, Focusable, Length, Modifiers,
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, ScrollStrategy,
-    SharedString, Subscription, Task, Window, actions, anchored, canvas, deferred, div, px, rgba,
+    SharedString, Subscription, Task, Window, actions, anchored, canvas, deferred, div, px,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::export::{copy_text, datatable, html, markdown};
@@ -26,7 +26,9 @@ use ui::{
 };
 
 use crate::filter_popover::{FilterChanged, FilterPopover};
+use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::ActiveSelection;
+use settings::Settings as _;
 
 actions!(
     result_grid,
@@ -65,18 +67,6 @@ actions!(
         ClearSelection,
     ]
 );
-
-/// The tint of a row by severity level 1 to 5: critical, error, warning, normal, verbose.
-fn severity_tint(level: u8) -> Hsla {
-    rgba(match level {
-        1 => 0xf14c4c40,
-        2 => 0xf4877133,
-        3 => 0xcca7002e,
-        4 => 0x89d1851f,
-        _ => 0x75beff17,
-    })
-    .into()
-}
 
 /// A first width for a column without a saved one: wide enough for its label and the start of
 /// its values, and never wider than 500 px.
@@ -1053,6 +1043,7 @@ impl ResultGrid {
         };
         let selected_color = cx.theme().colors().element_selected;
         let severity_column = severity_column(table);
+        let settings = ResultsSettings::get_global(cx).clone();
         let rows: Vec<Vec<AnyElement>> = range
             .filter_map(|display_row| {
                 let source_row = *self.visible_rows.get(display_row)?;
@@ -1063,7 +1054,7 @@ impl ResultGrid {
                     });
                 let tint = severity_column
                     .and_then(|column| severity_level(table.cell(source_row, column)))
-                    .map(severity_tint);
+                    .and_then(|level| settings.severity_tint(level));
                 elements.push(
                     div()
                         .size_full()
