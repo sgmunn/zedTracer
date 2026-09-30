@@ -9423,6 +9423,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kusto_results"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pretty_assertions",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kv-log-macro"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

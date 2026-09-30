@@ -688,6 +688,16 @@ def build_trace_edge():
         })
     roots_in_order = [a["name"] for a in expected_activities if a["parent"] is None]
 
+    def tree_depth(name):
+        depth = 0
+        while T.activities[name]["expectedParent"]:
+            name = T.activities[name]["expectedParent"]
+            depth += 1
+        return depth
+
+    deepest_depth = max(tree_depth(a["name"]) for a in expected_activities)
+    deepest_names = [a["name"] for a in expected_activities if tree_depth(a["name"]) == deepest_depth]
+
     def resolve(tag):
         return T.tags[tag]["row"]
 
@@ -704,8 +714,8 @@ def build_trace_edge():
         },
         "structured": {
             "rootsInFirstObservedOrder": roots_in_order,
-            "deepest": {"depth": 5, "activities": ["t1_c5", "t1_d5"],
-                        "note": "Deepest cycles between these two; depth counted from the root at 0"},
+            "deepest": {"depth": deepest_depth, "activities": deepest_names,
+                        "note": "Deepest cycles through these in first-seen order; depth counted from the root at 0"},
             "activities": expected_activities,
             "note": "Activities not listed here do not exist. For missingCurrentActivityId each row is "
                     "its own root and is labelled '(missing CurrentActivityId)'.",

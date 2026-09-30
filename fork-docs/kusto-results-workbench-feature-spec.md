@@ -196,7 +196,7 @@ Wireframe: W-3.
 | SRT-5d | P0 | **bool**: `false` before `true`. |
 | SRT-5e | P0 | **string, guid**: Unicode text, case-insensitive, with a case-sensitive tiebreak. VS Code additionally applies natural (numeric-aware) ordering, so `Step2` sorts before `Step10`, and ignores punctuation; Decided (Q-12): natural (numeric-aware) ordering, case-insensitive, punctuation not ignored. |
 | SRT-5f | P0 | **dynamic**: by its compact JSON text, as a string. |
-| SRT-6 | P0 | Nulls sort as the smallest value: first when ascending, last when descending. This matches Kusto's own `order by` default. Values that cannot be parsed for their column type sort after all parseable values and keep source order among themselves. |
+| SRT-6 | P0 | Nulls sort as the smallest value: first when ascending, last when descending. This matches Kusto's own `order by` default. Values that cannot be parsed for their column type sort after all parseable values, in both directions, and keep source order among themselves. |
 | SRT-7 | P0 | Sorting does not change search or filters; it applies to the searched, filtered rows. |
 | SRT-8 | P0 | Sorting a 500k-row table must not freeze the window (GRD-9). |
 | SRT-9 | P2 | Multi-column sort by Shift+click adding secondary keys. Not in VS Code. |
