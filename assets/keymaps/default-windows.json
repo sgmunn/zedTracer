@@ -1740,4 +1740,16 @@
       "space": "activity_tree::Activate",
     },
   },
+  {
+    "context": "StructuredSplitter",
+    "use_key_equivalents": true,
+    "bindings": {
+      "left": "structured_splitter::MoveLeft",
+      "right": "structured_splitter::MoveRight",
+      "shift-left": "structured_splitter::MoveLeftLarge",
+      "shift-right": "structured_splitter::MoveRightLarge",
+      "home": "structured_splitter::MoveToStart",
+      "end": "structured_splitter::MoveToEnd",
+    },
+  },
 ]
