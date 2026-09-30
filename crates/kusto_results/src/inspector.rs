@@ -446,6 +446,8 @@ pub struct InspectorDocument {
     /// Values that are null, shown as the word `null`.
     pub nulls: Vec<Range<usize>>,
     pub json_tokens: Vec<JsonToken>,
+    /// The values shown as JSON, which are set apart from plain values as code (JSN-2).
+    pub code_blocks: Vec<Range<usize>>,
 }
 
 impl InspectorDocument {
@@ -466,6 +468,7 @@ impl InspectorDocument {
             FieldValue::Text(text) => self.text.push_str(text),
             FieldValue::Json(text) => {
                 self.text.push_str(text);
+                self.code_blocks.push(start..self.text.len());
                 self.json_tokens
                     .extend(highlight_json(text).into_iter().map(|token| JsonToken {
                         range: token.range.start + start..token.range.end + start,
@@ -779,6 +782,7 @@ mod tests {
             ["Message · string", "Exception · dynamic", "Trace · string"]
         );
         assert_eq!(spans(&document.nulls), ["null"]);
+        assert_eq!(spans(&document.code_blocks), ["{\n  \"type\": \"Oops\"\n}"]);
         let tokens: Vec<(&str, JsonTokenKind)> = document
             .json_tokens
             .iter()

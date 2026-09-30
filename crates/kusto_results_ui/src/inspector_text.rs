@@ -30,12 +30,15 @@ fn token_key(kind: JsonTokenKind) -> HighlightKey {
 
 const HEADER_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(5);
 const NULL_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(6);
+pub(crate) const CODE_BACKGROUND_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(7);
 
 /// The colours an inspector document is drawn with.
 pub struct InspectorPalette {
     pub token: Box<dyn Fn(JsonTokenKind) -> Hsla>,
     pub header: Hsla,
     pub null: Hsla,
+    /// The background behind a value shown as JSON.
+    pub code_background: Hsla,
 }
 
 const TOKEN_KINDS: [JsonTokenKind; 5] = [
@@ -98,6 +101,7 @@ impl InspectorText {
             token: Box::new(colours),
             header: Hsla::default(),
             null: Hsla::default(),
+            code_background: Hsla::default(),
         };
         self.set_document(&document, &palette, window, cx);
     }
@@ -150,6 +154,14 @@ impl InspectorText {
                     font_weight: Some(FontWeight::SEMIBOLD),
                     ..Default::default()
                 },
+                cx,
+            );
+            let code_blocks = anchors(&mut document.code_blocks.iter());
+            let code_background = palette.code_background;
+            editor.highlight_background(
+                CODE_BACKGROUND_KEY,
+                &code_blocks,
+                move |_, _| code_background,
                 cx,
             );
             editor.highlight_text(
