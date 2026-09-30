@@ -8,12 +8,12 @@ use std::time::Duration;
 use anyhow::Context as _;
 use encoding_rs::Encoding;
 use gpui::{
-    App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, WeakEntity, Window, div,
+    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::{ResultSet, TableView};
+use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use text::LineEnding;
@@ -48,11 +48,42 @@ pub struct ResultsFile {
     project_path: ProjectPath,
     file_name: SharedString,
     result: Arc<ResultSet>,
+    /// Why there is nothing to show, for a file that is not a usable result.
+    problem: Option<&'static str>,
     /// How the file was stored, so that writing it back keeps its line endings and encoding.
     storage: Option<FileStorage>,
     save_delay: Option<Task<()>>,
     write_in_flight: Option<Task<()>>,
     changed_during_write: bool,
+    reload_task: Option<Task<()>>,
+    _watch: Subscription,
+}
+
+/// A viewer shows the file again when its content was changed from outside.
+pub enum ResultsFileEvent {
+    Reloaded,
+}
+
+impl EventEmitter<ResultsFileEvent> for ResultsFile {}
+
+/// Parses a result file, or says why it cannot be shown.
+async fn parse(
+    text: String,
+    file_name: &SharedString,
+    cx: &AsyncApp,
+) -> (ResultSet, Option<&'static str>) {
+    match cx
+        .background_spawn(async move { ResultSet::from_json(&text) })
+        .await
+    {
+        Ok(result) if result.tables.is_empty() => (result, Some(NO_RESULT_DATA)),
+        Ok(result) => (result, None),
+        Err(error) if error.is::<NoResultData>() => (ResultSet::default(), Some(NO_RESULT_DATA)),
+        Err(error) => {
+            log::warn!("{file_name} is not a result file: {error:#}");
+            (ResultSet::default(), Some(INVALID_RESULT_FILE))
+        }
+    }
 }
 
 struct FileStorage {
@@ -62,7 +93,21 @@ struct FileStorage {
     has_bom: bool,
 }
 
+impl FileStorage {
+    fn new(loaded: &worktree::LoadedFile, worktree: &Entity<Worktree>) -> Option<Self> {
+        loaded.is_writable.then(|| Self {
+            worktree: worktree.downgrade(),
+            line_ending: loaded.line_ending,
+            encoding: loaded.encoding,
+            has_bom: loaded.has_bom,
+        })
+    }
+}
+
 /// Layout changes are written after the user has stopped for this long.
+const INVALID_RESULT_FILE: &str = "Invalid result file.";
+const NO_RESULT_DATA: &str = "No result data found.";
+
 const SAVE_DELAY: Duration = Duration::from_millis(300);
 
 impl ResultsFile {
@@ -80,7 +125,57 @@ impl ResultsFile {
         }
         self.save_delay = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
-            this.update(cx, |this, cx| this.write(cx)).log_err();
+            this.update(cx, |this, cx| {
+                this.save_delay = None;
+                this.write(cx)
+            })
+            .log_err();
+        }));
+    }
+
+    /// Reads the file again after a change on disk. Our own writes come back through here too,
+    /// and are ignored because they hold what is already shown; so are changes that arrive
+    /// while a layout of ours is waiting to be written, which would otherwise undo it.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let Some(worktree) = self
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.worktree.upgrade())
+        else {
+            return;
+        };
+        let path = self.project_path.path.clone();
+        let file_name = self.file_name.clone();
+        let load = worktree.update(cx, |worktree, cx| worktree.load_file(&path, cx));
+        self.reload_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = match load.await {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    log::warn!("could not read {file_name} again: {error:#}");
+                    return;
+                }
+            };
+            let (result, problem) = parse(loaded.text.to_string(), &file_name, cx).await;
+            this.update(cx, |this, cx| {
+                if this.save_delay.is_some() || this.write_in_flight.is_some() {
+                    return;
+                }
+                if this.problem == problem && *this.result == result {
+                    return;
+                }
+                this.result = Arc::new(result);
+                this.problem = problem;
+                if let Some(worktree) = this
+                    .storage
+                    .as_ref()
+                    .map(|storage| storage.worktree.clone())
+                    && let Some(worktree) = worktree.upgrade()
+                {
+                    this.storage = FileStorage::new(&loaded, &worktree);
+                }
+                cx.emit(ResultsFileEvent::Reloaded);
+            })
+            .log_err();
         }));
     }
 
@@ -166,25 +261,30 @@ impl project::ProjectItem for ResultsFile {
         let load = worktree.update(cx, |worktree, cx| worktree.load_file(&path.path, cx));
         Some(cx.spawn(async move |cx| {
             let loaded = load.await.with_context(|| format!("reading {file_name}"))?;
-            let text = loaded.text.to_string();
-            let result = cx
-                .background_spawn(async move { ResultSet::from_json(&text) })
-                .await
-                .with_context(|| format!("parsing {file_name}"))?;
-            let storage = loaded.is_writable.then(|| FileStorage {
-                worktree: worktree.downgrade(),
-                line_ending: loaded.line_ending,
-                encoding: loaded.encoding,
-                has_bom: loaded.has_bom,
-            });
-            Ok(cx.new(|_| Self {
-                project_path,
-                file_name,
-                result: Arc::new(result),
-                storage,
-                save_delay: None,
-                write_in_flight: None,
-                changed_during_write: false,
+            let (result, problem) = parse(loaded.text.to_string(), &file_name, cx).await;
+            let storage = FileStorage::new(&loaded, &worktree);
+            Ok(cx.new(|cx| {
+                let watch = cx.subscribe(&worktree, |this: &mut Self, _, event, cx| {
+                    if let worktree::Event::UpdatedEntries(changes) = event
+                        && changes
+                            .iter()
+                            .any(|(path, _, _)| *path == this.project_path.path)
+                    {
+                        this.reload(cx);
+                    }
+                });
+                Self {
+                    project_path,
+                    file_name,
+                    result: Arc::new(result),
+                    problem,
+                    storage,
+                    save_delay: None,
+                    write_in_flight: None,
+                    changed_during_write: false,
+                    reload_task: None,
+                    _watch: watch,
+                }
             }))
         }))
     }
@@ -206,7 +306,9 @@ pub struct ResultsViewer {
     focus_handle: FocusHandle,
     results_file: Entity<ResultsFile>,
     grid: Option<Entity<ResultGrid>>,
+    problem: Option<&'static str>,
     _grid_subscription: Option<Subscription>,
+    _reload_subscription: Subscription,
 }
 
 impl EventEmitter<()> for ResultsViewer {}
@@ -251,10 +353,35 @@ impl WorkspaceProjectItem for ResultsViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let reload = cx.subscribe_in(
+            &item,
+            window,
+            |this, item, _: &ResultsFileEvent, window, cx| {
+                this.show(item, window, cx);
+                cx.notify();
+            },
+        );
+        let mut viewer = Self {
+            focus_handle: cx.focus_handle(),
+            results_file: item.clone(),
+            grid: None,
+            problem: None,
+            _grid_subscription: None,
+            _reload_subscription: reload,
+        };
+        viewer.show(&item, window, cx);
+        viewer
+    }
+}
+
+impl ResultsViewer {
+    /// Shows what the file holds now: a grid, or the reason there is none.
+    fn show(&mut self, item: &Entity<ResultsFile>, window: &mut Window, cx: &mut Context<Self>) {
         let result = item.read(cx).result.clone();
-        let grid = (!result.tables.is_empty())
+        self.problem = item.read(cx).problem;
+        self.grid = (self.problem.is_none() && !result.tables.is_empty())
             .then(|| cx.new(|cx| ResultGrid::new(result, 0, window, cx)));
-        let grid_subscription = grid.as_ref().map(|grid| {
+        self._grid_subscription = self.grid.as_ref().map(|grid| {
             cx.subscribe(grid, |this, _, event: &ResultGridEvent, cx| {
                 if let ResultGridEvent::LayoutChanged(layout) = event {
                     this.results_file
@@ -262,12 +389,6 @@ impl WorkspaceProjectItem for ResultsViewer {
                 }
             })
         });
-        Self {
-            focus_handle: cx.focus_handle(),
-            results_file: item,
-            grid,
-            _grid_subscription: grid_subscription,
-        }
     }
 }
 
@@ -277,7 +398,7 @@ impl Render for ResultsViewer {
             Some(grid) => div().size_full().child(grid.clone()),
             None => div()
                 .p_4()
-                .child(ui::Label::new("This file contains no tables.")),
+                .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
         div()
             .size_full()
@@ -337,6 +458,8 @@ mod tests {
                 "types.ktt": sample("synthetic-types.ktt").expect("fixture"),
                 "legacy.kqr": sample("synthetic-legacy.kqr").expect("fixture"),
                 "broken.ktt": "not json",
+                "no-tables.ktt": "{\"query\": \"q\"}",
+                "empty-tables.ktt": "{\"tables\": []}",
             }),
         )
         .await;
@@ -375,18 +498,36 @@ mod tests {
             );
         }
 
-        let broken = ProjectPath {
-            worktree_id,
-            path: RelPath::new(Path::new("broken.ktt"), util::paths::PathStyle::Unix)
-                .expect("relative path")
-                .into_arc(),
-        };
-        let opened = workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.open_path(broken, None, true, window, cx)
-            })
-            .await;
-        assert!(opened.is_err(), "a file that does not parse is not opened");
+        for (name, message) in [
+            ("broken.ktt", "Invalid result file."),
+            ("no-tables.ktt", "No result data found."),
+            ("empty-tables.ktt", "No result data found."),
+        ] {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            let item = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_path(path, None, true, window, cx)
+                })
+                .await
+                .expect(name);
+            let viewer = item
+                .downcast::<ResultsViewer>()
+                .unwrap_or_else(|| panic!("{name} opens in the results viewer"));
+            assert!(
+                viewer.read_with(cx, |viewer, _| viewer.grid.is_none()),
+                "{name}"
+            );
+            assert_eq!(
+                viewer.read_with(cx, |viewer, _| viewer.problem),
+                Some(message),
+                "{name}"
+            );
+        }
     }
 
     /// PER-4: a layout change made in an open result is written back, and nothing else in the
@@ -443,9 +584,18 @@ mod tests {
         grid.update(cx, |_, cx| {
             cx.emit(ResultGridEvent::LayoutChanged(layout.clone()))
         });
+        let grid_id = grid.entity_id();
         cx.executor().advance_clock(SAVE_DELAY * 2);
         cx.run_until_parked();
 
+        let still_shown = viewer.read_with(cx, |viewer, _| {
+            viewer.grid.as_ref().map(|grid| grid.entity_id())
+        });
+        assert_eq!(
+            still_shown,
+            Some(grid_id),
+            "the viewer's own write does not rebuild the grid"
+        );
         let written = fs
             .load(Path::new("/root/types.ktt"))
             .await
@@ -456,5 +606,78 @@ mod tests {
             .expect("the fixture parses");
         expected.set_table_view(layout);
         assert_eq!(reread, expected, "only the saved layout changed");
+    }
+
+    /// PER-4: an edit made outside Zed shows in the open tab.
+    #[gpui::test]
+    async fn an_outside_edit_reloads_the_open_file(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/root",
+            json!({ "types.ktt": sample("synthetic-types.ktt").expect("fixture") }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let path = ProjectPath {
+            worktree_id,
+            path: RelPath::new(Path::new("types.ktt"), util::paths::PathStyle::Unix)
+                .expect("relative path")
+                .into_arc(),
+        };
+        let item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("the file opens");
+        let viewer = item.downcast::<ResultsViewer>().expect("a results viewer");
+        let rows_shown = |cx: &mut gpui::VisualTestContext| {
+            viewer.read_with(cx, |viewer, cx| {
+                viewer
+                    .grid
+                    .as_ref()
+                    .map(|grid| grid.read(cx).visible_row_count())
+            })
+        };
+        let before = rows_shown(cx).expect("a grid");
+
+        let other = sample("synthetic-trace-edge.ktt").expect("fixture");
+        let other_rows = ResultSet::from_json(&other).expect("parses").tables[0]
+            .rows
+            .len();
+        assert_ne!(before, other_rows);
+        fs.insert_file("/root/types.ktt", other.into_bytes()).await;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(rows_shown(cx), Some(other_rows), "the new content shows");
+
+        fs.insert_file("/root/types.ktt", b"not json".to_vec())
+            .await;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(rows_shown(cx), None);
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.problem),
+            Some("Invalid result file.")
+        );
     }
 }
