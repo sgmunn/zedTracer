@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
     Anchor, AnyElement, ClipboardItem, Context, DefiniteLength, DragMoveEvent, Empty, Entity,
-    EventEmitter, Length, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
+    EventEmitter, Length, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
     SharedString, Task, Window, div, px,
 };
 use gpui_util::ResultExt as _;
@@ -14,7 +15,8 @@ use kusto_results::ResultSet;
 use kusto_results::export::copy_text;
 use kusto_results::filter::ColumnFilter;
 use kusto_results::view::{
-    CellSelection, SortColumn, SortDirection, ViewState, display_column_order, visible_rows,
+    CellSelection, SortColumn, SortDirection, ViewState, display_column_order, selected_positions,
+    toggle_row, visible_rows,
 };
 use ui::{
     ColumnWidthConfig, IconButton, IconName, IconSize, PopoverMenu, ResizableColumnsState, Table,
@@ -23,6 +25,19 @@ use ui::{
 
 use crate::filter_popover::{FilterChanged, FilterPopover};
 use crate::row_details_panel::ActiveSelection;
+
+/// `1234567` as `1,234,567`.
+fn group_digits(number: usize) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
 
 const GUTTER_WIDTH: Pixels = px(56.);
 const DEFAULT_COLUMN_WIDTH: Pixels = px(160.);
@@ -70,6 +85,8 @@ pub struct ResultGrid {
     column_order: Vec<usize>,
     visible_rows: Arc<Vec<usize>>,
     selection: Option<CellSelection>,
+    /// Rows selected besides the rectangle, by position in the visible rows.
+    added_rows: BTreeSet<usize>,
     dragging_selection: bool,
     interaction_state: Entity<TableInteractionState>,
     column_widths: Entity<ResizableColumnsState>,
@@ -121,6 +138,7 @@ impl ResultGrid {
             column_order,
             visible_rows: Arc::new((0..table_rows).collect()),
             selection: None,
+            added_rows: BTreeSet::new(),
             dragging_selection: false,
             interaction_state: cx.new(|cx| TableInteractionState::new(cx)),
             column_widths: cx
@@ -162,9 +180,33 @@ impl ResultGrid {
 
     /// The selected rows as source row indexes, in display order.
     pub fn selected_source_rows(&self) -> Vec<usize> {
-        self.selection
-            .map(|selection| selection.source_rows(&self.visible_rows))
-            .unwrap_or_default()
+        selected_positions(self.selection, &self.added_rows)
+            .into_iter()
+            .filter_map(|position| self.visible_rows.get(position).copied())
+            .collect()
+    }
+
+    /// The footer text: how many rows show out of how many there are, and what is selected.
+    pub fn status_text(&self) -> String {
+        let total = self
+            .result
+            .tables
+            .get(self.table_index)
+            .map_or(0, |table| table.rows.len());
+        let shown = self.visible_rows.len();
+        let mut parts = Vec::new();
+        parts.push(if shown == total {
+            format!("{} rows", group_digits(total))
+        } else {
+            format!("{} of {} rows", group_digits(shown), group_digits(total))
+        });
+        let selected = self.selected_source_rows();
+        match selected.as_slice() {
+            [] => {}
+            [row] => parts.push(format!("Row {} selected", group_digits(row + 1))),
+            rows => parts.push(format!("{} rows selected", group_digits(rows.len()))),
+        }
+        parts.join(" · ")
     }
 
     /// Current column widths, gutter first.
@@ -223,7 +265,7 @@ impl ResultGrid {
         };
         let (rows, columns) = match self.selection {
             Some(selection) => (
-                selection.source_rows(&self.visible_rows),
+                self.selected_source_rows(),
                 selection.source_columns(&self.column_order),
             ),
             None => (
@@ -288,10 +330,20 @@ impl ResultGrid {
     }
 
     fn set_selection(&mut self, selection: Option<CellSelection>, cx: &mut Context<Self>) {
-        if self.selection == selection {
+        self.set_selection_and_added_rows(selection, BTreeSet::new(), cx);
+    }
+
+    fn set_selection_and_added_rows(
+        &mut self,
+        selection: Option<CellSelection>,
+        added_rows: BTreeSet<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection == selection && self.added_rows == added_rows {
             return;
         }
         self.selection = selection;
+        self.added_rows = added_rows;
         let rows = self.selected_source_rows();
         let active = ActiveSelection::shared(cx);
         let result = self.result.clone();
@@ -310,15 +362,21 @@ impl ResultGrid {
         &mut self,
         row: usize,
         position: usize,
-        extend: bool,
+        modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) {
-        let selection = match self.selection {
-            Some(existing) if extend => existing.extended_to(row, position),
-            _ => CellSelection::cell(row, position),
+        if modifiers.secondary() {
+            self.select_row(row, modifiers, cx);
+            return;
+        }
+        let (selection, added_rows) = match self.selection {
+            Some(existing) if modifiers.shift => {
+                (existing.extended_to(row, position), self.added_rows.clone())
+            }
+            _ => (CellSelection::cell(row, position), BTreeSet::new()),
         };
         self.dragging_selection = true;
-        self.set_selection(Some(selection), cx);
+        self.set_selection_and_added_rows(Some(selection), added_rows, cx);
     }
 
     fn extend_selection(&mut self, row: usize, position: usize, cx: &mut Context<Self>) {
@@ -326,19 +384,31 @@ impl ResultGrid {
             return;
         }
         if let Some(selection) = self.selection {
-            self.set_selection(Some(selection.extended_to(row, position)), cx);
+            let added_rows = self.added_rows.clone();
+            self.set_selection_and_added_rows(
+                Some(selection.extended_to(row, position)),
+                added_rows,
+                cx,
+            );
         }
     }
 
-    fn select_row(&mut self, row: usize, extend: bool, cx: &mut Context<Self>) {
-        let last_column = self.column_order.len().saturating_sub(1);
-        let selection = match self.selection {
-            Some(existing) if extend => {
-                CellSelection::rows(existing.anchor.0, row, last_column + 1)
-            }
-            _ => CellSelection::rows(row, row, last_column + 1),
+    fn select_row(&mut self, row: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+        let column_count = self.column_order.len();
+        if modifiers.secondary() {
+            let (selection, added_rows) =
+                toggle_row(self.selection, &self.added_rows, row, column_count);
+            self.set_selection_and_added_rows(selection, added_rows, cx);
+            return;
+        }
+        let (selection, added_rows) = match self.selection {
+            Some(existing) if modifiers.shift => (
+                CellSelection::rows(existing.anchor.0, row, column_count),
+                self.added_rows.clone(),
+            ),
+            _ => (CellSelection::rows(row, row, column_count), BTreeSet::new()),
         };
-        self.set_selection(Some(selection), cx);
+        self.set_selection_and_added_rows(Some(selection), added_rows, cx);
     }
 
     fn end_drag(&mut self) {
@@ -515,7 +585,7 @@ impl ResultGrid {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                this.select_row(display_row, event.modifiers.shift, cx)
+                                this.select_row(display_row, event.modifiers, cx)
                             }),
                         )
                         .into_any_element(),
@@ -525,9 +595,10 @@ impl ResultGrid {
                         .cell(source_row, column)
                         .map(|cell| SharedString::from(cell.display_text().into_owned()))
                         .unwrap_or_default();
-                    let selected = self
-                        .selection
-                        .is_some_and(|selection| selection.contains(display_row, position));
+                    let selected = self.added_rows.contains(&display_row)
+                        || self
+                            .selection
+                            .is_some_and(|selection| selection.contains(display_row, position));
                     elements.push(
                         div()
                             .size_full()
@@ -537,12 +608,7 @@ impl ResultGrid {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    this.begin_selection(
-                                        display_row,
-                                        position,
-                                        event.modifiers.shift,
-                                        cx,
-                                    )
+                                    this.begin_selection(display_row, position, event.modifiers, cx)
                                 }),
                             )
                             .on_mouse_move(cx.listener(
@@ -572,7 +638,25 @@ impl Render for ResultGrid {
             headers.push(self.render_header(position, column, cx));
         }
         let row_count = self.visible_rows.len();
-        div()
+        let footer = h_flex()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
+            .child(
+                Label::new(self.status_text())
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .when(self.busy, |footer| {
+                footer.child(
+                    Label::new("Working…")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+            });
+        v_flex()
             .size_full()
             .on_mouse_up(
                 MouseButton::Left,
@@ -595,24 +679,27 @@ impl Render for ResultGrid {
                 }),
             )
             .child(
-                Table::new(column_count)
-                    .interactable(&self.interaction_state)
-                    .width_config(ColumnWidthConfig::Resizable(self.column_widths.clone()))
-                    .header(headers)
-                    .pin_cols(1)
-                    .uniform_list(
-                        "result-grid-rows",
-                        row_count,
-                        cx.processor(
-                            |this: &mut ResultGrid,
-                             range: Range<usize>,
-                             _window: &mut Window,
-                             cx: &mut Context<ResultGrid>| {
-                                this.render_rows(range, cx)
-                            },
+                div().flex_1().min_h_0().child(
+                    Table::new(column_count)
+                        .interactable(&self.interaction_state)
+                        .width_config(ColumnWidthConfig::Resizable(self.column_widths.clone()))
+                        .header(headers)
+                        .pin_cols(1)
+                        .uniform_list(
+                            "result-grid-rows",
+                            row_count,
+                            cx.processor(
+                                |this: &mut ResultGrid,
+                                 range: Range<usize>,
+                                 _window: &mut Window,
+                                 cx: &mut Context<ResultGrid>| {
+                                    this.render_rows(range, cx)
+                                },
+                            ),
                         ),
-                    ),
+                ),
             )
+            .child(footer)
     }
 }
 
@@ -1105,6 +1192,63 @@ mod tests {
         );
     }
 
+    /// SEL-11: Ctrl/Cmd+click on row numbers picks rows that are not next to each other, and
+    /// the footer says how many rows are shown and selected.
+    #[gpui::test]
+    async fn rows_that_are_apart_can_be_selected_together(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 4);
+        let published = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| ActiveSelection::shared(cx).read(cx).rows.clone())
+        };
+        let status = |cx: &mut VisualTestContext| grid.read_with(cx, |grid, _| grid.status_text());
+        assert_eq!(status(cx), "200 rows");
+
+        click(cx, "gutter-3", Modifiers::default());
+        assert_eq!(status(cx), "200 rows · Row 4 selected");
+        click(cx, "gutter-9", Modifiers::secondary_key());
+        click(cx, "gutter-6", Modifiers::secondary_key());
+        assert_eq!(published(cx), [3, 6, 9]);
+        assert_eq!(status(cx), "200 rows · 3 rows selected");
+
+        click(cx, "gutter-6", Modifiers::secondary_key());
+        assert_eq!(published(cx), [3, 9]);
+
+        grid.update(cx, |grid, cx| grid.copy_selection(cx));
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        assert_eq!(
+            copied.lines().count(),
+            3,
+            "a header line and the two picked rows"
+        );
+
+        click(cx, "cell-12-1", Modifiers::secondary_key());
+        assert_eq!(published(cx), [3, 9, 12], "a cell click picks its row too");
+
+        click(cx, "gutter-2", Modifiers::default());
+        assert_eq!(published(cx), [2], "a plain click starts over");
+    }
+
+    #[test]
+    fn numbers_are_grouped_in_thousands() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1_000), "1,000");
+        assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
+
+    /// S6: a grid publishes its selection to the shared state the Row Details panel follows.
+    #[gpui::test]
+    async fn a_grid_publishes_its_selection_for_row_details(cx: &mut TestAppContext) {
+        let (_grid, cx) = open_grid(cx, 200, 6);
+        click(cx, "gutter-3", Modifiers::default());
+        click(cx, "gutter-5", Modifiers::shift());
+        let rows = cx.update(|_, cx| ActiveSelection::shared(cx).read(cx).rows.clone());
+        assert_eq!(rows, [3, 4, 5]);
+    }
+
     /// A sideways wheel moves the columns and leaves the rows where they are.
     #[gpui::test]
     async fn horizontal_wheel_scrolls_only_horizontally(cx: &mut TestAppContext) {
@@ -1148,16 +1292,6 @@ mod tests {
             horizontal_unchanged, horizontal_after,
             "and not the columns"
         );
-    }
-
-    /// S6: a grid publishes its selection to the shared state the Row Details panel follows.
-    #[gpui::test]
-    async fn a_grid_publishes_its_selection_for_row_details(cx: &mut TestAppContext) {
-        let (_grid, cx) = open_grid(cx, 200, 6);
-        click(cx, "gutter-3", Modifiers::default());
-        click(cx, "gutter-5", Modifiers::shift());
-        let rows = cx.update(|_, cx| ActiveSelection::shared(cx).read(cx).rows.clone());
-        assert_eq!(rows, [3, 4, 5]);
     }
 
     /// RDT-11: closing the grid that owns the inspector's subject empties the inspector.
