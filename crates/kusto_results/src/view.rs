@@ -5,7 +5,7 @@
 //! row keeps its identity through sorting and filtering.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::filter::ColumnFilter;
@@ -371,6 +371,44 @@ impl CellSelection {
     }
 }
 
+/// The positions of every selected row: those of the rectangle plus the separately added ones.
+pub fn selected_positions(
+    selection: Option<CellSelection>,
+    added_rows: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
+    let mut positions = added_rows.clone();
+    if let Some(selection) = selection {
+        let first = selection.anchor.0.min(selection.focus.0);
+        let last = selection.anchor.0.max(selection.focus.0);
+        positions.extend(first..=last);
+    }
+    positions
+}
+
+/// Adds a row to the selected rows, or removes it when it is already selected (Ctrl/Cmd+click
+/// on a row number).
+///
+/// Returns the rectangle that later shift-clicks extend and the rows selected besides it. An
+/// added row becomes the rectangle, so it is the anchor of a following shift-click.
+pub fn toggle_row(
+    selection: Option<CellSelection>,
+    added_rows: &BTreeSet<usize>,
+    row: usize,
+    column_count: usize,
+) -> (Option<CellSelection>, BTreeSet<usize>) {
+    let mut positions = selected_positions(selection, added_rows);
+    if positions.remove(&row) {
+        let Some(first) = positions.pop_first() else {
+            return (None, BTreeSet::new());
+        };
+        return (
+            Some(CellSelection::rows(first, first, column_count)),
+            positions,
+        );
+    }
+    (Some(CellSelection::rows(row, row, column_count)), positions)
+}
+
 /// The order columns are displayed in: the saved layout first, then any column it does not
 /// mention in its original order. Out-of-range and repeated entries are ignored.
 pub fn display_column_order(column_count: usize, layout: Option<&TableView>) -> Vec<usize> {
@@ -720,5 +758,38 @@ mod tests {
         };
         assert_eq!(display_column_order(4, Some(&layout)), [2, 0, 1, 3]);
         assert_eq!(display_column_order(3, None), [0, 1, 2]);
+    }
+
+    #[test]
+    fn ctrl_click_builds_a_set_of_rows_that_need_not_touch() {
+        let none = BTreeSet::new();
+        let (selection, added) = toggle_row(None, &none, 4, 3);
+        assert_eq!(selection, Some(CellSelection::rows(4, 4, 3)));
+        assert!(added.is_empty());
+
+        let (selection, added) = toggle_row(selection, &added, 9, 3);
+        assert_eq!(selection, Some(CellSelection::rows(9, 9, 3)));
+        assert_eq!(added, BTreeSet::from([4]));
+        assert_eq!(
+            selected_positions(selection, &added),
+            BTreeSet::from([4, 9])
+        );
+
+        let (selection, added) = toggle_row(selection, &added, 4, 3);
+        assert_eq!(selection, Some(CellSelection::rows(9, 9, 3)));
+        assert!(added.is_empty());
+
+        let (selection, added) = toggle_row(selection, &added, 9, 3);
+        assert_eq!((selection, added), (None, BTreeSet::new()));
+    }
+
+    #[test]
+    fn ctrl_click_inside_a_range_splits_it() {
+        let range = Some(CellSelection::rows(2, 5, 3));
+        let (selection, added) = toggle_row(range, &BTreeSet::new(), 3, 3);
+        assert_eq!(
+            selected_positions(selection, &added),
+            BTreeSet::from([2, 4, 5])
+        );
     }
 }
