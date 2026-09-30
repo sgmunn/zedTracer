@@ -1253,6 +1253,13 @@ impl RenderOnce for Table {
                             )
                             .size_full()
                             .flex_grow_1()
+                            .map(|mut list| {
+                                // Without this a sideways wheel also scrolls the rows, because a
+                                // list that only scrolls vertically turns horizontal deltas into
+                                // vertical ones. The rows' own horizontal sections take them.
+                                list.style().restrict_scroll_to_axis = Some(true);
+                                list
+                            })
                             .with_sizing_behavior(ListSizingBehavior::Auto)
                             .with_horizontal_sizing_behavior(horizontal_sizing)
                             .when_some(
