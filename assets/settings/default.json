@@ -115,6 +115,8 @@
   },
   // Kusto results grid settings
   "kusto_results": {
+    // Where the Row Details panel docks: "left" or "right"
+    "dock": "right",
     // The tint of a row by severity level, from a `Level` or `Severity` column holding 1 to 5.
     // Hex colours with an opacity, or "" for no tint.
     "severity_colors": {

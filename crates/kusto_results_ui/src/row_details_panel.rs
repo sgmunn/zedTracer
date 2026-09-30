@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use editor::Editor;
 use editor::actions::Cancel;
+use fs::Fs;
 use gpui::{
     App, AppContext as _, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle,
     Focusable, Global, Hsla, Pixels, Subscription, WeakEntity, Window, actions, px,
@@ -13,8 +14,11 @@ use kusto_results::ResultSet;
 use kusto_results::inspector::{
     InspectorDocument, InspectorSubject, JsonTokenKind, build_document, resolve_subject,
 };
+use settings::{DockSide, Settings as _};
 use ui::{Button, ButtonCommon, ButtonSize, Clickable, IconName, Label, prelude::*};
 use workspace::Workspace;
+
+use crate::results_settings::ResultsSettings;
 
 use crate::inspector_text::{InspectorPalette, InspectorText};
 use workspace::dock::{DockPosition, Panel, PanelEvent};
@@ -91,6 +95,7 @@ impl ActiveSelection {
 
 pub struct RowDetailsPanel {
     focus_handle: FocusHandle,
+    fs: Arc<dyn Fs>,
     selection: Entity<ActiveSelection>,
     inspector: Entity<InspectorText>,
     find_editor: Entity<Editor>,
@@ -106,12 +111,13 @@ impl RowDetailsPanel {
         workspace: WeakEntity<Workspace>,
         mut cx: AsyncWindowContext,
     ) -> anyhow::Result<Entity<Self>> {
-        workspace.update_in(&mut cx, |_workspace, window, cx| {
-            cx.new(|cx| Self::new(window, cx))
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            let fs = workspace.app_state().fs.clone();
+            cx.new(|cx| Self::new(fs, window, cx))
         })
     }
 
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(fs: Arc<dyn Fs>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let selection = ActiveSelection::shared(cx);
         let inspector = cx.new(|cx| InspectorText::new(window, cx));
         let find_editor = cx.new(|cx| {
@@ -131,6 +137,7 @@ impl RowDetailsPanel {
         ];
         let mut panel = Self {
             focus_handle: cx.focus_handle(),
+            fs,
             selection,
             inspector,
             find_editor,
@@ -268,15 +275,26 @@ impl Panel for RowDetailsPanel {
         "RowDetailsPanel"
     }
 
-    fn position(&self, _: &Window, _: &App) -> DockPosition {
-        DockPosition::Right
+    fn position(&self, _: &Window, cx: &App) -> DockPosition {
+        match ResultsSettings::get_global(cx).dock {
+            DockSide::Left => DockPosition::Left,
+            DockSide::Right => DockPosition::Right,
+        }
     }
 
     fn position_is_valid(&self, position: DockPosition) -> bool {
         matches!(position, DockPosition::Left | DockPosition::Right)
     }
 
-    fn set_position(&mut self, _: DockPosition, _: &mut Window, _: &mut Context<Self>) {}
+    fn set_position(&mut self, position: DockPosition, _: &mut Window, cx: &mut Context<Self>) {
+        settings::update_settings_file(self.fs.clone(), cx, move |settings, _| {
+            let dock = match position {
+                DockPosition::Left | DockPosition::Bottom => DockSide::Left,
+                DockPosition::Right => DockSide::Right,
+            };
+            settings.kusto_results.get_or_insert_default().dock = Some(dock);
+        });
+    }
 
     fn default_size(&self, _: &Window, _: &App) -> Pixels {
         px(360.)
@@ -418,7 +436,11 @@ mod tests {
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
 
-        let details = cx.update(|window, cx| cx.new(|cx| RowDetailsPanel::new(window, cx)));
+        let details = cx.update(|window, cx| {
+            cx.new(|cx| {
+                RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+            })
+        });
         let window_cx = cx.update(|window, cx| window.to_async(cx));
         let investigation = InvestigationPanel::load(workspace.downgrade(), window_cx)
             .await
@@ -530,7 +552,9 @@ mod tests {
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);
         });
-        let (panel, cx) = cx.add_window_view(|window, cx| RowDetailsPanel::new(window, cx));
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+        });
         cx.simulate_resize(gpui::size(px(360.), px(600.)));
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         let shown_text = |cx: &mut gpui::VisualTestContext| {
@@ -596,5 +620,36 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(shown_text(cx), "");
+    }
+
+    /// RDT-10: the panel docks where the `kusto_results.dock` setting says, on either side.
+    #[gpui::test]
+    async fn the_panel_docks_on_the_side_the_setting_names(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+        });
+        let position = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| panel.read(cx).position(window, cx))
+        };
+        assert_eq!(position(cx), DockPosition::Right, "the default");
+        assert!(panel.read_with(cx, |panel, _| {
+            panel.position_is_valid(DockPosition::Left)
+                && panel.position_is_valid(DockPosition::Right)
+                && !panel.position_is_valid(DockPosition::Bottom)
+        }));
+
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(r#"{ "kusto_results": { "dock": "left" } }"#, cx)
+                    .expect("the user settings parse");
+            });
+        });
+        assert_eq!(position(cx), DockPosition::Left);
     }
 }
