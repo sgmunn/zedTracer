@@ -22,7 +22,8 @@ use kusto_results::view::{
 use kusto_results::{ColumnLayout, ResultSet, TableView};
 use ui::{
     Button, ColumnWidthConfig, ContextMenu, IconButton, IconName, IconSize, PopoverMenu,
-    ResizableColumnsState, Table, TableInteractionState, TableResizeBehavior, prelude::*,
+    ResizableColumnsState, SpinnerLabel, Table, TableInteractionState, TableResizeBehavior,
+    prelude::*,
 };
 
 use crate::filter_popover::{FilterChanged, FilterPopover};
@@ -91,6 +92,8 @@ fn content_width(table: &kusto_results::Table, column: usize) -> Pixels {
     px((characters * CHARACTER_WIDTH + HEADER_CHROME).clamp(96., 500.))
 }
 
+/// Work that is still running after this long shows a busy indicator (GRD-9).
+const BUSY_INDICATOR_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 /// How often a drag held beyond the top or bottom edge scrolls and extends the selection.
 const AUTO_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// The header sits above the rows inside the table's bounds.
@@ -161,6 +164,10 @@ pub struct ResultGrid {
     /// Bumped on every change to the view state; work for an older number is abandoned.
     generation: Arc<AtomicU64>,
     busy: bool,
+    /// What the busy work is, for the indicator once it has run long enough to show.
+    busy_action: &'static str,
+    show_busy_indicator: bool,
+    busy_indicator_task: Option<Task<()>>,
     recompute_task: Option<Task<()>>,
     /// How many rows the last frame built, to show that only visible rows are created.
     last_rendered_rows: Cell<usize>,
@@ -259,6 +266,9 @@ impl ResultGrid {
                 .new(|_| ResizableColumnsState::new(column_count + 1, widths, behavior)),
             generation: Arc::new(AtomicU64::new(0)),
             busy: false,
+            busy_action: "Working on",
+            show_busy_indicator: false,
+            busy_indicator_task: None,
             recompute_task: None,
             last_rendered_rows: Cell::new(0),
             focus_handle: cx.focus_handle(),
@@ -289,6 +299,11 @@ impl ResultGrid {
 
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// Whether the busy indicator shows: work that has run for 250 ms and is not done.
+    pub fn shows_busy_indicator(&self) -> bool {
+        self.busy && self.show_busy_indicator
     }
 
     pub fn view_state(&self) -> &ViewState {
@@ -356,12 +371,12 @@ impl ResultGrid {
     /// A click on a column header: ascending, then descending, then the original order.
     pub fn click_sort(&mut self, column: usize, cx: &mut Context<Self>) {
         self.view_state.sort = self.view_state.sort.after_click(SortColumn::Column(column));
-        self.recompute(cx);
+        self.recompute("Sorting", cx);
     }
 
     pub fn set_search(&mut self, search: String, cx: &mut Context<Self>) {
         self.view_state.search = search;
-        self.recompute(cx);
+        self.recompute("Searching", cx);
     }
 
     /// Sets or removes the filter on a column, leaving the other columns' filters alone.
@@ -379,7 +394,7 @@ impl ResultGrid {
                 self.view_state.filters.remove(&column);
             }
         }
-        self.recompute(cx);
+        self.recompute("Filtering", cx);
     }
 
     /// Copies the selection, or the whole table when nothing is selected, as tab-separated
@@ -670,12 +685,12 @@ impl ResultGrid {
     /// A click on the corner cell: ascending, then descending, then the original order.
     pub fn click_sort_row_number(&mut self, cx: &mut Context<Self>) {
         self.view_state.sort = self.view_state.sort.after_click(SortColumn::RowNumber);
-        self.recompute(cx);
+        self.recompute("Sorting", cx);
     }
 
     pub fn clear_filters(&mut self, cx: &mut Context<Self>) {
         self.view_state.clear_filters();
-        self.recompute(cx);
+        self.recompute("Filtering", cx);
     }
 
     fn deploy_context_menu(
@@ -864,9 +879,27 @@ impl ResultGrid {
         }
     }
 
-    fn recompute(&mut self, cx: &mut Context<Self>) {
+    /// Shows the busy indicator if the work of this generation is still running after a
+    /// quarter of a second.
+    fn start_busy_indicator(&mut self, generation: u64, cx: &mut Context<Self>) {
+        self.busy_indicator_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BUSY_INDICATOR_DELAY).await;
+            this.update(cx, |this, cx| {
+                if this.busy && this.generation.load(Ordering::SeqCst) == generation {
+                    this.show_busy_indicator = true;
+                    cx.notify();
+                }
+            })
+            .log_err();
+        }));
+    }
+
+    fn recompute(&mut self, action: &'static str, cx: &mut Context<Self>) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.busy = true;
+        self.busy_action = action;
+        self.show_busy_indicator = false;
+        self.start_busy_indicator(generation, cx);
         cx.notify();
 
         let result = self.result.clone();
@@ -893,6 +926,8 @@ impl ResultGrid {
                     this.visible_rows = Arc::new(rows);
                 }
                 this.busy = false;
+                this.show_busy_indicator = false;
+                this.busy_indicator_task = None;
                 // The positions a selection referred to no longer exist.
                 this.set_selection(None, cx);
                 cx.notify();
@@ -1179,11 +1214,26 @@ impl Render for ResultGrid {
                     .size(LabelSize::Small)
                     .color(Color::Muted),
             )
-            .when(self.busy, |footer| {
+            .when(self.shows_busy_indicator(), |footer| {
+                let total = self
+                    .result
+                    .tables
+                    .get(self.table_index)
+                    .map_or(0, |table| table.rows.len());
+                let message = format!("{} {total} rows…", self.busy_action);
                 footer.child(
-                    Label::new("Working…")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
+                    h_flex()
+                        .id("result-busy-indicator")
+                        .debug_selector(|| "busy-indicator".to_string())
+                        .role(gpui::Role::ProgressIndicator)
+                        .aria_label(message.clone())
+                        .gap_1()
+                        .child(SpinnerLabel::new().size(LabelSize::Small))
+                        .child(
+                            Label::new(message)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
                 )
             });
         let no_rows_message = if self
@@ -2166,6 +2216,53 @@ mod tests {
         let handle = centre_of(cx, "gutter-resize");
         drag(cx, handle, px(-500.));
         assert_eq!(gutter(cx), MINIMUM_GUTTER_WIDTH);
+    }
+
+    /// GRD-9: work still running after 250 ms shows a busy indicator with the row count, and it
+    /// goes when the work is done. The work is held open by hand, because a test's background
+    /// work finishes the moment anything runs.
+    #[gpui::test]
+    async fn long_work_shows_a_busy_indicator_after_a_quarter_of_a_second(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 6);
+        grid.update(cx, |grid, cx| {
+            grid.busy = true;
+            grid.busy_action = "Sorting";
+            let generation = grid.generation.load(Ordering::SeqCst);
+            grid.start_busy_indicator(generation, cx);
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(!grid.read_with(cx, |grid, _| grid.shows_busy_indicator()));
+        assert!(cx.debug_bounds("busy-indicator").is_none());
+
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(grid.read_with(cx, |grid, _| grid.shows_busy_indicator()));
+        assert!(cx.debug_bounds("busy-indicator").is_some());
+
+        grid.update(cx, |grid, cx| grid.click_sort(2, cx));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(!grid.read_with(cx, |grid, _| grid.is_busy()));
+        assert!(
+            cx.debug_bounds("busy-indicator").is_none(),
+            "it goes with the work"
+        );
+
+        grid.update(cx, |grid, cx| grid.click_sort(1, cx));
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("busy-indicator").is_none(),
+            "quick work never shows it"
+        );
     }
 
     /// SEL-1, SEL-3 to SEL-5: clicking the only selected cell or row clears it, dragging on row
