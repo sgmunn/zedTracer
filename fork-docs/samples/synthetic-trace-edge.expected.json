@@ -67,10 +67,10 @@
     "deepest": {
       "depth": 5,
       "activities": [
-        "t1_c5",
-        "t1_d5"
+        "t1_d5",
+        "t1_c5"
       ],
-      "note": "Deepest cycles between these two; depth counted from the root at 0"
+      "note": "Deepest cycles through these in first-seen order; depth counted from the root at 0"
     },
     "activities": [
       {
