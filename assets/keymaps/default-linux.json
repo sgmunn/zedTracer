@@ -1698,6 +1698,7 @@
       "pageup": "result_grid::PageUp",
       "pagedown": "result_grid::PageDown",
       "ctrl-a": "result_grid::SelectAll",
+      "ctrl-f": "result_grid::ToggleSearch",
       "escape": "result_grid::ClearSelection",
     },
   },
