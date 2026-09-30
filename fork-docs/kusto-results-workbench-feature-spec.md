@@ -10,7 +10,7 @@ The KustoTraceTools VS Code extension (fork `dev/gregm` of `Kusto-Explorer-VsCod
 | --- | --- | --- |
 | Run lifecycle as it feeds results | Yes, minimal | Running, cancelling, error and empty states, result ownership. Execution itself is covered by the existing [zed-kusto-design.md](zed-kusto-design.md). |
 | Results panel and result tabs | Yes | Bottom results surface, table tabs, result summary, badge. |
-| Results grid | Yes | Typed grid, selection, search, paging, column layout, copy. |
+| Results grid | Yes | Typed grid, selection, search, column layout, copy. |
 | Sorting | Yes | Typed, three-state, restores result order. |
 | Column filtering | Yes | Type-aware, two conditions per column, combined with search. |
 | Severity highlighting | Yes | Row colour by `level` / `severity`. |
@@ -54,10 +54,10 @@ Every behaviour below labelled "VS Code today" was read from the fork's source, 
 | Result set | Everything one query run returned: one or more tables plus run metadata (query text, cluster, database, start time, duration, client request id, parameters). |
 | Table | One named table of a result set: ordered typed columns and rows. |
 | Source row index | The zero-based position of a row in its table as returned by the run. Never changes. Displayed to users as a one-based row number. |
-| View | The user-visible arrangement of a table after search, filters, sort and paging. The source data is never modified by a view. |
+| View | The user-visible arrangement of a table after search, filters, sort. The source data is never modified by a view. |
 | Selection | The cells, rows or columns the user has picked in the grid. |
 | Anchor cell | The cell where a selection started; shift+click and shift+arrow extend the selection from it. |
-| Visible position | A row or column's place in the grid as currently displayed (after search, filters, sort, paging and column reordering), as opposed to its source row index or original column index. |
+| Visible position | A row or column's place in the grid as currently displayed (after search, filters, sort and column reordering), as opposed to its source row index or original column index. |
 | Display order | The order rows are shown in: the result of search, filters and sort. |
 | Data column | A column of the result table; excludes the row-number gutter. |
 | Data tab | A results tab showing a table as a grid (as opposed to the Query tab or a structured tab). |
@@ -82,7 +82,7 @@ The user is an engineer investigating an incident from telemetry held in Azure D
 Run query ──► Results panel ──► Data tab ─────────────► Row Details inspector
                   │               (grid: search,              (find, wrap, JSON,
                   │                filters, sort,              multipart, exception
-                  │                paging, selection)          call stacks)
+                  │                selection)                  call stacks)
                   │
                   └────────────► Structured tab ──► activity tree + event grid
                                   (only when the table has activity columns)
@@ -138,9 +138,9 @@ The grid is a spreadsheet-like, read-only surface. It must remain smooth at the 
 | GRD-2 | P0 | A leading **row-number gutter** shows the one-based source row number for every row, and never changes with sort or filter. The gutter cell of the header is the **corner cell**. |
 | GRD-3 | P0 | Each cell shows the value as text on a single line, truncated with an ellipsis when wider than its column. The full value is always reachable (Row Details, tooltip, copy). |
 | GRD-4 | P0 | Value formatting: null renders as an empty cell; `true` and `false` render as words; numbers as given by the server; datetime as the ISO 8601 text the server sent; timespan in `[-][d.]hh:mm:ss[.fffffff]`; guid as text; dynamic values (objects and arrays) as compact single-line JSON. Text must never be interpreted as markup. |
-| GRD-5 | P0 | Paging: rows are shown a page at a time. Default page size 1000 (SET-3), selectable from 50, 100, 500, 1000, 5000 and the configured size. The pager and page-size selector appear only when the table has more rows than one page. |
-| GRD-6 | P0 | A footer states `Showing {start} to {end} of {rows} rows` and reflects the filtered and searched row count, not the source count. Two empty cases: a table with **no rows** shows the message `No results` (VS Code leaves the footer blank), and a search or filter that matches **nothing** shows `No results match your search query` (VS Code takes this text from its grid library). |
-| GRD-7 | P0 | Search, filters and sort operate on the complete table already retrieved, before paging. They never re-run the query or alter the KQL. Changing search, filters or sort returns to page 1. |
+| GRD-5 | Dropped | (Zed) No paging. The grid virtualises its rows, so it shows every row of the view and scrolls; cost does not depend on row count (architecture part 2, S1). See section 7, row 23. The page-size setting (SET-3) goes with it. |
+| GRD-6 | P0 | A footer states how many rows the view holds: `{rows} rows`, or `{shown} of {rows} rows` when search or filters hide some, then the selection (`Row N selected`, `K rows selected`). (VS Code: `Showing {start} to {end} of {rows} rows`.) Two empty cases: a table with **no rows** shows the message `No results` (VS Code leaves the footer blank), and a search or filter that matches **nothing** shows `No results match your search query` (VS Code takes this text from its grid library). |
+| GRD-7 | P0 | Search, filters and sort operate on the complete table already retrieved, They never re-run the query or alter the KQL. |
 | GRD-8 | P0 | The header stays visible while rows scroll vertically. |
 | GRD-9 | P0 | Loading feedback. VS Code shows a blocking overlay `Rendering N rows…` (structured grids: `Rendering N events…`) with a spinner, only while a grid of 1000 rows or more is first created; it fades out when the grid exists. Zed requirement: opening a table, sorting, filtering and searching that are still running 250 ms after the user's action must show a busy indicator carrying the row count being processed, and must expose a busy state to assistive technology. While the work runs the window must keep handling input (scroll, resize, switching tab) with no stall over 100 ms. A blocking overlay is allowed, a non-blocking indicator is preferred (W-9). Test: a 100k-row fixture sorted on a string column. |
 | GRD-10 | P0 | Column headers show a sort indicator (SRT-4) and a filter funnel (FLT-1). |
@@ -220,7 +220,7 @@ Wireframe: W-4.
 | FLT-7 | P0 | Dynamic and other structured values are filtered against their compact JSON text. |
 | FLT-8 | P0 | A condition takes effect once it is usable: it needs a value if its operator requires one. A column whose conditions are all unusable has no filter. Changes apply live, debounced by roughly 150 ms. |
 | FLT-9 | P0 | The grid toolbar shows a single **Clear all filters** action, visible only while at least one filter is active. |
-| FLT-10 | P0 | Filters are evaluated over the whole loaded table before paging (GRD-7) and combine with search (SRC-3) and with sort (SRT-7). |
+| FLT-10 | P0 | Filters are evaluated over the whole loaded table (GRD-7) and combine with search (SRC-3) and with sort (SRT-7). |
 | FLT-11 | P0 | Filter state is transient: it lasts for the open grid view and is not saved with a result. (VS Code decision; see Q-6 for whether to persist.) |
 | FLT-12 | P0 | In a structured view, filters apply within the events of the currently selected activity (ACT-6). |
 | FLT-13 | P2 | (Zed addition) A typed-value picker (calendar, distinct-value checklist). |
@@ -262,7 +262,7 @@ Wireframe: W-3.
 | --- | --- | --- |
 | SEV-1 | P0 | If a table has a column named `level` or `severity` (matched case-insensitively, after trimming), each row whose value in that column is the integer 1 to 5 is tinted across all its data cells: 1 critical, 2 error, 3 warning, 4 normal, 5 verbose. Values that are not integers 1 to 5 leave the row untinted. |
 | SEV-2 | P0 | The five colours are user-configurable (SET-4). An empty colour leaves that level in the theme's default row styling. Defaults are translucent tints (VS Code: critical `#f14c4c40`, error `#f4877133`, warning `#cca7002e`, normal `#89d1851f`, verbose `#75beff17`; the last two hex digits are opacity). |
-| SEV-3 | P0 | A row's severity tint follows the row through sort, filter and paging. Selection highlight and hover take precedence over the tint. |
+| SEV-3 | P0 | A row's severity tint follows the row through sort and filter. Selection highlight and hover take precedence over the tint. |
 | SEV-4 | P0 | The gutter cell is not tinted. |
 | SEV-5 | P1 | The same palette drives the structured view's tree colours (ACT-9), so one setting changes both. |
 
@@ -395,7 +395,7 @@ Wireframe: W-12. Zed setting names are not fixed here; the behaviours are.
 | --- | --- | --- | --- | --- |
 | SET-1 | P1 | Results location | panel | `panel` (bottom dock), `beside` (editor tab beside the query), `main` (editor tab in the main area). |
 | SET-2 | P1 | Editor result mode | new tab | With `beside` or `main`: `new tab` opens each completed run in its own history-backed tab; `reuse` replaces one shared tab. |
-| SET-3 | P0 | Page size | 1000 | Rows per page, minimum 1. Invalid values fall back to 1000. |
+| SET-3 | Dropped | Page size | | Went with paging (GRD-5). |
 | SET-4 | P0 | Severity colours | see SEV-2 | Five colours, critical to verbose. Empty means theme default. |
 | SET-5 | P1 | Call stack noise list | built-in list (EXC-5) | Extra frame prefixes to hide (EXC-9). |
 
@@ -557,6 +557,7 @@ Every deliberate difference in one place. "Fix" means Zed does not reproduce the
 | 20 | The inspector keeps showing old rows after a new run or a closed result; find text and scroll are lost on any re-render. | Clear on replace or close, keep find text (RDT-11, RDT-12). | Addition | Stale data in the inspector is misleading. |
 | 21 | Hiding the search box keeps the query active invisibly. | Clear it or show an indicator (SRC-7). | Fix | Rows vanish for no visible reason. |
 | 22 | Numeric and structural fidelity relies on a JavaScript parse: `long` above 2^53 loses precision, and dynamic values are re-serialised. | Exact values (NFR-9). | Fix | Data fidelity is a stated principle. |
+| 23 | The grid pages its rows, 1000 at a time by default. | No paging: one scrolling list of every row in the view (GRD-5). | Change | The grid virtualises, so paging adds a pager, a page-size setting and selections that cannot cross pages, and saves no work. Measured: 200,000 rows by 20 columns builds about 32 rows per frame. |
 
 ## 8. Questions and decisions
 

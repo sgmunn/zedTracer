@@ -6,7 +6,6 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
 
 use crate::filter::ColumnFilter;
 use crate::result::{Cell, ColumnKind, Table, TableView};
@@ -268,28 +267,6 @@ pub fn severity_level(cell: Option<&Cell>) -> Option<SeverityLevel> {
     let text = cell?.display_text();
     let value: f64 = text.trim().parse().ok()?;
     (value.fract() == 0.0 && (1.0..=5.0).contains(&value)).then_some(value as SeverityLevel)
-}
-
-/// The rows of one page, as positions in the visible list. The last page may be short, and a
-/// page past the end is empty.
-pub fn page_range(total_rows: usize, page_size: usize, page_index: usize) -> Range<usize> {
-    let page_size = page_size.max(1);
-    let start = page_index.saturating_mul(page_size).min(total_rows);
-    start..start.saturating_add(page_size).min(total_rows)
-}
-
-/// The footer text, for example `Showing 1 to 1000 of 1240 rows`.
-pub fn showing_label(page: &Range<usize>, total_rows: usize) -> String {
-    let first = if page.is_empty() { 0 } else { page.start + 1 };
-    format!("Showing {first} to {} of {total_rows} rows", page.end)
-}
-
-/// Page sizes the selector offers: the usual sizes plus the configured one.
-pub fn page_size_options(configured: usize) -> Vec<usize> {
-    let mut sizes = vec![50, 100, 500, 1000, 5000, configured.max(1)];
-    sizes.sort_unstable();
-    sizes.dedup();
-    sizes
 }
 
 /// A rectangle of cells, in positions within the visible rows and the displayed columns.
@@ -682,20 +659,6 @@ mod tests {
             visible_rows(&table, &ViewState::default(), None, &|| false),
             None
         );
-    }
-
-    #[test]
-    fn paging_reports_ranges_and_labels() {
-        assert_eq!(page_range(1240, 1000, 0), 0..1000);
-        assert_eq!(page_range(1240, 1000, 1), 1000..1240);
-        assert_eq!(page_range(1240, 1000, 5), 1240..1240);
-        assert_eq!(
-            showing_label(&(1000..1240), 1240),
-            "Showing 1001 to 1240 of 1240 rows"
-        );
-        assert_eq!(showing_label(&(0..0), 0), "Showing 0 to 0 of 0 rows");
-        assert_eq!(page_size_options(250), [50, 100, 250, 500, 1000, 5000]);
-        assert_eq!(page_size_options(1000), [50, 100, 500, 1000, 5000]);
     }
 
     #[test]
