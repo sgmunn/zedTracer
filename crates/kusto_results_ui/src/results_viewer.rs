@@ -248,11 +248,12 @@ impl WorkspaceProjectItem for ResultsViewer {
         _: Entity<Project>,
         _: Option<&Pane>,
         item: Entity<Self::Item>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let result = item.read(cx).result.clone();
-        let grid = (!result.tables.is_empty()).then(|| cx.new(|cx| ResultGrid::new(result, 0, cx)));
+        let grid = (!result.tables.is_empty())
+            .then(|| cx.new(|cx| ResultGrid::new(result, 0, window, cx)));
         let grid_subscription = grid.as_ref().map(|grid| {
             cx.subscribe(grid, |this, _, event: &ResultGridEvent, cx| {
                 if let ResultGridEvent::LayoutChanged(layout) = event {

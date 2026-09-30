@@ -1787,4 +1787,11 @@
       "cmd-f": "row_details::FocusFind",
     },
   },
+  {
+    "context": "ResultGrid",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-c": "result_grid::Copy",
+    },
+  },
 ]

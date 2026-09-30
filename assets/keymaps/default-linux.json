@@ -1692,4 +1692,10 @@
       "ctrl-f": "row_details::FocusFind",
     },
   },
+  {
+    "context": "ResultGrid",
+    "bindings": {
+      "ctrl-c": "result_grid::Copy",
+    },
+  },
 ]
