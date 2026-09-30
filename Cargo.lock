@@ -9611,6 +9611,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "util",
  "workspace",
 ]
 
@@ -22919,6 +22920,7 @@ dependencies = [
  "journal",
  "json_schema_store",
  "keymap_editor",
+ "kusto_results_ui",
  "language",
  "language_extension",
  "language_model",
