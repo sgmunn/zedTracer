@@ -54,7 +54,7 @@ The upstream extension (authored mostly by Matt Warren, per `git log`) supplies 
 | Exception call-stack formatting | "Improve exception details formatting" |
 | JSON formatting and highlighting in details | "Format JSON values in row details", "Highlight JSON in row details" |
 | Typed column filters | "Add typed results grid column filters", "Fix results grid column filtering" |
-| Three-state column sort, numeric sort fix | "Add three-state result column sorting", "Fix boolean representation and numeric sorting" |
+| Three-state column sort | "Add three-state result column sorting" (typed numeric and boolean sort came from upstream) |
 | Severity row colours | "Add configurable severity row highlighting" |
 | Structured activity view and severity colouring | "Add activity hierarchy projection", "Add structured activity results view", "Color structured activity nodes by own event severity" |
 | Large-result loading overlay, page size, gutter resize | "Show loading state for large result grids", "Add configurable results grid page size", "Make results row gutter resizable" |
@@ -67,7 +67,7 @@ The upstream extension (authored mostly by Matt Warren, per `git log`) supplies 
 Take:
 
 - **A narrow boundary around the grid.** The fork put all of its grid work behind a small provider interface (create a grid from a table plus saved view state, report the selected source rows, support copy, report column layout, release handlers). Everything that shows results, live or saved, goes through it. The Zed design keeps the same idea: one results component, reused by the panel, editor tabs and saved files.
-- **Pure, testable transformation layers.** The activity projection, filter matching, call-stack formatting and multipart assembly are all plain data-in, data-out logic covered by unit tests. They should stay independent of the drawing surface in Zed too.
+- **Pure, testable transformation layers.** The activity projection, filter matching, call-stack formatting and multipart assembly are all plain data-in, data-out logic. The first three have unit tests in the VS Code fork; multipart assembly and sort comparators have none, so their vectors in the spec are new. They should stay independent of the drawing surface in Zed too.
 - **Display-only rules.** Nothing formatted for display is ever written back.
 - **Conservative behaviours.** Multipart assembly, orphan/cycle handling and "never erase a stack" all choose to show more rather than guess.
 
@@ -75,7 +75,7 @@ Avoid:
 
 - Grid behaviours added as strings of script injected into a page. It leads to the quirks listed in spec section 7 (three-state sort as a workaround, selection state duplicated across layers, cross-tab handlers).
 - A selection model tied to display positions and cleared on every sort, which forces users to re-select and hides the source-row identity that the inspector needs.
-- Implicit or unverified semantics (multi-word search, copy order, timezone of filter values). The spec fixes each of these.
+- Implicit or accidental semantics: multi-word search (OR, with punctuation stripped from the search term), copy scope, timezone and precision of filter values, page-bounded column selection, stale selection after paging or filtering. The spec fixes each of these and lists them in its section 7.
 - Coupling structured view availability to where a result is displayed.
 
 ## 3. Where Zed stands today
@@ -86,10 +86,11 @@ State of the fork at commit `0ee22839ac` (`feature/kusto-syntax-spike`), functio
 | --- | --- | --- |
 | `extensions/kusto` | Dev extension: `.kql` highlighting (tree-sitter), a local .NET language server for completion, hover and syntax diagnostics, and offline schema completion from `.kusto-schema.json`. No cluster access, no execution. | Authoring is progressing independently. No results exist yet. |
 | `crates/investigation` | Prototype: an `InvestigationPanel` in the right dock and a custom viewer for `.trace` files. Both display **static sample data**, not parsed content. | Proves that a panel and a custom workspace item can be registered. It is not a results surface. |
-| `ui` data table component | An existing generic table with resizable columns, pinned columns, striped rows, virtualised rows, and hover behaviour. From its public surface I found no support for typed columns, sort, filter, cell-range selection, header actions or column reordering; this has not been confirmed by using it. | A candidate foundation, to be measured against spec NFR-1 before adoption. The existing design doc already asks for this check. |
+| `crates/tabular_data_preview` | Upstream CSV, TSV and JSON Lines preview built on the `ui` table. It separates data rows from display rows, has per-column sort (string comparison of the displayed text, with a TODO for nulls, so numbers sort as text), per-column distinct-value checklist filters in a popover with a picker, a choice of source line numbers or sequential row numbers as row identifiers, right-click copy of a cell, and a performance overlay. No typed values, no selection, no inspector. | The closest existing foundation for the header, popover and row-identity questions, and its text-only sort probably explains the reversed-CSV observation in `zed-kusto-design.md`. Adopt-or-build is an early decision (spec Q-14). |
+| `ui` data table component | An existing generic table with resizable columns, pinned columns, striped rows, virtualised rows, and hover behaviour. It also offers a column visibility mask, a variable-row-height mode and an empty-table callback. From its public surface it has no support for typed columns, sort, filter, cell-range selection, header actions or column reordering; that has not been confirmed by using it. | A candidate foundation, to be measured against spec NFR-1 before adoption. The existing design doc already asks for this check. |
 | Query execution | Not built. | Results must first be fed from files. |
 
-The most valuable enabler is a data source that already exists: **real `.ktt` files** produced by the VS Code fork. They contain real traces, real exception JSON and real multipart rows. Opening `.ktt` in a native viewer needs no execution transport, so results, sorting, filtering, the inspector and the structured view can all be built and verified before the .NET execution service exists. That also makes the compatibility requirement (PER-2) a day-one test instead of a later migration concern.
+The most valuable enabler is a data source that can exist right away: **real `.ktt` files** produced by the VS Code fork (the VS Code repo itself has only one small synthetic `.kqr`). Two real captures are kept locally, git-ignored, in `fork-docs/samples/`, and committable synthetic fixtures cover the cases they lack: every column type, hierarchy anomalies, multipart and call-stack cases, and a generated 200,000-row scale file. Each fixture has an expected-results file. See `fork-docs/samples/README.md`. Opening `.ktt` in a native viewer needs no execution transport, so results, sorting, filtering, the inspector and the structured view can all be built and verified before the .NET execution service exists. That also makes the compatibility requirement (PER-2) a day-one test instead of a later migration concern.
 
 ### 3.1 Capabilities to verify in Zed before committing
 
@@ -104,7 +105,7 @@ These decide how much can be reused versus built. Each is a small spike with a y
 | Selectable, searchable, highlightable long text with mixed colours and wrapping | RDT-5, RDT-6, JSN-3 | Can text be selected, copied, wrapped or not, and highlighted across coloured runs? |
 | Tree with expand, collapse, keyboard and tinted nodes | ACT-7..11 | Reuse the existing tree list, or extend? |
 | Draggable and keyboard-operable splitter | ACT-12 | Available? |
-| Rich clipboard (HTML plus text) on all three platforms | CPY-1, CPY-5 | Does the clipboard API support multiple formats? |
+| Rich clipboard (HTML plus text) | CPY-11 | No. The clipboard model has only text, image and file entries, with no HTML entry. Text-only copy is P0; rich HTML needs platform work (P1). |
 | Placement of a new right-dock panel next to the existing Investigation panel | RDT | Do two panels coexist in the right dock? |
 
 ## 4. Conceptual model
@@ -142,7 +143,7 @@ The order matters and is fixed by the spec:
 
 1. Start with all source rows of the table.
 2. Structured view only: keep the events of the selected activity.
-3. Apply search (all terms must appear in some cell of the row).
+3. Apply search (every whitespace-separated term must appear somewhere in the row, each in any cell).
 4. Apply column filters (all columns' filters must match).
 5. Sort by the chosen column with source row index as the tie-break; no sort means source order.
 6. Page.
@@ -190,81 +191,89 @@ It has to follow the selection from any grid: panel, editor tab, structured tab.
 
 ## 6. UI designs
 
-Wireframes are low fidelity. They fix content, order, states and labels; visual styling follows the active Zed theme. Boxes drawn with `+---+` are surfaces; text in `[ ]` is a control; `<...>` is a placeholder for data.
+Wireframes are low fidelity. They fix content, order, states and labels; visual styling follows the active Zed theme. Boxes drawn with `+---+` are surfaces; text in `[ ]` is a control. The sample data is illustrative.
 
 ### W-1. Overall layout
 
-The default arrangement while investigating: the query above, results at the bottom, Row Details pinned at the right.
+The default arrangement while investigating: the query above, results at the bottom, Row Details pinned at the right. The row of actions under the query are the per-query actions of RUN-9 (Results, Last run and Copy CID appear only once a stored result exists; Cancel appears while the query runs).
 
 ```
-+------+--------------------------------------------------------------+-----------------------+
-| Proj | investigate.kql                                          [x] | ROW DETAILS           |
-| ects |--------------------------------------------------------------|-----------------------|
-|      |  1  declare query_parameters(raid:string);                   | AsyncTrace            |
-| .    |  2  ASTrace                                                  | Row 4012 . 27 fields  |
-| .    |  3  | where RootActivityId == raid                           | [ Find in row       ] |
-|      |  4  | where Level <= 3                                       | [ Wrap lines: On ]    |
-|      |  5  | order by Timestamp asc                                 |-----------------------|
-|      |     [> Run]  [ Cancel ]            Last run 10:42 . 1.8 s    | Timestamp   datetime  |
-|      |--------------------------------------------------------------| 2026-09-30T10:42:11Z  |
-|      | RESULTS 1,240 | Data | Data - Structured | Query   [C][S][W]| Level          long   |
-|      |--------------------------------------------------------------| 2                     |
-|      | help.kusto... / Samples . 1,240 rows . 1.8 s                 | Message       string  |
-|      |  # | Timestamp        | Level | Message               |...   | {                     |
-|      | 4012| 10:42:11.402Z   |  2    | Timeout reading ...   |      |   "type": "TimeoutEx",|
-|      | 4013| 10:42:11.410Z   |  3    | Retry 1/3 scheduled   |      |   "callStack": "at ...|
-|      | ...                                                          | ...                   |
-|      | Showing 1 to 1000 of 1,240 rows               [ < 1 2 > ]    |                       |
-+------+--------------------------------------------------------------+-----------------------+
++------------------------------------------------------------------------------+ +-----------------------------+
+| investigate.kql                                                              | | ROW DETAILS                 |
++------------------------------------------------------------------------------+ +-----------------------------+
+|  1  declare query_parameters(raid:string);                                   | | PrimaryResult               |
+|  2  ASTrace                                                                  | | Row 4 . 27 fields           |
+|  3  | where RootActivityId == raid                                           | | [ Find in row          ]    |
+|  4  | where Level <= 3                                                       | | [ Wrap lines: On ]          |
+|  5  | order by Timestamp asc                                                 | +-----------------------------+
+|  Select Run Copy Format | Results | Last run: 10:42, took: 1.8s | Copy CID   | | Timestamp        datetime   |
++------------------------------------------------------------------------------+ | 2026-09-30T10:42:11Z        |
+                                                                                 | Level               long    |
++------------------------------------------------------------------------------+ | 2                           |
+| RESULTS 1,240 | [Data] [Data - Structured]  [Copy] [Search] [Save As]        | | Message           string    |
++------------------------------------------------------------------------------+ | Timeout reading ...         |
+| help.kusto.windows.net / Samples   1,240 rows   1.8 s                        | | Exception        dynamic    |
+| +------+--------------+-------+-----------------------------+                | | +-------------------------+ |
+| | #    | Timestamp    | Level | Message                     |                | | | { "type": "SqlTimeout", | |
+| +------+--------------+-------+-----------------------------+                | | |   "callStack": ...      | |
+| | 4    | 10:42:11.402 | 2     | Timeout reading from sql-01 |                | | +-------------------------+ |
+| | 9    | 10:42:11.410 | 3     | Retry 1/3 scheduled         |                | +-----------------------------+
+| | 12   | 10:42:12.118 | 2     | Connection reset by peer    |                |
+| +------+--------------+-------+-----------------------------+                |
+| Showing 1 to 1000 of 1,240 rows              Rows per page [1000] < 1 2 >    |
++------------------------------------------------------------------------------+
 ```
 
 ### W-2. Results panel anatomy
 
 ```
-+---------------------------------------------------------------------------------------------+
-| RESULTS  (1,240)                                                                            |
-+---------------------------------------------------------------------------------------------+
-| [Data] [Data - Structured] [Query]                             [Copy] [Search] [Save As...] |
-+---------------------------------------------------------------------------------------------+
-| help.kusto.windows.net / Samples   1,240 rows   1.8 s   started 10:42:09                    |  <- PNL-7
-+---------------------------------------------------------------------------------------------+
-| [ Clear all filters ]                                              Search: [______________] |  <- FLT-9, SRC-1
-+---------------------------------------------------------------------------------------------+
-|  #  | Timestamp (dt)  ▲ [F] | Level (long) [F] | Message (string) [F]  | ...                 |
-|-----+-----------------------+------------------+-----------------------+---------------------|
-|  1  | 2026-09-30T10:42:09Z  |  4               | Request started       |                     |
-|  2  | 2026-09-30T10:42:10Z  |  4               | Connecting to sql-... |                     |
-|  3  | 2026-09-30T10:42:11Z  |  3               | Retry 1/3 scheduled   |   <- tinted (SEV-1) |
-|  4  | 2026-09-30T10:42:11Z  |  2               | Timeout reading ...   |   <- tinted         |
-+---------------------------------------------------------------------------------------------+
-| Showing 1 to 1000 of 1,240 rows                     Rows per page [1000 v]   [ < 1 2 > ]    |
-+---------------------------------------------------------------------------------------------+
-   [F] = funnel (highlighted when a filter is active)     ▲ = sorted ascending
++------------------------------------------------------------------------------------+
+| RESULTS 1,240                                                                      |
++------------------------------------------------------------------------------------+
+| [Data] [Data - Structured]                         [Copy] [Search] [Save As...]    |
++------------------------------------------------------------------------------------+
+| help.kusto.windows.net / Samples   1,240 rows   1.8 s   started 10:42:09           |
++------------------------------------------------------------------------------------+
+| [ Clear all filters ]                                  Search: [_______________]   |
++------------------------------------------------------------------------------------+
+| +-----+----------------------+-------+-----------------------------+------------+  |
+| | #   | Timestamp            | Level | Message                     | Region     |  |
+| +-----+----------------------+-------+-----------------------------+------------+  |
+| | 1   | 2026-09-30T10:42:09Z | 4     | Request started             | westus2    |  |
+| | 2   | 2026-09-30T10:42:10Z | 4     | Connecting to sql-01        | westus2    |  |
+| | 3   | 2026-09-30T10:42:11Z | 3     | Retry 1/3 scheduled         | westus2    |  |
+| | 4   | 2026-09-30T10:42:11Z | 2     | Timeout reading from sql-01 | westus2    |  |
+| +-----+----------------------+-------+-----------------------------+------------+  |
++------------------------------------------------------------------------------------+
+| Showing 1 to 1000 of 1,240 rows              Rows per page [1000 v]   [ < 1 2 > ]  |
++------------------------------------------------------------------------------------+
+  Column headers show the name only; the Kusto type is a tooltip (GRD-1).
+  Every header carries a sort indicator when sorted and a funnel [F] (FLT-1).
+  Rows 1-2 green (level 4), row 3 amber (3), row 4 red (2): severity tints (SEV-1).
+  There is no Query tab in the bottom panel; editor result tabs add one (PNL-6).
 ```
 
-Tab labels: one table with no extras hides the tab bar; several tables show `<name> (<rows>)`; a structured tab is `<name> - Structured (<rows>)`.
+Tab labels: one table with no extras hides the tab bar; several tables show `<name> (<rows>)`; a structured tab is `<name> - Structured (<rows>)` (W-11).
 
 ### W-3. Grid anatomy
 
 Shows the gutter, sort state, funnels, severity tint, and selection.
 
 ```
-        corner
-          |    sort indicator            active filter (funnel filled)
-          v         v                        v
-+------+------------------+-----------+--------------------+--------------------------+
-|  #   | Timestamp   ▲ [F]| Level [*F]| Region        [F]  | Message              [F] |
-+------+------------------+-----------+--------------------+--------------------------+
-|  1   | 10:42:09         |  4        | westus2            | Request started          |  green tint (4)
-|  2   | 10:42:10         |  4        | westus2            | Connecting to sql-01     |
-|  3   | 10:42:11         |  3        | westus2            | Retry 1/3 scheduled      |  amber tint (3)
-| [4]  |[10:42:11        ]|[ 2       ]|[westus2           ]|[Timeout reading from ...]|  selected row
-|  5   | 10:42:12         |  5        | eastus             | Verbose heartbeat        |  blue tint (5)
-+------+------------------+-----------+--------------------+--------------------------+
-   ^                                                  ^
-   gutter: source row number, never moves        column edge: drag to resize
-   click = select row; shift+click = extend      drag a header = reorder (drop line shows)
-   corner: click = sort by row number, shift+click = select all
++-----+--------------------+------------+------------+--------------------------------+
+| #   | Timestamp   ^ [F]  | Level [*F] | Region [F] | Message [F]                    |
++-----+--------------------+------------+------------+--------------------------------+
+| 1   | 10:42:09           | 4          | westus2    | Request started                |
+| 2   | 10:42:10           | 4          | westus2    | Connecting to sql-01           |
+| 3   | 10:42:11           | 3          | westus2    | Retry 1/3 scheduled            |
+| 4   | [10:42:11]         | [ 2 ]      | [westus2]  | [Timeout reading from sql-01]  |
+| 5   | 10:42:12           | 5          | eastus     | Verbose heartbeat              |
++-----+--------------------+------------+------------+--------------------------------+
+  #   corner: click = sort by row number, shift+click = select all
+  ^   sorted ascending;  [F] funnel;  [*F] funnel with an active filter
+  gutter number = source row number, never moves; click = select row
+  [ ] around cells in row 4 = selected;  rows 1-2 green, 3 amber, 4 red, 5 blue (tints)
+  drag a column's right edge = resize;  drag a header = reorder (drop line shows)
 ```
 
 Header interactions, exactly as the spec requires (SRT-1, SEL-4, COL-2, COL-3):
@@ -279,82 +288,65 @@ Header interactions, exactly as the spec requires (SRT-1, SEL-4, COL-2, COL-3):
 
 ### W-4. Filter popover
 
-Anchored under the funnel. Live: every change applies after about 150 ms.
-
-String column, two conditions:
+Anchored under the funnel. Live: every change applies after about 150 ms. Top left: a string column with two conditions. Top right: a numeric column. Bottom: datetime and boolean columns. Operator sets by type are in spec FLT-4. Closes on Escape, on an outside click, or with Clear.
 
 ```
++----------------------------------------------+   +----------------------------------------------+
+| Filter Message                               |   | Filter Level                                 |
+| [ Match all conditions      v ]              |   | [ Less than or equal v ] [ 3       ]         |
+| [ Contains      v ] [ timeout       ]        |   | [ Add condition ] [ Clear ]                  |
+| [ Does not contain v ] [ retry     ]         |   +----------------------------------------------+
+| [ Remove condition ] [ Clear ]               |
 +----------------------------------------------+
-| Filter Message                               |
-| [ Match all conditions             v ]        |
-| [ Contains       v ] [ timeout            ]   |
-| [ Does not contain v ] [ retry            ]   |
-| [ Remove condition ]  [ Clear ]               |
-+----------------------------------------------+
-```
 
-Numeric column, one condition:
-
++----------------------------------------------+   +----------------------------------------------+
+| Filter Timestamp                             |   | Filter Succeeded                             |
+| [ After         v ] [ ISO date/time  ]       |   | [ Is false       v ]  (no value box)         |
+| [ Add condition ] [ Clear ]                  |   | [ Add condition ] [ Clear ]                  |
++----------------------------------------------+   +----------------------------------------------+
 ```
-+----------------------------------------------+
-| Filter Level                                 |
-| [ Less than or equal  v ] [ 3            ]    |
-| [ Add condition ]  [ Clear ]                  |
-+----------------------------------------------+
-```
-
-Datetime and boolean columns:
-
-```
-+--------------------------------------------+    +--------------------------------------------+
-| Filter Timestamp                           |    | Filter Succeeded                           |
-| [ After         v ] [ ISO date/time     ]  |    | [ Is false       v ]  (no value input)     |
-| [ Add condition ]  [ Clear ]               |    | [ Add condition ]  [ Clear ]               |
-+--------------------------------------------+    +--------------------------------------------+
-```
-
-Operator sets by type are in spec FLT-4. Closes on Escape or outside click.
 
 ### W-5. Row Details, single row
 
 The example shows a JSON field, an exception call stack, and find highlighting. Header controls stay pinned while the fields scroll.
 
 ```
-+---------------------------------------------+
-| ROW DETAILS                                 |
-+---------------------------------------------+
-| AsyncTrace                                  |
-| Row 4012 . 27 fields                        |
-| [ Find in row: timeout          ]           |
-| [ Wrap lines: On ]                          |
-+---------------------------------------------+
-| Timestamp                        datetime   |
-| 2026-09-30T10:42:11.4020000Z                |
-|---------------------------------------------|
-| Level                            long       |
-| 2                                           |
-|---------------------------------------------|
-| Message                          string     |
-| Failed to read from sql-01                  |
-|---------------------------------------------|
-| Exception                        dynamic    |
-| +-----------------------------------------+ |
-| | {                                       | |
-| |   "type": "SqlTimeoutException",        | |
-| |   "message": "[[Timeout]] expired",     | |   [[ ]] = find match highlight
-| |   "callStack": "at Contoso.Db.Query()   | |
-| |     in Db.cs:line 88                    | |
-| |   at Contoso.Api.Handler.Run()          | |
-| |     in Handler.cs:line 132"             | |
-| | }                                       | |
-| +-----------------------------------------+ |
-|---------------------------------------------|
-| CorrelationVector                string     |
-| null                                        |
-+---------------------------------------------+
++--------------------------------------------+
+| ROW DETAILS                                |
++--------------------------------------------+
+| PrimaryResult                              |
+| Row 4 . 27 fields                          |
+| [ Find in row: timeout       ]             |
+| [ Wrap lines: On ]                         |
++--------------------------------------------+
+| Timestamp                     datetime     |
+| 2026-09-30T10:42:11.4020000Z               |
++--------------------------------------------+
+| Level                             long     |
+| 2                                          |
++--------------------------------------------+
+| Message                         string     |
+| Failed to read from sql-01                 |
++--------------------------------------------+
+| Exception                      dynamic     |
+| +----------------------------------------+ |
+| | {                                      | |
+| |   "type": "SqlTimeoutException",       | |
+| |   "message": "[[Timeout]] expired",    | |
+| |   "callStack": "at Contoso.Db.Query()  | |
+| |     in Db.cs:line 88                   | |
+| |   at Contoso.Api.Handler.Run()         | |
+| |     in Handler.cs:line 132"            | |
+| | }                                      | |
+| +----------------------------------------+ |
++--------------------------------------------+
+| CorrelationVector                 string   |
+| null                                       |
++--------------------------------------------+
+  [[ ]] marks a find match. Colours in the JSON block: property names, strings, numbers,
+  booleans and null each use a distinct theme colour (JSN-3).
+  The call stack line is wrapped here to fit; each frame is one logical line (EXC-7, EXC-8).
 ```
-
-Colours inside the JSON block: property names, strings, numbers, booleans and `null` each use a distinct theme colour (JSN-3).
 
 **Call stack before and after (EXC).** The same stack as it appears in the raw value and in the inspector:
 
@@ -375,23 +367,22 @@ SHOWN in the inspector (one useful frame per line, filename:line only):
 Three rows selected whose `Message` values are `1/3:...`, `2/3:...`, `3/3:...`.
 
 ```
-+---------------------------------------------+
-| ROW DETAILS                                 |
-+---------------------------------------------+
-| AsyncTrace                                  |
-| 3 selected rows . multi-part message        |
-| assembled                                   |
-| [ Find in row                   ]           |
-| [ Wrap lines: On ]                          |
-+---------------------------------------------+
-| Message              merged 3-part message  |
-| +-----------------------------------------+ |
-| | {                                       | |
-| |   "type": "AggregateException",         | |
-| |   "innerExceptions": [ ... ]            | |
-| | }                                       | |
-| +-----------------------------------------+ |
-+---------------------------------------------+
++--------------------------------------------------+
+| ROW DETAILS                                      |
++--------------------------------------------------+
+| PrimaryResult                                    |
+| 3 selected rows . multi-part message assembled   |
+| [ Find in row              ]                     |
+| [ Wrap lines: On ]                               |
++--------------------------------------------------+
+| Message                    merged 3-part message |
+| +----------------------------------------------+ |
+| | {                                            | |
+| |   "type": "AggregateException",              | |
+| |   "innerExceptions": [ ... ]                 | |
+| | }                                            | |
+| +----------------------------------------------+ |
++--------------------------------------------------+
 ```
 
 Not assembled (incomplete, mismatched, duplicate, or ordinary rows) falls back to W-7.
@@ -399,38 +390,37 @@ Not assembled (incomplete, mismatched, duplicate, or ordinary rows) falls back t
 ### W-7. Row Details, empty and multiple-selection states
 
 ```
-+---------------------------------------------+     +---------------------------------------------+
-| ROW DETAILS                                 |     | ROW DETAILS                                 |
-+---------------------------------------------+     +---------------------------------------------+
-|                                             |     | AsyncTrace                                  |
-|  Select a result row to inspect its values  |     | Row 4012 . 27 fields                        |
-|  here.                                      |     | 2 rows selected - showing the first         |
-|                                             |     | [ Find in row ]  [ Wrap lines: On ]         |
-+---------------------------------------------+     +---------------------------------------------+
-   empty (RDT-2)                                       several rows, not a multipart message (RDT-7)
++--------------------------------------+   +--------------------------------------+
+| ROW DETAILS                          |   | ROW DETAILS                          |
++--------------------------------------+   +--------------------------------------+
+|                                      |   | PrimaryResult                        |
+| Select a result row to inspect       |   | Row 4 . 27 fields                    |
+| its values here.                     |   | 2 rows selected - showing the first  |
+|                                      |   | [ Find in row ] [ Wrap lines: On ]   |
++--------------------------------------+   +--------------------------------------+
+  empty (RDT-2)                             several rows, not a multipart message (RDT-7)
 ```
 
 ### W-8. Structured activity view
 
-Available when the table has `CurrentActivityId` and `ParentActivityId`. The tree is on the left, the grid on the right shows only the selected activity's events.
+Available when the table has `CurrentActivityId` and `ParentActivityId`. The tree is on the left, the grid on the right shows only the selected activity's events. The tree shown has three levels below the root, so the button reads `Deepest · 3`; `!` marks activities with their own warning, error or critical event.
 
 ```
-+---------------------------------------------------------------------------------------------+
-| [Data] [Data - Structured]                                                                  |
-+---------------------------------------------------------------------------------------------+
-| Activities            [Deepest . 4] |#| Timestamp        | Level | Message                  |
-|                                     +-+------------------+-------+--------------------------+
-| v . Request (12)               |    | 1| 10:42:09         |  4    | Request started          |
-|   v  Auth (3)                        | 2| 10:42:09         |  4    | Token validated          |
-|      . Token  (2)                    |...                                                    |
-|   v ! Provision (9)  [orange]        | Events of the selected activity ("Provision")         |
-|      > ! CreateDb (6) [red] ↓2       |                                                       |
-|           . Retry (4) [amber, ! ]    |                                                       |
-|   > Notify (2)                       |                                                       |
-| . Startup (5)                        |                                                       |
-|                                     ||<-- splitter (drag, or Left/Right, Home/End)          |
-+---------------------------------------------------------------------------------------------+
-  tree pane: default 340 px, min 180 px          grid pane: at least 280 px
++--------------------------------------------+   +------------------------------------------------------+
+| Activities        [Deepest . 3]            |   | Events of the selected activity (Provision)          |
+| v Request (12)  ↓3                         |   | +-----+-----------+-------+------------------------+ |
+|   . Auth (3)                               |   | | #   | Timestamp | Level | Message                | |
+|   v ! Provision (9)  ↓2   <- selected      |   | +-----+-----------+-------+------------------------+ |
+|     v ! CreateDb (6)  ↓1                   |   | | 21  | 10:42:10  | 4     | Provisioning started   | |
+|       . ! Retry (4)                        |   | | 22  | 10:42:10  | 3     | Waiting for database   | |
+|   > Notify (2)  ↓1                         |   | | 30  | 10:42:19  | 2     | Provisioning failed    | |
+|   . Startup (5)                            |   | +-----+-----------+-------+------------------------+ |
++--------------------------------------------+   +------------------------------------------------------+
+ ^ splitter between the panes: drag, Left/Right (20 px, Shift 80 px), Home/End, double-click resets
+   tree pane default 340 px, min 180 px; events pane keeps at least 280 px
+
+Legend:  v expanded   > collapsed   . leaf   ! warning triangle (own warning/error/critical event)
+         ↓N depth badge (N levels below); (n) event count; Deepest cycles the deepest activities
 ```
 
 Tree node anatomy (ACT-7):
@@ -438,7 +428,7 @@ Tree node anatomy (ACT-7):
 ```
  [disclosure] [!] MarkerName   3f2a9c1e-...   (6)   ↓2
       |         |     |            |            |     |
-      |         |     |            |            |     depth badge: 2 levels below, tooltip lists branch size
+      |         |     |            |            |     depth badge: 2 levels below; tooltip gives the branch size
       |         |     |            |            event count
       |         |     |            activity id
       |         |     MarkerName of the first event (when the table has that column)
@@ -449,9 +439,9 @@ Tree node anatomy (ACT-7):
 Node colour (ACT-9), using the same palette as the grid:
 
 ```
- final event level:  critical/error/warning ........ node tinted at full strength          [ red  ]
- final event normal/verbose, earlier warn/err ...... node tinted at 30% (a "handled" issue)  [ pale red ]
- no issue, final event normal/verbose .............. node tinted with that level at full    [ green/blue ]
+ final event level:  critical/error/warning ........ node tinted at full strength
+ final event normal/verbose, earlier warn/err ...... node tinted with the worst earlier level at 30% (a "handled" issue)
+ no earlier issue, final event normal/verbose ...... node tinted with the final event's colour at full strength
  no severity column, or unusable value ............. uncoloured
 ```
 
@@ -460,35 +450,50 @@ Interactions: click selects; click the disclosure or double-click toggles; Right
 ### W-9. Panel states
 
 ```
-Idle (no results yet)             Running                                Error
-+--------------------+            +---------------------------------+   +-------------------------------+
-| RESULTS            |            | RESULTS                         |   | RESULTS  (!)                  |
-|                    |            |   Running query...   [ Cancel ] |   | X  Semantic error: 'Foo'      |
-|      no results    |            |   (editor shows Cancel too)     |   |    Details ...                |
-+--------------------+            +---------------------------------+   +-------------------------------+
+Idle                            Running                               Error
++-----------------------------+ +-----------------------------------+ +--------------------------------+
+| RESULTS                     | | RESULTS 1,240                     | | RESULTS (!)                    |
++-----------------------------+ +-----------------------------------+ +--------------------------------+
+|                             | | (previous results stay visible)   | | X Semantic error: 'Foo'        |
+|       no results            | |                                   | |   Details ...                  |
+|                             | | Progress notification:            | |                                |
++-----------------------------+ | Running Kusto query...            | +--------------------------------+
+                                | [ Cancel ]                        |
+                                +-----------------------------------+
 
-Zero rows                                     Large table loading (non-blocking, GRD-9)
-+------------------------------------------+   +--------------------------------------------------+
-| RESULTS  0                               |   | RESULTS  (412,000)                               |
-| #  | Timestamp | Level | Message         |   |  (o) Sorting 412,000 rows...                     |
-|              No results                  |   |  grid stays visible and scrollable               |
-| Showing 0 to 0 of 0 rows                 |   +--------------------------------------------------+
-+------------------------------------------+
+Zero rows                                     Search or filter matches nothing
++----------------------------------------+   +----------------------------------------+
+| RESULTS 0                              |   | RESULTS 1,240                          |
++----------------------------------------+   +----------------------------------------+
+| # | Timestamp | Level | Message        |   | # | Timestamp | Level | Message        |
+|                                        |   |                                        |
+|          No results                    |   |   No results match your                |
+|                                        |   |   search query                         |
++----------------------------------------+   +----------------------------------------+
+
+Large table, non-blocking busy indicator (GRD-9)
++----------------------------------------+
+| RESULTS 412,000                        |
++----------------------------------------+
+| (o) Sorting 412,000 rows...            |
+| the grid stays visible and             |
+| scrollable while it works              |
++----------------------------------------+
 ```
 
-Cancelled runs leave the previous display untouched and show nothing (RUN-3).
+A cancelled run leaves the previous display untouched and shows nothing (RUN-3). While a run is executing the panel keeps the previous result; the running indicator and Cancel live on the query and in a progress notification (RUN-2).
 
 ### W-10. Grid context menu
 
 ```
-+--------------------------+
-| Copy                     |
-| Copy as Markdown         |
-| Copy as HTML             |
-| Copy as datatable        |
-|--------------------------|
-| Save As...               |
-+--------------------------+
++------------------------+
+| Copy                   |
+| Copy as Markdown       |
+| Copy as HTML           |
+| Copy as datatable      |
++------------------------+
+| Save As...             |
++------------------------+
 ```
 
 Applies to the current selection, or the whole table when nothing is selected.
@@ -496,31 +501,29 @@ Applies to the current selection, or the whole table when nothing is selected.
 ### W-11. Tab bar and badge variants
 
 ```
-One table, no extras        (no tab bar, grid fills the panel)     RESULTS  1,240
-
-One table with structured   [Data] [Data - Structured]             RESULTS  1,240
-
-Several tables              [PrimaryResult (1,240)] [Stats (4)]    RESULTS  1,244   (sum of tables)
-
-With query text             [Data] [Data - Structured] [Query]
-
-Empty result                (grid header + "No results")           RESULTS  0
-Error                       (error view)                           RESULTS  (!)
+One table, no extras       (no tab bar; grid fills the panel)             RESULTS 1,240
+One table, structured     [Data] [Data - Structured]                      RESULTS 1,240
+Several tables            [PrimaryResult (1,240)] [Stats (4)]             RESULTS 1,244  (sum)
+Structured, several       [PrimaryResult (1,240)] [PrimaryResult - Structured (1,240)]
+Editor result tab         [Data] [Data - Structured] [Query]
+Empty result              (grid header and 'No results')                  RESULTS 0
+Error                     (error view)                                    RESULTS (!)
 ```
 
 ### W-12. Settings (indicative)
 
 ```
 Results
-  Location            [ Bottom panel v ]    panel | beside | main
-  Editor result mode  [ New tab      v ]    new tab | reuse       (when Location is not panel)
-  Page size           [ 1000         ]
+  Location             [ Bottom panel v ]     panel | beside | main
+  Editor result mode   [ New tab      v ]     new tab | reuse    (when Location is not panel)
+  Page size            [ 1000         ]
   Severity colours
-     Critical [ #f14c4c40 ]   Error  [ #f4877133 ]   Warning [ #cca7002e ]
-     Normal   [ #89d1851f ]   Verbose[ #75beff17 ]     (empty = theme default)
+     Critical [ #f14c4c40 ]   Error   [ #f4877133 ]   Warning [ #cca7002e ]
+     Normal   [ #89d1851f ]   Verbose [ #75beff17 ]   (empty = theme default)
 Row Details
   Extra call stack frame prefixes to hide  [ Contoso.Infrastructure. , ... ]
 ```
+
 
 ## 7. Behaviour models
 
@@ -545,11 +548,11 @@ A selection is a single rectangle: anchor and focus in visible positions. The gr
 | Click cell | Rectangle of one cell (toggle off if it was the only one selected) |
 | Shift+click / drag | Extend rectangle |
 | Click / drag on gutter | Whole rows |
-| Shift+click on header | Whole column(s) |
-| Shift+click on corner | Whole table (toggle) |
-| Sort, reorder, page change, filter or search change, activity change | Clear |
+| Shift+click on header | Whole column(s), across all pages of the view |
+| Shift+click on corner | Whole view (toggle) |
+| Sort, reorder, page change, filter or search change, activity change | Clear (VS Code clears only on sort, reorder and activity change; see spec section 7) |
 
-Consequences the design accepts: multipart parts are only selectable together when adjacent in the current view (users filter first). Non-contiguous row selection (Q-4 in the spec) is the proposed extension; it changes the selection from "a rectangle" to "a set of rows plus a rectangle of columns" and does not alter anything else in the model.
+Consequences the design accepts: multipart parts are only selectable together when adjacent in the current view (users filter first). Non-contiguous row selection (SEL-11 in the spec) is the proposed extension; it changes the selection from "a rectangle" to "a set of rows plus a rectangle of columns" and does not alter anything else in the model.
 
 ### 7.3 Filter model
 
@@ -596,7 +599,7 @@ Every run has an identity. Panel, badge, tabs, selection and inspector content a
 
 - **Baseline first.** Before setting numeric targets, measure on named hardware with the workloads in `zed-kusto-design.md` (100k to 500k rows, 15 to 30 columns; nulls, duplicates, wide strings, dynamic values): open, scroll, sort, filter, search, memory.
 - **Logic is tested without UI.** Activity projection, filter matching, typed comparison, call-stack formatting, multipart assembly and TSV/Markdown/HTML formatting are pure and get table-driven tests using the vectors in spec section 6. The VS Code fork's unit tests are the seed for those vectors.
-- **Interactions are exercised in the running app** (selection drag, header gestures, popover placement, splitter, keyboard paths) using Computer Use, as the repository's working instructions already require for behaviour unit tests cannot establish.
+- **Interactions are exercised in the running app** (selection drag, header gestures, popover placement, splitter, keyboard paths) using Computer Use, as `zed-kusto-design.md` recommends for behaviour that unit tests cannot establish.
 - **Compatibility checks.** Round-trip a corpus of real `.ktt` files produced by the VS Code fork: open in Zed, resize a column, confirm the file is still valid for VS Code and unchanged elsewhere.
 
 ## 10. Delivery plan
@@ -605,18 +608,18 @@ The plan follows the staged approach in `zed-kusto-design.md` and reorders it ar
 
 | Phase | Deliverable | Spec IDs | Notes |
 | --- | --- | --- | --- |
-| A | Result viewer for `.ktt` (custom item), typed table with gutter, paging, column resize, selection, copy (TSV, Markdown, HTML), context menu | GRD, SEL, COL-1..4, CPY-1..7, PER-2..4 | Answers the capability checks in section 3.1 for table, selection and clipboard. First real 100k to 500k baseline. |
-| B | Sorting, filtering, search, severity colours, loading feedback | SRT, FLT, SRC, SEV, GRD-9 | Filter popover and header interactions. Performance targets set from the phase A baseline. |
-| C | Row Details panel | RDT, JSN, MPM, EXC | Right-dock panel; multipart, JSON colouring, call stacks. Independent of execution. |
+| A | Result viewer for `.ktt` (custom item), typed table with gutter, paging, column resize, selection, copy (TSV, Markdown, HTML text), context menu, page-size setting | GRD, SEL, COL-1..4, CPY-1..8, PER-2..4, SET-3, CMD-3..4, NFR-1..5 | Answers the capability checks in section 3.1 for table, selection and clipboard. First real 100k to 500k baseline. |
+| B | Sorting, filtering, search, severity colours, loading feedback | SRT, FLT, SRC, SEV, GRD-9, SET-4, CMD-5, CMD-7 | Filter popover and header interactions. Performance targets set from the phase A baseline. |
+| C | Row Details panel | RDT, JSN, MPM, EXC, CMD-6 | Right-dock panel; multipart, JSON colouring, call stacks. Independent of execution. |
 | D | Structured activity view | ACT | Tree, splitter, severity outcome, Deepest. |
-| E | Results panel in the bottom dock with badge, tabs, states; run lifecycle, cancellation, history | PNL, RUN, PER-5, PER-1 | Requires the execution service from the main design doc. Live results reuse the same component built in A to D. |
-| F | Deferred and P1 leftovers | Spec section 5, remaining P1/P2 | Query parameter profiles, agent handoff, keyboard grid navigation, non-contiguous selection, user call-stack noise list. |
+| E | Results panel in the bottom dock with badge, tabs, states; run lifecycle, cancellation, per-query actions, history, Save As | PNL, RUN, PER-1, PER-5, SET-1..2, CMD-1..2, CMD-8..9 | Requires the execution service from the main design doc. Live results reuse the same component built in A to D. |
+| F | Deferred and P1 leftovers | Spec section 5, remaining P1/P2 | Query parameter profiles, agent handoff, keyboard grid navigation, SEL-11 non-contiguous selection, rich HTML copy (CPY-11), SET-5 user call-stack noise list. |
 
 Exit criteria for A to D: for a set of real `.ktt` traces, the four investigation scenarios S1 to S4 can be completed in Zed with the same outcome as in VS Code, and the acceptance vectors in spec section 6 pass.
 
 ## 11. Decisions, risks and open questions
 
-### 11.1 Decisions proposed (please confirm)
+### 11.1 Decisions (accepted)
 
 | # | Decision | Alternative |
 | --- | --- | --- |
@@ -624,7 +627,8 @@ Exit criteria for A to D: for a set of real `.ktt` traces, the four investigatio
 | D-2 | One results component serves the bottom panel and editor tabs. | Two implementations. |
 | D-3 | `.ktt` stays the interchange format and is round-trip compatible with the VS Code fork. | A new Zed-only format. |
 | D-4 | Structured view is available for any result with the two activity columns, live or saved. | Saved files only (VS Code today). |
-| D-5 | Fix the four VS Code deviations in spec section 7 rows 1 to 4 rather than reproducing them. | Exact parity, bugs included. |
+| D-5 | Fix the VS Code deviations marked "Fix" in spec section 7 rather than reproducing them, and apply the decisions already taken (one call-stack frame per line, Q-13; natural string ordering without ignoring punctuation, Q-12; whole-view column and table selection, Q-11). | Exact parity, quirks included. |
+| D-7 | Assess `tabular_data_preview` for reuse in phase A before building header, filter popover and row-identity code. Accepted as a check; the reuse-or-build outcome is still open. | Build the grid from the `ui` table only. |
 | D-6 | Build phases A to D from `.ktt` files first, before the execution service exists. | Wait for execution. |
 
 ### 11.2 Risks
@@ -633,13 +637,13 @@ Exit criteria for A to D: for a set of real `.ktt` traces, the four investigatio
 | --- | --- | --- |
 | The existing table component cannot deliver rectangular selection, header gestures and 500k-row responsiveness. | Phase A slips; grid becomes a larger new component. | Do the section 3.1 spikes first; decide reuse versus build on evidence. |
 | Rich text in the inspector (selection, wrap toggle, find highlight over coloured runs) is harder in a native text layer than in HTML. | RDT-5, RDT-6, JSN-3 slip. | Spike early; fall back to plain colour segments with find implemented over the raw text. |
-| Multi-format clipboard (HTML plus text) differs per platform. | CPY-1, CPY-5 partly delivered. | Decide platform support during phase A; degrade to text-only where needed. |
+| The clipboard has no HTML entry type. | Rich copy (CPY-11) needs platform work. | Text-only copy is P0; decide rich HTML support after phase A. |
 | Drag-and-drop of a selection into an editor as a `datatable` expression may not be feasible. | CPY-9 dropped. | Already P2; `Copy as datatable` covers the workflow. |
-| Behaviours only verified by reading code (multi-word search, copy order) differ in a running VS Code. | Parity tests fail for a trivial reason. | Confirm the two open questions in the spec (Q-3, Q-5) before writing tests. |
+| Behaviours read from code (and, for search, from the grid library's source) differ in a running VS Code. | Parity tests fail for a trivial reason. | Confirm search behaviour (Q-3) in a running VS Code before writing parity tests. |
 
 ### 11.3 Open questions
 
-See spec section 8 (Q-1 to Q-10). The two that most affect the design: the inspector's home (Q-1, D-1) and non-contiguous row selection for multipart messages (Q-4).
+See spec section 8 (Q-1 to Q-14); all are decided except the outcome of the phase A assessment (Q-14) and a check of VS Code's search behaviour (Q-3). The two that most affect the design: the inspector's home (Q-1, D-1) and non-contiguous row selection for multipart messages (Q-4).
 
 ## 12. Traceability: VS Code to Zed
 
@@ -663,5 +667,6 @@ See spec section 8 (Q-1 to Q-10). The two that most affect the design: the inspe
 | Results panel, badge, tabs, states | PNL | `resultsViewer.ts` | E |
 | Run, cancel, error range, result ownership | RUN | `queryEditor.ts`, `queryCancellation.ts` | E |
 | History-backed results | PER-5 | `historyManager.ts` | E |
+| Per-query actions: Results, Last run, Copy CID | RUN-9 | `queryEditor.ts` (CodeLens) | E |
 | Query parameter profiles | QPP | `queryParameterProfiles.ts` | F |
 | Agent access to results | AGT | `savedQueryResults.ts` | F |
