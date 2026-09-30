@@ -120,6 +120,7 @@ members = [
     "crates/json_schema_store",
     "crates/keymap_editor",
     "crates/kusto_results",
+    "crates/kusto_results_ui",
     "crates/language",
     "crates/language_core",
     "crates/language_detection",
@@ -395,6 +396,7 @@ journal = { path = "crates/journal" }
 json_schema_store = { path = "crates/json_schema_store" }
 keymap_editor = { path = "crates/keymap_editor" }
 kusto_results = { path = "crates/kusto_results" }
+kusto_results_ui = { path = "crates/kusto_results_ui" }
 language = { path = "crates/language" }
 language_core = { path = "crates/language_core" }
 language_detection = { path = "crates/language_detection" }

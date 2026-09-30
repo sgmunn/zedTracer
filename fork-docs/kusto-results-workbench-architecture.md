@@ -1,6 +1,6 @@
 # Kusto Results Workbench for Zed: architecture (part 1)
 
-Status: draft. Companion to [the design](kusto-results-workbench-design.md) and [the feature spec](kusto-results-workbench-feature-spec.md). This is the first of two architecture notes. It records what is **already decided and built** (the UI-free core crate) and the structure the UI is expected to take. The second note, written after the phase A spikes, records the UI decisions the spikes force. Nothing here depends on a spike's outcome unless it says so.
+Status: draft. The spikes in section 6 have run; their results are in [part 2](kusto-results-workbench-architecture-2-spikes.md). Companion to [the design](kusto-results-workbench-design.md) and [the feature spec](kusto-results-workbench-feature-spec.md). This is the first of two architecture notes. It records what is **already decided and built** (the UI-free core crate) and the structure the UI is expected to take. The second note, written after the phase A spikes, records the UI decisions the spikes force. Nothing here depends on a spike's outcome unless it says so.
 
 ## 1. Approach
 

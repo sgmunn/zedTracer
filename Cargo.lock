@@ -9434,6 +9434,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kusto_results_ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "fs",
+ "gpui",
+ "gpui_util",
+ "investigation",
+ "kusto_results",
+ "language",
+ "menu",
+ "multi_buffer",
+ "project",
+ "serde_json",
+ "settings",
+ "theme",
+ "theme_settings",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "kv-log-macro"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

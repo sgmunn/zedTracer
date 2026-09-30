@@ -330,6 +330,20 @@ impl CellSelection {
         }
     }
 
+    /// Whether the cell at this visible position is inside the rectangle.
+    pub fn contains(&self, row: usize, column: usize) -> bool {
+        (self.anchor.0.min(self.focus.0)..=self.anchor.0.max(self.focus.0)).contains(&row)
+            && (self.anchor.1.min(self.focus.1)..=self.anchor.1.max(self.focus.1)).contains(&column)
+    }
+
+    /// The same rectangle with the focus moved, as when shift-click or a drag extends it.
+    pub fn extended_to(&self, row: usize, column: usize) -> Self {
+        Self {
+            anchor: self.anchor,
+            focus: (row, column),
+        }
+    }
+
     /// The source rows covered, in display order.
     pub fn source_rows(&self, visible_rows: &[usize]) -> Vec<usize> {
         let first = self.anchor.0.min(self.focus.0);
@@ -675,6 +689,9 @@ mod tests {
             CellSelection::cell(9, 0).source_rows(&visible),
             Vec::<usize>::new()
         );
+        let block = CellSelection::cell(1, 1).extended_to(2, 2);
+        assert!(block.contains(2, 1) && block.contains(1, 2));
+        assert!(!block.contains(0, 1) && !block.contains(1, 3));
     }
 
     #[test]
