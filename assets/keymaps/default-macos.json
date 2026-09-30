@@ -1803,6 +1803,7 @@
       "pageup": "result_grid::PageUp",
       "pagedown": "result_grid::PageDown",
       "cmd-a": "result_grid::SelectAll",
+      "cmd-f": "result_grid::ToggleSearch",
       "escape": "result_grid::ClearSelection",
     },
   },

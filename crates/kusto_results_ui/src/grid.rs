@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use editor::actions::Cancel;
 use editor::{Editor, EditorEvent};
 use gpui::{
     Anchor, AnyElement, Bounds, ClickEvent, ClipboardItem, Context, DefiniteLength, DismissEvent,
@@ -23,7 +24,7 @@ use kusto_results::{ColumnLayout, ResultSet, TableView};
 use ui::{
     Button, ColumnWidthConfig, ContextMenu, IconButton, IconName, IconSize, PopoverMenu,
     ResizableColumnsState, SpinnerLabel, Table, TableInteractionState, TableResizeBehavior,
-    prelude::*,
+    Tooltip, prelude::*,
 };
 
 use crate::filter_popover::{FilterChanged, FilterPopover};
@@ -64,6 +65,10 @@ actions!(
         PageDown,
         /// Selects the whole table.
         SelectAll,
+        /// Shows or hides the search box.
+        ToggleSearch,
+        /// Removes every column filter.
+        ClearAllFilters,
         /// Clears the selection.
         ClearSelection,
     ]
@@ -168,6 +173,7 @@ pub struct ResultGrid {
     busy_action: &'static str,
     show_busy_indicator: bool,
     busy_indicator_task: Option<Task<()>>,
+    search_open: bool,
     recompute_task: Option<Task<()>>,
     /// How many rows the last frame built, to show that only visible rows are created.
     last_rendered_rows: Cell<usize>,
@@ -269,6 +275,7 @@ impl ResultGrid {
             busy_action: "Working on",
             show_busy_indicator: false,
             busy_indicator_task: None,
+            search_open: false,
             recompute_task: None,
             last_rendered_rows: Cell::new(0),
             focus_handle: cx.focus_handle(),
@@ -304,6 +311,24 @@ impl ResultGrid {
     /// Whether the busy indicator shows: work that has run for 250 ms and is not done.
     pub fn shows_busy_indicator(&self) -> bool {
         self.busy && self.show_busy_indicator
+    }
+
+    pub fn search_is_open(&self) -> bool {
+        self.search_open
+    }
+
+    /// Shows the search box and focuses it, or hides it and clears the search, so that a
+    /// search never filters rows invisibly.
+    pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = !self.search_open;
+        if self.search_open {
+            window.focus(&self.search_editor.focus_handle(cx), cx);
+        } else {
+            self.search_editor
+                .update(cx, |editor, cx| editor.clear(window, cx));
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
     }
 
     pub fn view_state(&self) -> &ViewState {
@@ -1252,6 +1277,7 @@ impl Render for ResultGrid {
             .tables
             .get(self.table_index)
             .is_some_and(|table| self.view_state.has_active_filters(table));
+        let search_open = self.search_open;
         let toolbar = h_flex()
             .px_2()
             .py_1()
@@ -1259,17 +1285,31 @@ impl Render for ResultGrid {
             .border_b_1()
             .border_color(colors.border)
             .child(
-                div()
-                    .debug_selector(|| "search".to_string())
-                    .flex_1()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.editor_background)
-                    .child(self.search_editor.clone()),
+                div().debug_selector(|| "search-toggle".to_string()).child(
+                    IconButton::new("result-search-toggle", IconName::MagnifyingGlass)
+                        .icon_size(IconSize::Small)
+                        .toggle_state(search_open)
+                        .tooltip(Tooltip::text("Search"))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.toggle_search(window, cx)),
+                        ),
+                ),
             )
+            .when(search_open, |toolbar| {
+                toolbar.child(
+                    div()
+                        .debug_selector(|| "search".to_string())
+                        .flex_1()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.editor_background)
+                        .child(self.search_editor.clone()),
+                )
+            })
+            .when(!search_open, |toolbar| toolbar.child(div().flex_1()))
             .when(has_filters, |toolbar| {
                 toolbar.child(
                     div().debug_selector(|| "clear-filters".to_string()).child(
@@ -1286,6 +1326,16 @@ impl Render for ResultGrid {
             .on_action(cx.listener(|this, _: &CopyAsMarkdown, _, cx| this.copy_as_markdown(cx)))
             .on_action(cx.listener(|this, _: &CopyAsHtml, _, cx| this.copy_as_html(cx)))
             .on_action(cx.listener(|this, _: &CopyAsDatatable, _, cx| this.copy_as_datatable(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| this.toggle_search(window, cx)))
+            .on_action(cx.listener(|this, _: &ClearAllFilters, _, cx| this.clear_filters(cx)))
+            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                let search_focused = this.search_editor.focus_handle(cx).is_focused(window);
+                if search_focused && !this.search_editor.read(cx).text(cx).is_empty() {
+                    this.search_editor.update(cx, |editor, cx| editor.clear(window, cx));
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| this.move_selection(-1, 0, false, window, cx)))
             .on_action(cx.listener(|this, _: &MoveDown, window, cx| this.move_selection(1, 0, false, window, cx)))
             .on_action(cx.listener(|this, _: &MoveLeft, window, cx| this.move_selection(0, -1, false, window, cx)))
@@ -2216,6 +2266,65 @@ mod tests {
         let handle = centre_of(cx, "gutter-resize");
         drag(cx, handle, px(-500.));
         assert_eq!(gutter(cx), MINIMUM_GUTTER_WIDTH);
+    }
+
+    /// SRC-1, SRC-6, SRC-7, CMD-5, CMD-7: the search box is hidden until asked for, Escape clears
+    /// it, hiding it clears the search, and the Clear All Filters action removes every filter.
+    #[gpui::test]
+    async fn the_search_box_toggles_and_a_hidden_search_does_not_filter(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 6);
+        let visible =
+            |cx: &VisualTestContext| grid.read_with(cx, |grid, _| grid.visible_row_count());
+        assert!(cx.debug_bounds("search").is_none(), "hidden by default");
+        let grid_focus = grid.read_with(cx, |grid, _| grid.focus_handle.clone());
+        cx.update(|window, cx| window.focus(&grid_focus, cx));
+
+        cx.dispatch_action(ToggleSearch);
+        draw(cx);
+        assert!(grid.read_with(cx, |grid, _| grid.search_is_open()));
+        assert!(cx.debug_bounds("search").is_some());
+        cx.simulate_input("\"row\":13}");
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(
+            visible(cx),
+            1,
+            "typing goes to the box, which has the focus"
+        );
+
+        cx.dispatch_action(Cancel);
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(visible(cx), 200, "Escape clears the search");
+        assert!(
+            grid.read_with(cx, |grid, _| grid.search_is_open()),
+            "and keeps the box"
+        );
+
+        cx.simulate_input("\"row\":13}");
+        cx.run_until_parked();
+        assert_eq!(visible(cx), 1);
+        cx.dispatch_action(ToggleSearch);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(cx.debug_bounds("search").is_none());
+        assert_eq!(visible(cx), 200, "hiding the box clears its search");
+
+        let filter = ColumnFilter {
+            join: kusto_results::filter::Join::All,
+            conditions: vec![kusto_results::filter::Condition::new(
+                kusto_results::filter::FilterOperator::Contains,
+                "message 7 column",
+            )],
+        };
+        grid.update(cx, |grid, cx| grid.set_filter(1, Some(filter.clone()), cx));
+        grid.update(cx, |grid, cx| grid.set_filter(4, Some(filter), cx));
+        cx.run_until_parked();
+        assert_eq!(visible(cx), 0);
+        cx.update(|window, cx| window.focus(&grid_focus, cx));
+        cx.dispatch_action(ClearAllFilters);
+        cx.run_until_parked();
+        assert_eq!(visible(cx), 200);
     }
 
     /// GRD-9: work still running after 250 ms shows a busy indicator with the row count, and it
