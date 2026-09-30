@@ -21,7 +21,9 @@ kusto_results.workspace = true
 language.workspace = true
 menu.workspace = true
 multi_buffer.workspace = true
+project.workspace = true
 ui.workspace = true
+util.workspace = true
 workspace.workspace = true
 
 [dev-dependencies]
