@@ -9439,22 +9439,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "editor",
+ "encoding_rs",
  "fs",
  "gpui",
  "gpui_util",
  "investigation",
  "kusto_results",
  "language",
+ "log",
  "menu",
  "multi_buffer",
  "project",
+ "rope",
  "serde_json",
  "settings",
+ "text",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
+ "worktree",
 ]
 
 [[package]]
