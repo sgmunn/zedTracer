@@ -1780,4 +1780,11 @@
       "right": ["tabular_data::MoveFocusedCell", { "direction": "right" }],
     },
   },
+  {
+    "context": "RowDetailsPanel > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-f": "row_details::FocusFind",
+    },
+  },
 ]

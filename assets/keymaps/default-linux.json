@@ -1686,4 +1686,10 @@
       "right": ["tabular_data::MoveFocusedCell", { "direction": "right" }],
     },
   },
+  {
+    "context": "RowDetailsPanel > Editor",
+    "bindings": {
+      "ctrl-f": "row_details::FocusFind",
+    },
+  },
 ]
