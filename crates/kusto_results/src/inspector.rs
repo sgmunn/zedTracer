@@ -435,6 +435,79 @@ pub fn merged_field_value(text: &str) -> FieldValue {
     }
 }
 
+/// The whole inspector body as one text, with the spans that are styled differently.
+///
+/// Every range is a byte range into `text`, and none of the styling changes the text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InspectorDocument {
+    pub text: String,
+    /// The line naming each field and its type.
+    pub headers: Vec<Range<usize>>,
+    /// Values that are null, shown as the word `null`.
+    pub nulls: Vec<Range<usize>>,
+    pub json_tokens: Vec<JsonToken>,
+}
+
+impl InspectorDocument {
+    fn push_field(&mut self, header: &str, value: &FieldValue) {
+        if !self.text.is_empty() {
+            self.text.push_str("\n\n");
+        }
+        let start = self.text.len();
+        self.text.push_str(header);
+        self.headers.push(start..self.text.len());
+        self.text.push('\n');
+        let start = self.text.len();
+        match value {
+            FieldValue::Null => {
+                self.text.push_str("null");
+                self.nulls.push(start..self.text.len());
+            }
+            FieldValue::Text(text) => self.text.push_str(text),
+            FieldValue::Json(text) => {
+                self.text.push_str(text);
+                self.json_tokens
+                    .extend(highlight_json(text).into_iter().map(|token| JsonToken {
+                        range: token.range.start + start..token.range.end + start,
+                        kind: token.kind,
+                    }));
+            }
+        }
+    }
+}
+
+/// The field blocks for a subject: one per column for a row, one per merged column for an
+/// assembled message, nothing for an empty selection.
+pub fn build_document(table: &Table, subject: &InspectorSubject) -> InspectorDocument {
+    let mut document = InspectorDocument::default();
+    match subject {
+        InspectorSubject::Empty => {}
+        InspectorSubject::Row { row: shown }
+        | InspectorSubject::FirstOfMany {
+            first_row: shown, ..
+        } => {
+            for (index, column) in table.columns.iter().enumerate() {
+                let value = table
+                    .cell(*shown, index)
+                    .map_or(FieldValue::Null, field_value);
+                document.push_field(&format!("{} · {}", column.name, column.type_name), &value);
+            }
+        }
+        InspectorSubject::Assembled { fields, .. } => {
+            for field in fields {
+                document.push_field(
+                    &format!(
+                        "{} · merged {}-part message",
+                        field.column_name, field.total
+                    ),
+                    &merged_field_value(&field.text),
+                );
+            }
+        }
+    }
+    document
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +746,75 @@ mod tests {
             FieldValue::Text("hello".into())
         );
         assert!(matches!(merged_field_value("[1]"), FieldValue::Json(_)));
+    }
+
+    #[test]
+    fn a_row_becomes_one_block_per_column_with_styled_spans() {
+        let table = Table {
+            name: "PrimaryResult".into(),
+            columns: vec![
+                Column::new("Message", "string"),
+                Column::new("Exception", "dynamic"),
+                Column::new("Trace", "string"),
+            ],
+            rows: vec![vec![
+                Cell::Text("line one\nline two".into()),
+                Cell::Dynamic(Box::new(json!({"type": "Oops"}))),
+                Cell::Null,
+            ]],
+        };
+        let document = build_document(&table, &InspectorSubject::Row { row: 0 });
+        assert_eq!(
+            document.text,
+            "Message · string\nline one\nline two\n\nException · dynamic\n{\n  \"type\": \"Oops\"\n}\n\nTrace · string\nnull"
+        );
+        let spans = |ranges: &[Range<usize>]| -> Vec<&str> {
+            ranges
+                .iter()
+                .map(|range| &document.text[range.clone()])
+                .collect()
+        };
+        assert_eq!(
+            spans(&document.headers),
+            ["Message · string", "Exception · dynamic", "Trace · string"]
+        );
+        assert_eq!(spans(&document.nulls), ["null"]);
+        let tokens: Vec<(&str, JsonTokenKind)> = document
+            .json_tokens
+            .iter()
+            .map(|token| (&document.text[token.range.clone()], token.kind))
+            .collect();
+        assert_eq!(
+            tokens,
+            [
+                ("\"type\"", JsonTokenKind::Key),
+                ("\"Oops\"", JsonTokenKind::String)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_assembled_message_shows_only_the_merged_fields() {
+        let table = Table {
+            name: "PrimaryResult".into(),
+            columns: vec![
+                Column::new("Message", "string"),
+                Column::new("Level", "long"),
+            ],
+            rows: vec![
+                vec![Cell::Text("1/2:{\"a\":".into()), Cell::Int(4)],
+                vec![Cell::Text("2/2:1}".into()), Cell::Int(4)],
+            ],
+        };
+        let subject = resolve_subject(&table, &[1, 0]);
+        let document = build_document(&table, &subject);
+        assert_eq!(
+            document.text,
+            "Message · merged 2-part message\n{\n  \"a\": 1\n}"
+        );
+        assert_eq!(
+            build_document(&table, &InspectorSubject::Empty),
+            InspectorDocument::default()
+        );
     }
 }
