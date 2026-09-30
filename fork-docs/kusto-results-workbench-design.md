@@ -85,7 +85,7 @@ State of the fork at commit `0ee22839ac` (`feature/kusto-syntax-spike`), functio
 | Piece | State | Consequence |
 | --- | --- | --- |
 | `extensions/kusto` | Dev extension: `.kql` highlighting (tree-sitter), a local .NET language server for completion, hover and syntax diagnostics, and offline schema completion from `.kusto-schema.json`. No cluster access, no execution. | Authoring is progressing independently. No results exist yet. |
-| `crates/kusto_results` | **Built.** A UI-free crate with the result model, `.ktt` reading and writing, sort, filter, search, paging, selection, the activity projection, inspector logic (call stacks, JSON, multipart) and Copy forms. 76 unit tests and 12 tests against the fixtures pass; it has no `gpui` dependency. | The logic half of phases A to D exists and is tested. What remains is the UI. See [the architecture note](kusto-results-workbench-architecture.md). |
+| `crates/kusto_results` | **Built.** A UI-free crate with the result model, `.ktt` reading and writing, sort, filter, search, selection, the activity projection, inspector logic (call stacks, JSON, multipart) and Copy forms. 76 unit tests and 12 tests against the fixtures pass; it has no `gpui` dependency. | The logic half of phases A to D exists and is tested. What remains is the UI. See [the architecture note](kusto-results-workbench-architecture.md). |
 | `crates/investigation` | Prototype: an `InvestigationPanel` in the right dock and a custom viewer for `.trace` files. Both display **static sample data**, not parsed content. | Proves that a panel and a custom workspace item can be registered. It is not a results surface. |
 | `crates/tabular_data_preview` | Upstream CSV, TSV and JSON Lines preview built on the `ui` table. It separates data rows from display rows, has per-column sort (string comparison of the displayed text, with a TODO for nulls, so numbers sort as text), per-column distinct-value checklist filters in a popover with a picker, a choice of source line numbers or sequential row numbers as row identifiers, right-click copy of a cell, and a performance overlay. No typed values, no selection, no inspector. | The closest existing foundation for the header, popover and row-identity questions, and its text-only sort probably explains the reversed-CSV observation in `zed-kusto-design.md`. Adopt-or-build is an early decision (spec Q-14). |
 | `ui` data table component | An existing generic table with resizable columns, pinned columns, striped rows, virtualised rows, and hover behaviour. It also offers a column visibility mask, a variable-row-height mode and an empty-table callback. From its public surface it has no support for typed columns, sort, filter, cell-range selection, header actions or column reordering; that has not been confirmed by using it. | A candidate foundation, to be measured against spec NFR-1 before adoption. The existing design doc already asks for this check. |
@@ -557,7 +557,7 @@ Consequences the design accepts: multipart parts are only selectable together wh
 
 ### 7.3 Filter model
 
-A filter belongs to a column. It has a type (taken from the column), a join (`and` or `or`), and one or two conditions, each an operator and, when needed, a value. Search adds one more predicate over all data columns. A row is visible when it satisfies the search and **every** column filter. Filters are not saved. Evaluation is over all rows, before paging, and is superseded when the user types again.
+A filter belongs to a column. It has a type (taken from the column), a join (`and` or `or`), and one or two conditions, each an operator and, when needed, a value. Search adds one more predicate over all data columns. A row is visible when it satisfies the search and **every** column filter. Filters are not saved. Evaluation is over all rows and is superseded when the user types again.
 
 ### 7.4 Inspector subject resolution
 
@@ -609,7 +609,7 @@ The plan follows the staged approach in `zed-kusto-design.md` and reorders it ar
 
 | Phase | Deliverable | Spec IDs | Notes |
 | --- | --- | --- | --- |
-| A | Result viewer for `.ktt` (custom item), typed table with gutter, paging, column resize, selection, copy (TSV, Markdown, HTML text), context menu, page-size setting | GRD, SEL, COL-1..4, CPY-1..8, PER-2..4, SET-3, CMD-3..4, NFR-1..5 | Answers the capability checks in section 3.1 for table, selection and clipboard. First real 100k to 500k baseline. |
+| A | Result viewer for `.ktt` (custom item), typed table with gutter, column resize, selection, copy (TSV, Markdown, HTML text), context menu, page-size setting | GRD, SEL, COL-1..4, CPY-1..8, PER-2..4, SET-3, CMD-3..4, NFR-1..5 | Answers the capability checks in section 3.1 for table, selection and clipboard. First real 100k to 500k baseline. |
 | B | Sorting, filtering, search, severity colours, loading feedback | SRT, FLT, SRC, SEV, GRD-9, SET-4, CMD-5, CMD-7 | Filter popover and header interactions. Performance targets set from the phase A baseline. |
 | C | Row Details panel | RDT, JSN, MPM, EXC, CMD-6 | Right-dock panel; multipart, JSON colouring, call stacks. Independent of execution. |
 | D | Structured activity view | ACT | Tree, splitter, severity outcome, Deepest. |
@@ -650,7 +650,7 @@ See spec section 8 (Q-1 to Q-14); all are decided except the outcome of the phas
 
 | VS Code feature | Spec IDs | VS Code source | Phase |
 | --- | --- | --- | --- |
-| Results grid with gutter, paging, columns | GRD | `dataTableProvider.ts` | A |
+| Results grid with gutter, columns | GRD | `dataTableProvider.ts` | A |
 | Cell, row, column, table selection | SEL | `dataTableProvider.ts` | A |
 | Column resize, reorder, saved layout | COL, PER-3 | `dataTableProvider.ts`, `resultsViewer.ts` | A |
 | Copy TSV / Markdown / HTML / datatable | CPY | `dataTableProvider.ts`, `tsv.ts`, `markdown.ts`, `html.ts` | A |

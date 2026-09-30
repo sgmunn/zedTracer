@@ -30,7 +30,7 @@ Status: draft. The spikes in section 6 have run; their results are in [part 2](k
 
 | Crate | Status | Owns | Depends on |
 | --- | --- | --- | --- |
-| `kusto_results` | Built; 76 unit tests, 12 fixture tests and 1 on-demand scale test; clippy clean | Result model; `.ktt` reading and writing; sort, filter, search, paging, selection and column order; activity projection and severity; call stack, JSON and multipart logic; Copy text forms | `serde`, `serde_json`, `regex`, `anyhow` |
+| `kusto_results` | Built; 76 unit tests, 12 fixture tests and 1 on-demand scale test; clippy clean | Result model; `.ktt` reading and writing; sort, filter, search, selection and column order; activity projection and severity; call stack, JSON and multipart logic; Copy text forms | `serde`, `serde_json`, `regex`, `anyhow` |
 | Results UI | Planned (one crate to start, split later only if it grows) | The grid element, results panel, result tab, structured view, Row Details panel, settings, actions and key bindings | `kusto_results`, `gpui`, `ui`, `workspace`, `project`, settings |
 | Execution | Later; out of scope here | Running a query and delivering a `ResultSet` | `kusto_results` |
 
@@ -43,7 +43,7 @@ The results UI reuses the existing registration pattern from `crates/investigati
 | `result` | Model and file format. Typed cells that keep values exactly (64-bit integers, decimals as text, dynamic key order). Reads through raw JSON so unknown properties (charts) are written back verbatim. | `ResultSet::from_json`, `to_json`, `Table`, `Cell`, `Column`, `ColumnKind`, `TableView` |
 | `typed` | Parsing and ordering by Kusto type: datetime and timespan to 100 ns ticks, exact decimals, natural string order. | `parse_datetime_ticks`, `parse_timespan_ticks`, `Decimal`, `NumberKey`, `natural_cmp` |
 | `filter` | Operators per column type, conditions, joins, matching rules (spec FLT-4 to FLT-8). | `operators_for`, `ColumnFilter`, `Condition`, `Join` |
-| `view` | The pipeline that turns a table and view state into rows to show; three-state sort clicks; paging; rectangular selection; saved column order; severity tint rule. | `visible_rows`, `ViewState`, `SortState`, `page_range`, `CellSelection`, `display_column_order`, `severity_level` |
+| `view` | The pipeline that turns a table and view state into rows to show; three-state sort clicks; rectangular selection; saved column order; severity tint rule. | `visible_rows`, `ViewState`, `SortState`, `page_range`, `CellSelection`, `display_column_order`, `severity_level` |
 | `activity` | Structured view: grouping, parents, anomaly repair, cycle breaking, depth, branch sizes, severity outcome, Deepest. | `build_projection`, `ActivityProjection`, `Activity` |
 | `inspector` | Row Details content: subject resolution, JSON detection and pretty printing, JSON token spans, call stack trimming, multipart assembly. | `resolve_subject`, `assemble_multipart`, `format_call_stack`, `highlight_json`, `field_value` |
 | `export` | Copy forms: tab-separated, Markdown, HTML, single-cell raw text. | `copy_text`, `tsv`, `markdown`, `html` |
@@ -182,4 +182,4 @@ Output of the spikes: the second architecture note, recording which option won a
 1. Run S1 (reuse or build) and record the answer.
 2. In parallel, run S2 to S6 against the core crate's public API.
 3. Write architecture part 2 from the results, then create the results UI crate.
-4. Turn the remaining spec P0 items into the phase A backlog: viewer for `.ktt`, typed grid with gutter and paging, selection, Copy, context menu.
+4. Turn the remaining spec P0 items into the phase A backlog: viewer for `.ktt`, typed grid with gutter, selection, Copy, context menu.
