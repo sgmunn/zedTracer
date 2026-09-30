@@ -65,6 +65,10 @@ Phase C (Row Details) was mostly done by the time phase A ended, so what was lef
 
 Still open in the inspector: EXC-9 and SET-5 (a user list of call-stack frames to hide, P1, phase F), RDT-9 (previous and next among several selected rows, P2).
 
+Phase D (structured activity view), built and tested headlessly. Core: `kusto_results::activity_tree::ActivityTreeState` (which branches are open, the selection, Left and Right, Up and Down, Deepest and its cycling; a 20,000-deep chain is tested). UI, in `kusto_results_ui`: `ActivityTree` (nodes with disclosure, warning triangle, marker name, id, event count, depth badge, severity colour at full or 30 % strength, tooltips including the hierarchy problem lines of ACT-17, tree roles for assistive technology, Enter, Space, arrows, double-click), `StructuredView` (tree, splitter and a scoped `ResultGrid`; splitter default 340 px, minimum 180 px, events pane keeps 280 px, arrows move 20 px or 80 with shift, Home and End, double-click resets, separator role with min, max and current values), and a Data and Structured tab switch in `ResultsViewer` that appears when the table has both activity columns and builds the projection on first use. The grid gained `GridOptions` (a row scope and a view name), so the structured grid saves its layout as `<table>::activity-structured:<index>` (ACT-14) and `set_scope` clears and republishes the selection (ACT-13). Key bindings are in the three default keymaps (contexts `ActivityTree` and `StructuredSplitter`).
+
+Not done for phase D: ACT-16 (the structured tab in the bottom results panel, which arrives with phase E), the Query tab of PER-4 (phase E), and nobody has looked at any of it in a real window.
+
 ## Not proven yet
 
 Everything ran on GPUI's test platform: no GPU, no pixels. Looked at in a real window: the grid, Row Details, row picking, the wheel, the filter popover. Not looked at: severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.

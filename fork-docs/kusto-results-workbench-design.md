@@ -427,14 +427,15 @@ Legend:  v expanded   > collapsed   . leaf   ! warning triangle (own warning/err
 Tree node anatomy (ACT-7):
 
 ```
- [disclosure] [!] MarkerName   3f2a9c1e-...   (6)   ↓2
-      |         |     |            |            |     |
-      |         |     |            |            |     depth badge: 2 levels below; tooltip gives the branch size
-      |         |     |            |            event count
-      |         |     |            activity id
-      |         |     MarkerName of the first event (when the table has that column)
+ [disclosure] [!] ↓2   (6)   MarkerName   3f2a9c1e-...
+      |         |    |     |        |            |
+      |         |    |     |        |            activity id
+      |         |    |     |        MarkerName of the first event (when the table has that column)
+      |         |    |     event count
+      |         |    depth badge: 2 levels below; tooltip gives the branch size
       |         warning triangle: only for the activity's OWN warning/error/critical event
       v expanded, > collapsed, . leaf
+  (Zed puts the badge and the count first, in columns, so the names line up. VS Code puts them after the id.)
 ```
 
 Node colour (ACT-9), using the same palette as the grid:
