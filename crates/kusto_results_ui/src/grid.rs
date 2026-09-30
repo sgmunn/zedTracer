@@ -140,10 +140,12 @@ impl Render for DraggedHeader {
 /// The right edge of a header being dragged to resize its column.
 #[derive(Clone)]
 struct ResizeDrag {
-    position: usize,
+    /// The column at this display position, or the row-number gutter when `None`.
+    position: Option<usize>,
 }
 
 const MINIMUM_COLUMN_WIDTH: Pixels = px(48.);
+const MINIMUM_GUTTER_WIDTH: Pixels = px(40.);
 
 /// A results table: the rows of one table of a result set after search, filters and sort.
 pub struct ResultGrid {
@@ -454,6 +456,19 @@ impl ResultGrid {
         if let Some(layout) = self.layout(window, cx) {
             cx.emit(ResultGridEvent::LayoutChanged(layout));
         }
+    }
+
+    /// Sets the width of the row-number gutter so its right edge follows the pointer.
+    fn resize_gutter(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.layout_dirty = true;
+        self.column_widths.update(cx, |state, cx| {
+            state.set_column_configuration(
+                0,
+                width.max(MINIMUM_GUTTER_WIDTH),
+                TableResizeBehavior::None,
+            );
+            cx.notify();
+        });
     }
 
     /// Sets the width of a column so its right edge follows the pointer. `pointer_x` and
@@ -959,7 +974,12 @@ impl ResultGrid {
                     .bottom_0()
                     .w(px(8.))
                     .cursor_col_resize()
-                    .on_drag(ResizeDrag { position }, |_, _, _, cx| cx.new(|_| Empty)),
+                    .on_drag(
+                        ResizeDrag {
+                            position: Some(position),
+                        },
+                        |_, _, _, cx| cx.new(|_| Empty),
+                    ),
             )
             .into_any_element()
     }
@@ -1063,9 +1083,24 @@ impl Render for ResultGrid {
                 .id("result-corner")
                 .debug_selector(|| "corner".to_string())
                 .size_full()
+                .relative()
                 .cursor_pointer()
                 .when(everything_selected, |corner| corner.bg(selected_color))
                 .child("#")
+                .child(
+                    div()
+                        .id("result-gutter-resize")
+                        .debug_selector(|| "gutter-resize".to_string())
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(6.))
+                        .cursor_col_resize()
+                        .on_drag(ResizeDrag { position: None }, |_, _, _, cx| {
+                            cx.new(|_| Empty)
+                        }),
+                )
                 .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                     if event.modifiers().shift {
                         this.select_everything(cx)
@@ -1194,13 +1229,19 @@ impl Render for ResultGrid {
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<ResizeDrag>, window, cx| {
                     let position = event.drag(cx).position;
-                    this.resize_column(
-                        position,
-                        event.event.position.x,
-                        event.bounds.left(),
-                        window,
-                        cx,
-                    );
+                    match position {
+                        Some(position) => this.resize_column(
+                            position,
+                            event.event.position.x,
+                            event.bounds.left(),
+                            window,
+                            cx,
+                        ),
+                        None => this.resize_gutter(
+                            event.event.position.x - event.bounds.left(),
+                            cx,
+                        ),
+                    }
                 }),
             )
             .child(toolbar)
@@ -1955,6 +1996,49 @@ mod tests {
             cx.run_until_parked();
         }
         assert_eq!(grid.read_with(cx, |grid, _| grid.selection()), stopped);
+    }
+
+    /// COL-1: the row-number gutter resizes, never below 40 px, and its width is saved.
+    #[gpui::test]
+    async fn the_gutter_resizes_and_reports_its_width(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 50, 4);
+        let layouts = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&grid, {
+                let layouts = layouts.clone();
+                move |_, event: &ResultGridEvent, _| {
+                    if let ResultGridEvent::LayoutChanged(layout) = event {
+                        layouts.borrow_mut().push(layout.clone());
+                    }
+                }
+            })
+        });
+        let gutter = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| grid.read(cx).column_widths(window, cx))[0]
+        };
+        let before = gutter(cx);
+        let handle = centre_of(cx, "gutter-resize");
+        drag(cx, handle, px(30.));
+        assert!(
+            gutter(cx) > before + px(20.),
+            "{:?} to {:?}",
+            before,
+            gutter(cx)
+        );
+        assert_eq!(layouts.borrow().len(), 1);
+        assert_eq!(
+            layouts.borrow()[0].gutter_width,
+            Some(f32::from(gutter(cx)).round() as u32)
+        );
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.view_state().sort.active),
+            None,
+            "a resize is not a click"
+        );
+
+        let handle = centre_of(cx, "gutter-resize");
+        drag(cx, handle, px(-500.));
+        assert_eq!(gutter(cx), MINIMUM_GUTTER_WIDTH);
     }
 
     /// SEL-1, SEL-3 to SEL-5: clicking the only selected cell or row clears it, dragging on row
