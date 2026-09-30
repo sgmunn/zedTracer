@@ -733,39 +733,101 @@ impl ResultGrid {
         let bounds = self.table_bounds.get();
         let pointer = window.mouse_position();
         let rows_top = bounds.top() + HEADER_HEIGHT;
-        let (direction, distance): (isize, Pixels) = if pointer.y < rows_top {
-            (-1, rows_top - pointer.y)
+        // The pinned row numbers cover the left edge, so the columns begin after them.
+        let columns_left = bounds.left()
+            + self
+                .column_widths(window, cx)
+                .first()
+                .copied()
+                .unwrap_or_default();
+        // The further the pointer is from an edge, the more rows or columns each tick covers.
+        let step = |distance: Pixels| 1 + (f32::from(distance) / 40.) as isize;
+        let row_delta = if pointer.y < rows_top {
+            -step(rows_top - pointer.y)
         } else if pointer.y > bounds.bottom() {
-            (1, pointer.y - bounds.bottom())
+            step(pointer.y - bounds.bottom())
         } else {
-            return true;
+            0
         };
+        let column_delta = if self.dragging_rows {
+            0
+        } else if pointer.x < columns_left {
+            -step(columns_left - pointer.x)
+        } else if pointer.x > bounds.right() {
+            step(pointer.x - bounds.right())
+        } else {
+            0
+        };
+        if row_delta == 0 && column_delta == 0 {
+            return true;
+        }
         let Some(selection) = self.selection else {
             return true;
         };
-        // The further the pointer is from the edge, the more rows each tick covers.
-        let step = 1 + (f32::from(distance) / 40.) as isize;
         let last_row = self.visible_rows.len().saturating_sub(1) as isize;
-        let row = (selection.focus.0 as isize + direction * step).clamp(0, last_row) as usize;
+        let last_column = self.column_order.len().saturating_sub(1) as isize;
+        let row = (selection.focus.0 as isize + row_delta).clamp(0, last_row) as usize;
+        let column = (selection.focus.1 as isize + column_delta).clamp(0, last_column) as usize;
         let extended = if self.dragging_rows {
             CellSelection::rows(selection.anchor.0, row, self.column_order.len())
         } else {
-            selection.extended_to(row, selection.focus.1)
+            selection.extended_to(row, column)
         };
         let added_rows = self.added_rows.clone();
         self.set_selection_and_added_rows(Some(extended), added_rows, cx);
-        self.reveal_row(row, cx);
+        self.reveal_cell(row, column, window, cx);
         true
     }
 
-    /// Scrolls, and turns to another page when needed, so that the row at this position of the
-    /// visible rows shows.
-    fn reveal_row(&mut self, row: usize, cx: &mut Context<Self>) {
+    /// Scrolls so that the cell at this position of the visible rows and displayed columns
+    /// shows.
+    fn reveal_cell(&mut self, row: usize, column: usize, window: &Window, cx: &mut Context<Self>) {
         self.interaction_state
             .read(cx)
             .scroll_handle
             .scroll_to_item(row, ScrollStrategy::Nearest);
+        self.reveal_column(column, window, cx);
         cx.notify();
+    }
+
+    fn reveal_column(&mut self, position: usize, window: &Window, cx: &mut Context<Self>) {
+        let widths = self.column_widths(window, cx);
+        let (Some(gutter), Some(width)) = (widths.first(), widths.get(position + 1)) else {
+            return;
+        };
+        let viewport = self.table_bounds.get().size.width - *gutter;
+        if viewport <= px(0.) {
+            return;
+        }
+        let left: Pixels = widths[1..=position]
+            .iter()
+            .copied()
+            .fold(px(0.), |sum, next| sum + next);
+        let right = left + *width;
+        let total: Pixels = widths[1..]
+            .iter()
+            .copied()
+            .fold(px(0.), |sum, next| sum + next);
+        let handle = self
+            .interaction_state
+            .read(cx)
+            .horizontal_scroll_handle
+            .clone();
+        let offset = handle.offset();
+        let wanted = if left + offset.x < px(0.) {
+            -left
+        } else if right + offset.x > viewport {
+            viewport - right
+        } else {
+            offset.x
+        };
+        let scrolled = wanted.clamp((viewport - total).min(px(0.)), px(0.));
+        if scrolled != offset.x {
+            handle.set_offset(Point {
+                x: scrolled,
+                y: offset.y,
+            });
+        }
     }
 
     /// Moves the selected cell, or with `extend` the far corner of the selection.
@@ -774,6 +836,7 @@ impl ResultGrid {
         row_delta: isize,
         column_delta: isize,
         extend: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         let row_count = self.visible_rows.len();
@@ -783,7 +846,7 @@ impl ResultGrid {
         }
         let Some(existing) = self.selection else {
             self.set_selection(Some(CellSelection::cell(0, 0)), cx);
-            self.reveal_row(0, cx);
+            self.reveal_cell(0, 0, window, cx);
             return;
         };
         let row = (existing.focus.0 as isize + row_delta).clamp(0, row_count as isize - 1);
@@ -795,7 +858,7 @@ impl ResultGrid {
             CellSelection::cell(row, column)
         };
         self.set_selection(Some(selection), cx);
-        self.reveal_row(row, cx);
+        self.reveal_cell(row, column, window, cx);
     }
 
     fn page_rows(&self) -> isize {
@@ -1182,21 +1245,21 @@ impl Render for ResultGrid {
             .on_action(cx.listener(|this, _: &CopyAsMarkdown, _, cx| this.copy_as_markdown(cx)))
             .on_action(cx.listener(|this, _: &CopyAsHtml, _, cx| this.copy_as_html(cx)))
             .on_action(cx.listener(|this, _: &CopyAsDatatable, _, cx| this.copy_as_datatable(cx)))
-            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selection(-1, 0, false, cx)))
-            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selection(1, 0, false, cx)))
-            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_selection(0, -1, false, cx)))
-            .on_action(cx.listener(|this, _: &MoveRight, _, cx| this.move_selection(0, 1, false, cx)))
-            .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.move_selection(-1, 0, true, cx)))
-            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.move_selection(1, 0, true, cx)))
-            .on_action(cx.listener(|this, _: &ExtendLeft, _, cx| this.move_selection(0, -1, true, cx)))
-            .on_action(cx.listener(|this, _: &ExtendRight, _, cx| this.move_selection(0, 1, true, cx)))
-            .on_action(cx.listener(|this, _: &PageUp, _, cx| {
+            .on_action(cx.listener(|this, _: &MoveUp, window, cx| this.move_selection(-1, 0, false, window, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, window, cx| this.move_selection(1, 0, false, window, cx)))
+            .on_action(cx.listener(|this, _: &MoveLeft, window, cx| this.move_selection(0, -1, false, window, cx)))
+            .on_action(cx.listener(|this, _: &MoveRight, window, cx| this.move_selection(0, 1, false, window, cx)))
+            .on_action(cx.listener(|this, _: &ExtendUp, window, cx| this.move_selection(-1, 0, true, window, cx)))
+            .on_action(cx.listener(|this, _: &ExtendDown, window, cx| this.move_selection(1, 0, true, window, cx)))
+            .on_action(cx.listener(|this, _: &ExtendLeft, window, cx| this.move_selection(0, -1, true, window, cx)))
+            .on_action(cx.listener(|this, _: &ExtendRight, window, cx| this.move_selection(0, 1, true, window, cx)))
+            .on_action(cx.listener(|this, _: &PageUp, window, cx| {
                 let rows = this.page_rows();
-                this.move_selection(-rows, 0, false, cx)
+                this.move_selection(-rows, 0, false, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &PageDown, _, cx| {
+            .on_action(cx.listener(|this, _: &PageDown, window, cx| {
                 let rows = this.page_rows();
-                this.move_selection(rows, 0, false, cx)
+                this.move_selection(rows, 0, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
                 let everything =
@@ -1996,6 +2059,79 @@ mod tests {
             cx.run_until_parked();
         }
         assert_eq!(grid.read_with(cx, |grid, _| grid.selection()), stopped);
+    }
+
+    /// Moving with the keyboard to a column that is off screen scrolls sideways to it.
+    #[gpui::test]
+    async fn the_keyboard_scrolls_sideways_to_the_selected_column(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 50, 20);
+        click(cx, "cell-0-0", Modifiers::default());
+        for _ in 0..12 {
+            cx.dispatch_action(MoveRight);
+            draw(cx);
+        }
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.selection()),
+            Some(CellSelection::cell(0, 12))
+        );
+        let offset = grid.read_with(cx, |grid, cx| {
+            grid.interaction_state()
+                .read(cx)
+                .horizontal_scroll_handle
+                .offset()
+        });
+        assert!(offset.x < px(0.), "the columns scrolled: {offset:?}");
+        let bounds = bounds_of(cx, "cell-0-12");
+        assert!(
+            bounds.left() >= px(0.) && bounds.right() <= px(1400.) + px(1.),
+            "the selected cell {bounds:?} is inside the window"
+        );
+
+        for _ in 0..12 {
+            cx.dispatch_action(MoveLeft);
+            draw(cx);
+        }
+        let back = grid.read_with(cx, |grid, cx| {
+            grid.interaction_state()
+                .read(cx)
+                .horizontal_scroll_handle
+                .offset()
+        });
+        assert_eq!(back.x, px(0.), "and back again");
+    }
+
+    /// SEL-2: a drag held beyond the right edge keeps extending the selection sideways.
+    #[gpui::test]
+    async fn dragging_past_the_right_edge_scrolls_sideways(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 50, 20);
+        let from = centre_of(cx, "cell-2-1");
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let beyond = Point {
+            x: px(1450.),
+            y: from.y,
+        };
+        cx.simulate_mouse_move(beyond, MouseButton::Left, Modifiers::default());
+        for _ in 0..20 {
+            cx.executor().advance_clock(AUTO_SCROLL_INTERVAL);
+            cx.run_until_parked();
+            draw(cx);
+        }
+        let Some(selection) = grid.read_with(cx, |grid, _| grid.selection()) else {
+            panic!("a selection");
+        };
+        assert!(
+            selection.focus.1 >= 8,
+            "the drag reached {:?}",
+            selection.focus
+        );
+        let offset = grid.read_with(cx, |grid, cx| {
+            grid.interaction_state()
+                .read(cx)
+                .horizontal_scroll_handle
+                .offset()
+        });
+        assert!(offset.x < px(0.), "the columns scrolled: {offset:?}");
+        cx.simulate_mouse_up(beyond, MouseButton::Left, Modifiers::default());
     }
 
     /// COL-1: the row-number gutter resizes, never below 40 px, and its width is saved.
