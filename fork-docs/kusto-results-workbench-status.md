@@ -61,6 +61,10 @@ Phase B, beyond what phase A already gave (sort, filter, search, severity tint):
 
 Not built: shift-drag across headers to select several columns (a drag on a header reorders; shift-click ranges work), HTML on the clipboard (CPY-11), a settings-UI page for the new setting.
 
+Phase C (Row Details) was mostly done by the time phase A ended, so what was left: JSON values are set apart as code with a tinted background (`InspectorDocument::code_blocks`, `CODE_BACKGROUND_KEY`, which borrows `ConsoleAnsiHighlight(7)` like the other inspector highlights), the panel docks where the new `kusto_results.dock` setting says and can be moved (`set_position` writes the setting), and an open panel restyles itself when the theme changes. The inspector logic was also run over every row of the real `sample1.ktt` and `sample2.ktt` (7,415 rows): every row builds a document, and all 7 real multi-part groups in `sample2.ktt` assemble (4 of them into JSON). That was a throwaway scan; `real_captures_load_when_present` still only checks loading and the round trip.
+
+Still open in the inspector: EXC-9 and SET-5 (a user list of call-stack frames to hide, P1, phase F), RDT-9 (previous and next among several selected rows, P2).
+
 ## Not proven yet
 
 Everything ran on GPUI's test platform: no GPU, no pixels. Looked at in a real window: the grid, Row Details, row picking, the wheel, the filter popover. Not looked at: severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.

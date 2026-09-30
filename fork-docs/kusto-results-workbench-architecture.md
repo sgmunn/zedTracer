@@ -171,7 +171,7 @@ Output of the spikes: the second architecture note, recording which option won a
 | --- | --- | --- |
 | Noise frame list cannot be extended by the user | EXC-9 (P1) | Accept an extra list as a parameter when settings exist. |
 | A `dynamic` value with an integer above 64 bits is read as a floating point number | NFR-9 | Only affects numbers inside dynamic objects; decimals in `decimal` columns are exact. Revisit if real data needs it. |
-| `Copy as datatable` | CPY-6 | Needs a KQL expression generator; VS Code gets it from its language server. Capture vectors from VS Code output first. |
+| `Copy as datatable` | CPY-6 | Built (`export::datatable`), checked against Kusto.Language 12.4.0; see the status notes. |
 | Search and string sort allocate lower-case text per cell | SRC, SRT | Cache if the UI shows lag. |
 | Sorting cannot be interrupted once it starts comparing | NFR-2 | Key building and filtering check `keep_going`; the final comparison sort does not. It is tens of milliseconds at 200,000 rows. |
 | History, settings, severity palette defaults, `.ktt` path handling | PER-5, SET | Belong to the UI and Zed project layer. |
