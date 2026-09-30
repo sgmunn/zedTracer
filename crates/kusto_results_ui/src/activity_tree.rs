@@ -147,6 +147,11 @@ impl ActivityTree {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn tint_for_test(&self, activity: usize, cx: &App) -> Option<Hsla> {
+        self.tint(activity, cx)
+    }
+
     fn render_node(&self, position: usize, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let node = *self.state.visible().get(position)?;
         let activity = self.state.projection().activities.get(node.activity)?;

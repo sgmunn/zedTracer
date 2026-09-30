@@ -334,6 +334,11 @@ impl ResultGrid {
         &self.interaction_state
     }
 
+    #[cfg(test)]
+    pub(crate) fn visible_rows_for_test(&self) -> &[usize] {
+        &self.visible_rows
+    }
+
     pub fn visible_row_count(&self) -> usize {
         self.visible_rows.len()
     }
