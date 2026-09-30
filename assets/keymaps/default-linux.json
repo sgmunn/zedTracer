@@ -1711,4 +1711,15 @@
       "escape": "result_grid::ClearSelection",
     },
   },
+  {
+    "context": "ActivityTree",
+    "bindings": {
+      "up": "activity_tree::SelectPrevious",
+      "down": "activity_tree::SelectNext",
+      "right": "activity_tree::Expand",
+      "left": "activity_tree::Collapse",
+      "enter": "activity_tree::Activate",
+      "space": "activity_tree::Activate",
+    },
+  },
 ]
