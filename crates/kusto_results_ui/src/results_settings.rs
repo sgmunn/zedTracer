@@ -1,12 +1,14 @@
 use gpui::{Hsla, Rgba};
-use settings::{RegisterSetting, Settings};
+use settings::{DockSide, RegisterSetting, Settings};
 
 /// The settings for the Kusto results grid.
-#[derive(Clone, Debug, Default, RegisterSetting)]
+#[derive(Clone, Debug, RegisterSetting)]
 pub struct ResultsSettings {
     /// The row tint for severity levels 1 (critical) to 5 (verbose). `None` leaves a level
     /// without a tint.
     pub severity_tints: [Option<Hsla>; 5],
+    /// The side the Row Details panel docks on.
+    pub dock: DockSide,
 }
 
 impl ResultsSettings {
@@ -44,6 +46,11 @@ impl Settings for ResultsSettings {
                 .and_then(parse_tint)
         };
         Self {
+            dock: content
+                .kusto_results
+                .as_ref()
+                .and_then(|results| results.dock)
+                .unwrap_or(DockSide::Right),
             severity_tints: [
                 tint(|colours| &colours.critical),
                 tint(|colours| &colours.error),
@@ -80,6 +87,7 @@ mod tests {
     fn an_empty_or_unreadable_colour_leaves_a_level_untinted() {
         let mut content = settings::SettingsContent::default();
         content.kusto_results = Some(settings::KustoResultsSettingsContent {
+            dock: None,
             severity_colors: Some(KustoSeverityColorsContent {
                 critical: Some("#ff000080".into()),
                 error: Some(String::new()),
@@ -106,10 +114,12 @@ mod tests {
             assert!(ResultsSettings::get_global(cx).severity_tint(2).is_some());
 
             cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.set_user_settings(
-                    r##"{ "kusto_results": { "severity_colors": { "error": "", "warning": "#ff0000" } } }"##,
-                    cx,
-                );
+                store
+                    .set_user_settings(
+                        r##"{ "kusto_results": { "severity_colors": { "error": "", "warning": "#ff0000" } } }"##,
+                        cx,
+                    )
+                    .expect("the user settings parse");
             });
             let settings = ResultsSettings::get_global(cx);
             assert_eq!(settings.severity_tint(2), None, "the empty colour removes the tint");

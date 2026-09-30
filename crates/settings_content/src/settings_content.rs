@@ -1334,6 +1334,11 @@ pub struct MarkdownPreviewSettingsContent {
 #[with_fallible_options]
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
 pub struct KustoResultsSettingsContent {
+    /// Where the Row Details panel docks: "left" or "right".
+    ///
+    /// Default: "right"
+    pub dock: Option<DockSide>,
+
     /// The tint of a row whose `Level` or `Severity` column holds 1 (critical) to 5 (verbose).
     /// A colour is a hex string such as "#f14c4c40", and an empty string leaves that level
     /// without a tint.
