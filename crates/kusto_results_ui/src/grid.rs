@@ -153,6 +153,10 @@ pub struct ResultGrid {
     /// Original column indexes in the order they are displayed.
     column_order: Vec<usize>,
     visible_rows: Arc<Vec<usize>>,
+    /// The rows the grid starts from, before search and filters; `None` is the whole table.
+    scope: Option<Arc<Vec<usize>>>,
+    /// The name the column layout is saved under.
+    view_name: String,
     selection: Option<CellSelection>,
     /// Rows selected besides the rectangle, by position in the visible rows.
     added_rows: BTreeSet<usize>,
@@ -183,6 +187,17 @@ pub struct ResultGrid {
     _search_subscription: Subscription,
 }
 
+/// What distinguishes one grid of a table from another.
+#[derive(Default)]
+pub struct GridOptions {
+    /// The name the column layout is saved under, when it is not the table's own. The
+    /// structured view of a table saves its layout apart from the ordinary grid's.
+    pub view_name: Option<String>,
+    /// The source rows the grid starts from, when it shows only some of the table, as the
+    /// structured view shows one activity's events.
+    pub scope: Option<Arc<Vec<usize>>>,
+}
+
 impl EventEmitter<ResultGridEvent> for ResultGrid {}
 
 impl Focusable for ResultGrid {
@@ -198,10 +213,24 @@ impl ResultGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_options(result, table_index, GridOptions::default(), window, cx)
+    }
+
+    pub fn with_options(
+        result: Arc<ResultSet>,
+        table_index: usize,
+        options: GridOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let table = result.tables.get(table_index);
         let table_rows = table.map_or(0, |table| table.rows.len());
         let column_count = table.map_or(0, |table| table.columns.len());
-        let layout = table.and_then(|table| result.table_view(&table.name));
+        let view_name = options
+            .view_name
+            .or_else(|| table.map(|table| table.name.clone()))
+            .unwrap_or_default();
+        let layout = result.table_view(&view_name);
         let column_order = display_column_order(column_count, layout);
 
         let saved_width = |index: usize| {
@@ -259,7 +288,12 @@ impl ResultGrid {
             table_index,
             view_state: ViewState::default(),
             column_order,
-            visible_rows: Arc::new((0..table_rows).collect()),
+            visible_rows: options
+                .scope
+                .clone()
+                .unwrap_or_else(|| Arc::new((0..table_rows).collect())),
+            scope: options.scope,
+            view_name,
             selection: None,
             added_rows: BTreeSet::new(),
             layout_dirty: false,
@@ -353,11 +387,7 @@ impl ResultGrid {
 
     /// The footer text: how many rows show out of how many there are, and what is selected.
     pub fn status_text(&self) -> String {
-        let total = self
-            .result
-            .tables
-            .get(self.table_index)
-            .map_or(0, |table| table.rows.len());
+        let total = self.scope_row_count();
         let shown = self.visible_rows.len();
         let mut parts = Vec::new();
         parts.push(if shown == total {
@@ -463,11 +493,11 @@ impl ResultGrid {
 
     /// The order and widths of the columns as a saved view of this table.
     pub fn layout(&self, window: &Window, cx: &gpui::App) -> Option<TableView> {
-        let table = self.result.tables.get(self.table_index)?;
+        self.result.tables.get(self.table_index)?;
         let widths = self.column_widths(window, cx);
         let whole_pixels = |width: Pixels| f32::from(width).round() as u32;
         Some(TableView {
-            name: table.name.clone(),
+            name: self.view_name.clone(),
             gutter_width: widths.first().copied().map(whole_pixels),
             columns: Some(
                 self.column_order
@@ -571,6 +601,11 @@ impl ResultGrid {
         }
         self.selection = selection;
         self.added_rows = added_rows;
+        self.publish_selection(cx);
+    }
+
+    /// Tells the inspector, and listeners, which rows are selected.
+    fn publish_selection(&mut self, cx: &mut Context<Self>) {
         let rows = self.selected_source_rows();
         let active = ActiveSelection::shared(cx);
         let result = self.result.clone();
@@ -705,6 +740,31 @@ impl ResultGrid {
         let last_column = self.column_order.len().saturating_sub(1);
         selection.anchor.1.min(selection.focus.1) == 0
             && selection.anchor.1.max(selection.focus.1) == last_column
+    }
+
+    /// Shows another part of the table, or all of it with `None`. The selection is cleared,
+    /// as it is whenever the rows change.
+    pub fn set_scope(&mut self, scope: Option<Arc<Vec<usize>>>, cx: &mut Context<Self>) {
+        self.scope = scope;
+        // The rows the selection referred to are going, and the inspector is told even when
+        // this grid had nothing selected, because it may still show another grid's rows.
+        self.selection = None;
+        self.added_rows.clear();
+        self.publish_selection(cx);
+        self.recompute("Filtering", cx);
+    }
+
+    /// How many rows the grid starts from, before search and filters.
+    pub fn scope_row_count(&self) -> usize {
+        self.scope.as_ref().map_or_else(
+            || {
+                self.result
+                    .tables
+                    .get(self.table_index)
+                    .map_or(0, |table| table.rows.len())
+            },
+            |scope| scope.len(),
+        )
     }
 
     /// A click on the corner cell: ascending, then descending, then the original order.
@@ -930,6 +990,7 @@ impl ResultGrid {
         let result = self.result.clone();
         let table_index = self.table_index;
         let view_state = self.view_state.clone();
+        let scope = self.scope.clone();
         let latest = self.generation.clone();
         self.recompute_task = Some(cx.spawn(async move |this, cx| {
             let rows = cx
@@ -937,9 +998,12 @@ impl ResultGrid {
                     let latest = latest.clone();
                     async move {
                         let table = result.tables.get(table_index)?;
-                        visible_rows(table, &view_state, None, &|| {
-                            latest.load(Ordering::SeqCst) == generation
-                        })
+                        visible_rows(
+                            table,
+                            &view_state,
+                            scope.as_deref().map(Vec::as_slice),
+                            &|| latest.load(Ordering::SeqCst) == generation,
+                        )
                     }
                 })
                 .await;
@@ -1240,11 +1304,7 @@ impl Render for ResultGrid {
                     .color(Color::Muted),
             )
             .when(self.shows_busy_indicator(), |footer| {
-                let total = self
-                    .result
-                    .tables
-                    .get(self.table_index)
-                    .map_or(0, |table| table.rows.len());
+                let total = self.scope_row_count();
                 let message = format!("{} {total} rows…", self.busy_action);
                 footer.child(
                     h_flex()
@@ -1261,12 +1321,7 @@ impl Render for ResultGrid {
                         ),
                 )
             });
-        let no_rows_message = if self
-            .result
-            .tables
-            .get(self.table_index)
-            .is_none_or(|table| table.rows.is_empty())
-        {
+        let no_rows_message = if self.scope_row_count() == 0 {
             "No results"
         } else {
             "No results match your search query"
@@ -2372,6 +2427,64 @@ mod tests {
             cx.debug_bounds("busy-indicator").is_none(),
             "quick work never shows it"
         );
+    }
+
+    /// ACT-6, ACT-13, ACT-14: a grid can show only some rows of its table, changing which
+    /// clears the selection, and saves its layout under its own name.
+    #[gpui::test]
+    async fn a_scoped_grid_shows_only_its_rows_and_saves_its_own_layout(cx: &mut TestAppContext) {
+        init_test(cx);
+        let result = Arc::new(generated_result(50, 4));
+        let (_root, cx) = cx.add_window_view(|_, _| Empty);
+        let scope = Arc::new(vec![7, 3, 12]);
+        let grid = cx.update(|window, cx| {
+            cx.new(|cx| {
+                ResultGrid::with_options(
+                    result.clone(),
+                    0,
+                    GridOptions {
+                        view_name: Some("PrimaryResult::activity-structured:0".into()),
+                        scope: Some(scope),
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        let rows = |cx: &mut VisualTestContext| {
+            grid.read_with(cx, |grid, _| grid.visible_rows.as_ref().clone())
+        };
+        assert_eq!(rows(cx), [7, 3, 12], "in the order the scope gives");
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.status_text()),
+            "3 rows",
+            "the footer counts the scope, not the table"
+        );
+
+        grid.update(cx, |grid, cx| {
+            grid.set_selection(Some(CellSelection::rows(1, 1, 4)), cx)
+        });
+        grid.update(cx, |grid, cx| {
+            grid.set_scope(Some(Arc::new(vec![20, 21])), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(rows(cx), [20, 21]);
+        assert_eq!(grid.read_with(cx, |grid, _| grid.selection()), None);
+        assert_eq!(
+            cx.update(|_, cx| ActiveSelection::shared(cx).read(cx).rows.clone()),
+            Vec::<usize>::new(),
+            "an empty selection is published"
+        );
+
+        let layout = cx.update(|window, cx| grid.read(cx).layout(window, cx));
+        assert_eq!(
+            layout.map(|layout| layout.name),
+            Some("PrimaryResult::activity-structured:0".to_string())
+        );
+
+        grid.update(cx, |grid, cx| grid.set_scope(None, cx));
+        cx.run_until_parked();
+        assert_eq!(rows(cx).len(), 50, "no scope is the whole table");
     }
 
     /// SEL-1, SEL-3 to SEL-5: clicking the only selected cell or row clears it, dragging on row
