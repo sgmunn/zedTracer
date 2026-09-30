@@ -13,7 +13,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, actions, anchored, canvas, deferred, div, px, rgba,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::export::{copy_text, html, markdown};
+use kusto_results::export::{copy_text, datatable, html, markdown};
 use kusto_results::filter::ColumnFilter;
 use kusto_results::view::{
     CellSelection, SortColumn, SortDirection, ViewState, display_column_order, selected_positions,
@@ -37,6 +37,8 @@ actions!(
         CopyAsMarkdown,
         /// Copies the selection as HTML table markup.
         CopyAsHtml,
+        /// Copies the selection as a KQL datatable expression.
+        CopyAsDatatable,
         /// Moves the selected cell up.
         MoveUp,
         /// Moves the selected cell down.
@@ -402,6 +404,10 @@ impl ResultGrid {
         self.copy_as(html, cx);
     }
 
+    pub fn copy_as_datatable(&self, cx: &mut Context<Self>) {
+        self.copy_as(datatable, cx);
+    }
+
     fn copy_as(
         &self,
         format: fn(&kusto_results::Table, &[usize], &[usize]) -> String,
@@ -679,6 +685,7 @@ impl ResultGrid {
                 .action("Copy", Box::new(Copy))
                 .action("Copy as Markdown", Box::new(CopyAsMarkdown))
                 .action("Copy as HTML", Box::new(CopyAsHtml))
+                .action("Copy as datatable", Box::new(CopyAsDatatable))
         });
         window.focus(&menu.focus_handle(cx), cx);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -1139,6 +1146,7 @@ impl Render for ResultGrid {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_selection(cx)))
             .on_action(cx.listener(|this, _: &CopyAsMarkdown, _, cx| this.copy_as_markdown(cx)))
             .on_action(cx.listener(|this, _: &CopyAsHtml, _, cx| this.copy_as_html(cx)))
+            .on_action(cx.listener(|this, _: &CopyAsDatatable, _, cx| this.copy_as_datatable(cx)))
             .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selection(-1, 0, false, cx)))
             .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selection(1, 0, false, cx)))
             .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_selection(0, -1, false, cx)))
@@ -2071,6 +2079,17 @@ mod tests {
         assert_eq!(markdown.lines().count(), 3, "header, separator and one row");
         grid.update(cx, |grid, cx| grid.copy_as_html(cx));
         assert!(clipboard(cx).contains("<table"));
+        grid.update(cx, |grid, cx| grid.copy_as_datatable(cx));
+        let expression = clipboard(cx);
+        assert!(
+            expression.starts_with("datatable (Id0: long, Message1: string, Stamp2: datetime) ["),
+            "{expression}"
+        );
+        assert_eq!(
+            expression.lines().count(),
+            3,
+            "header, one row and the bracket"
+        );
     }
 
     /// SEL-11: Ctrl/Cmd+click on row numbers picks rows that are not next to each other, and
