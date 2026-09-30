@@ -11,13 +11,13 @@ use gpui::{
     SharedString, Task, Window, div, px,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::ResultSet;
 use kusto_results::export::copy_text;
 use kusto_results::filter::ColumnFilter;
 use kusto_results::view::{
     CellSelection, SortColumn, SortDirection, ViewState, display_column_order, selected_positions,
     toggle_row, visible_rows,
 };
+use kusto_results::{ColumnLayout, ResultSet, TableView};
 use ui::{
     ColumnWidthConfig, IconButton, IconName, IconSize, PopoverMenu, ResizableColumnsState, Table,
     TableInteractionState, TableResizeBehavior, prelude::*,
@@ -39,13 +39,38 @@ fn group_digits(number: usize) -> String {
     grouped
 }
 
+/// A first width for a column without a saved one: wide enough for its label and the start of
+/// its values, and never wider than 500 px.
+fn content_width(table: &kusto_results::Table, column: usize) -> Pixels {
+    const SAMPLED_ROWS: usize = 200;
+    const CHARACTER_WIDTH: f32 = 7.5;
+    // Room for the sort and filter buttons in the header.
+    const HEADER_CHROME: f32 = 64.;
+    let label = table
+        .columns
+        .get(column)
+        .map_or(0, |column| column.name.chars().count());
+    let longest_value = table
+        .rows
+        .iter()
+        .take(SAMPLED_ROWS)
+        .filter_map(|row| row.get(column))
+        .map(|cell| cell.display_text().chars().count())
+        .max()
+        .unwrap_or(0);
+    let characters = label.max(longest_value) as f32;
+    px((characters * CHARACTER_WIDTH + HEADER_CHROME).clamp(96., 500.))
+}
+
 const GUTTER_WIDTH: Pixels = px(56.);
 const DEFAULT_COLUMN_WIDTH: Pixels = px(160.);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResultGridEvent {
     /// The selected rows changed, as source row indexes in display order.
     SelectionChanged { rows: Vec<usize> },
+    /// The user changed the order or widths of the columns. A saved result writes this back.
+    LayoutChanged(TableView),
 }
 
 /// A header dragged to a new place among the columns.
@@ -96,6 +121,8 @@ pub struct ResultGrid {
     recompute_task: Option<Task<()>>,
     /// How many rows the last frame built, to show that only visible rows are created.
     last_rendered_rows: Cell<usize>,
+    /// A column edge is being dragged, so the layout is saved when the drag ends.
+    layout_dirty: bool,
 }
 
 impl EventEmitter<ResultGridEvent> for ResultGrid {}
@@ -108,8 +135,23 @@ impl ResultGrid {
         let layout = table.and_then(|table| result.table_view(&table.name));
         let column_order = display_column_order(column_count, layout);
 
-        let mut widths = vec![GUTTER_WIDTH];
-        widths.extend(std::iter::repeat_n(DEFAULT_COLUMN_WIDTH, column_count));
+        let saved_width = |index: usize| {
+            layout
+                .and_then(|layout| layout.columns.as_ref())
+                .and_then(|columns| columns.iter().find(|saved| saved.index == index))
+                .and_then(|saved| saved.width)
+                .map(|width| px(width as f32))
+        };
+        let mut widths = vec![
+            layout
+                .and_then(|layout| layout.gutter_width)
+                .map_or(GUTTER_WIDTH, |width| px(width as f32)),
+        ];
+        widths.extend(column_order.iter().map(|&index| {
+            saved_width(index)
+                .or_else(|| table.map(|table| content_width(table, index)))
+                .unwrap_or(DEFAULT_COLUMN_WIDTH)
+        }));
         let mut behavior = vec![TableResizeBehavior::None];
         behavior.extend(std::iter::repeat_n(
             TableResizeBehavior::MinSize(0.05),
@@ -147,7 +189,15 @@ impl ResultGrid {
             busy: false,
             recompute_task: None,
             last_rendered_rows: Cell::new(0),
+            layout_dirty: false,
         }
+    }
+
+    pub fn table_name(&self) -> String {
+        self.result
+            .tables
+            .get(self.table_index)
+            .map_or_else(String::new, |table| table.name.clone())
     }
 
     pub fn last_rendered_rows(&self) -> usize {
@@ -276,6 +326,33 @@ impl ResultGrid {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text(table, &rows, &columns)));
     }
 
+    /// The order and widths of the columns as a saved view of this table.
+    pub fn layout(&self, window: &Window, cx: &gpui::App) -> Option<TableView> {
+        let table = self.result.tables.get(self.table_index)?;
+        let widths = self.column_widths(window, cx);
+        let whole_pixels = |width: Pixels| f32::from(width).round() as u32;
+        Some(TableView {
+            name: table.name.clone(),
+            gutter_width: widths.first().copied().map(whole_pixels),
+            columns: Some(
+                self.column_order
+                    .iter()
+                    .enumerate()
+                    .map(|(position, &index)| ColumnLayout {
+                        index,
+                        width: widths.get(position + 1).copied().map(whole_pixels),
+                    })
+                    .collect(),
+            ),
+        })
+    }
+
+    fn emit_layout(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(layout) = self.layout(window, cx) {
+            cx.emit(ResultGridEvent::LayoutChanged(layout));
+        }
+    }
+
     /// Sets the width of a column so its right edge follows the pointer. `pointer_x` and
     /// `table_left` are in window coordinates.
     fn resize_column(
@@ -299,6 +376,7 @@ impl ResultGrid {
             .copied()
             .fold(px(0.), |sum, width| sum + width);
         let new_width = (pointer_x - table_left - scrolled - left_edge).max(MINIMUM_COLUMN_WIDTH);
+        self.layout_dirty = true;
         self.column_widths.update(cx, |state, cx| {
             state.set_column_configuration(
                 position + 1,
@@ -326,6 +404,7 @@ impl ResultGrid {
             }
         });
         self.set_selection(None, cx);
+        self.emit_layout(window, cx);
         cx.notify();
     }
 
@@ -411,8 +490,11 @@ impl ResultGrid {
         self.set_selection_and_added_rows(Some(selection), added_rows, cx);
     }
 
-    fn end_drag(&mut self) {
+    fn end_drag(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.dragging_selection = false;
+        if std::mem::take(&mut self.layout_dirty) {
+            self.emit_layout(window, cx);
+        }
     }
 
     fn recompute(&mut self, cx: &mut Context<Self>) {
@@ -660,11 +742,11 @@ impl Render for ResultGrid {
             .size_full()
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.end_drag()),
+                cx.listener(|this, _, window, cx| this.end_drag(window, cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.end_drag()),
+                cx.listener(|this, _, window, cx| this.end_drag(window, cx)),
             )
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<ResizeDrag>, window, cx| {
@@ -943,7 +1025,10 @@ mod tests {
         let (grid, cx) = open_grid(cx, 200, 6);
         let before = cx.update(|window, cx| grid.read(cx).column_widths(window, cx));
         let divider = Point {
-            x: px(376.),
+            x: before[..=2]
+                .iter()
+                .copied()
+                .fold(px(0.), |sum, width| sum + width),
             y: px(100.),
         };
         drag(cx, divider, px(60.));
@@ -960,6 +1045,7 @@ mod tests {
         let widths = cx.update(|window, cx| grid.read(cx).column_widths(window, cx));
         let wide = widths[2];
         assert!(wide > px(200.));
+        let before_reorder = widths;
 
         let from = centre_of(cx, "header-name-1");
         let to = centre_of(cx, "header-name-4");
@@ -971,7 +1057,10 @@ mod tests {
             widths[5], wide,
             "the wide column moved to display position 4"
         );
-        assert_eq!(widths[2], px(160.));
+        assert_eq!(
+            widths[2], before_reorder[3],
+            "the column that took its place brought its own width"
+        );
     }
 
     /// S2: dragging a header onto another reorders the columns and their widths.
@@ -1285,6 +1374,66 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(1_000), "1,000");
         assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
+
+    /// COL-4: a resize or a reorder reports the layout, and a grid opened with that layout shows
+    /// the same order and widths.
+    #[gpui::test]
+    async fn the_column_layout_is_reported_and_restored(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 50, 4);
+        let layouts = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&grid, {
+                let layouts = layouts.clone();
+                move |_, event: &ResultGridEvent, _| {
+                    if let ResultGridEvent::LayoutChanged(layout) = event {
+                        layouts.borrow_mut().push(layout.clone());
+                    }
+                }
+            })
+        });
+        let widths = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| grid.read(cx).column_widths(window, cx))
+        };
+
+        let edge = centre_of(cx, "header-resize-1");
+        drag(cx, edge, px(40.));
+        assert_eq!(layouts.borrow().len(), 1, "one report, when the drag ends");
+        let widened = widths(cx)[2];
+        let from = centre_of(cx, "header-name-1");
+        let to = centre_of(cx, "header-name-3");
+        drag(cx, from, to.x - from.x);
+        assert_eq!(layouts.borrow().len(), 2);
+
+        let saved = layouts.borrow()[1].clone();
+        assert_eq!(saved.name, "PrimaryResult");
+        let saved_columns = saved.columns.clone().unwrap_or_default();
+        let saved_order: Vec<usize> = saved_columns.iter().map(|column| column.index).collect();
+        assert_eq!(saved_order, [0, 2, 3, 1]);
+        assert_eq!(
+            saved_columns[3].width,
+            Some(f32::from(widened).round() as u32),
+            "the widened column keeps its width in its new place"
+        );
+
+        let mut result = generated_result(50, 4);
+        result.set_table_view(saved);
+        let reopened = cx.update(|_, cx| cx.new(|cx| ResultGrid::new(Arc::new(result), 0, cx)));
+        assert_eq!(
+            reopened.read_with(cx, |grid, _| grid.column_order().to_vec()),
+            [0, 2, 3, 1]
+        );
+        let whole = |widths: Vec<Pixels>| -> Vec<i32> {
+            widths
+                .into_iter()
+                .map(|width| f32::from(width).round() as i32)
+                .collect()
+        };
+        assert_eq!(
+            whole(cx.update(|window, cx| reopened.read(cx).column_widths(window, cx))),
+            whole(widths(cx)),
+            "widths are saved in whole pixels"
+        );
     }
 
     /// S6: a grid publishes its selection to the shared state the Row Details panel follows.
