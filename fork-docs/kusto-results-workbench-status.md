@@ -20,7 +20,7 @@ Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projec
 ## Code
 
 - `crates/kusto_results` (built, tested, clippy clean): UI-free core. Modules `result` (model, `.ktt` read/write, lossless numbers), `typed`, `filter`, `view` (visible rows, sort, paging, selection, column order, severity), `activity`, `inspector`, `export`. 76 unit tests plus `tests/sample_fixtures.rs` (12 tests, checks every expected-results file; 1 ignored scale test).
-- `crates/kusto_results_ui` (spike code, tests pass, clippy clean): `ResultGrid` on `ui::Table` (`grid.rs`), `FilterPopover`, `InspectorText` (read-only editor), `RowDetailsPanel` plus shared `ActiveSelection` (`row_details_panel.rs`). Not yet registered in the `zed` binary.
+- `crates/kusto_results_ui` (spike code, tests pass, clippy clean): `ResultGrid` on `ui::Table` (`grid.rs`), `FilterPopover`, `InspectorText` (read-only editor), `RowDetailsPanel` plus shared `ActiveSelection` (`row_details_panel.rs`). Registered in the `zed` binary (`results_viewer.rs`: `.ktt`/`.kqr` project item and `ResultsViewer` tab; `RowDetailsPanel::load` in `initialize_panels`). `cargo check -p zed` and a headless open-fixture test pass; nobody has seen it in a real window yet.
 - Workspace changes: `Cargo.toml` members and dependencies for both crates; `Cargo.lock`.
 - Samples: `sample1.ktt` and `sample2.ktt` are real telemetry, git-ignored, never commit. `generated/` (200,000-row file) is git-ignored; make it with `python3 fork-docs/samples/generate_samples.py --large`.
 
@@ -46,14 +46,19 @@ Notes: `--offline` fails on this workspace (missing index entry), so build onlin
 
 Follow `CLAUDE.md` at the repo root: no `unwrap()` in non-test code, no `let _ =` on fallible calls, no `mod.rs`, crate lib path in `Cargo.toml`, full-word names, comments only for why, use `./script/clippy`. The repo `README.md` already carries the required `> [!IMPORTANT]` lines; never remove them. The only intentional panic site is the regex helper in `inspector.rs`.
 
+## After first look in a real window
+
+- Works: opening `.ktt`, the grid, Row Details. Added in response: Ctrl/Cmd+click on row numbers for non-contiguous row selection (SEL-11, in `view::toggle_row`; the rectangle stays for shift-click, the other rows are an added set), and a footer with `N rows` or `M of N rows` plus `Row N selected` or `K rows selected` (`ResultGrid::status_text`).
+- Bug in main code, committed on its own (`crates/ui/src/components/data_table.rs`): a sideways wheel also scrolled the rows, because the table's vertical list lacked `restrict_scroll_to_axis`. The regression test is `horizontal_wheel_scrolls_only_horizontally` in `grid.rs`.
+
 ## Not proven yet
 
 Everything ran on GPUI's test platform: no GPU, no pixels, nothing seen in a real window. Not spiked: auto-scroll while drag-selecting, keyboard navigation, header and corner selection gestures, Ctrl+F inside the inspector, choosing an operator from the popover dropdown, two-condition filters, panel position persistence, key bindings.
 
 ## Next steps
 
-1. Register in the `zed` binary following `crates/investigation` (see `crates/zed/src/main.rs` and `zed.rs` for its three registration lines): a `.ktt` project item hosting `ResultGrid`, and `RowDetailsPanel`. Open `samples/synthetic-types.ktt` and `synthetic-trace-edge.ktt` and review by eye.
-2. Build the inspector renderer: one read-only editor, header line per field, using `kusto_results::inspector` (`resolve_subject`, `field_value`, `merged_field_value`, `highlight_json`); add Wrap and Find controls.
+1. Done in code (see Code above). Remaining: run `zed`, open `samples/synthetic-types.ktt` and `synthetic-trace-edge.ktt`, and review by eye. A failed parse currently surfaces only as Zed's generic open-error notification.
+2. Done in code: `kusto_results::inspector::build_document` makes the text and style spans; `RowDetailsPanel` shows it in one read-only editor (`InspectorText::set_document`) with a Find box, a Wrap toggle and a match count. Escape clears Find; Cmd/Ctrl+F focuses it (bindings in the three `default-*.json` keymaps, context `RowDetailsPanel > Editor`). Closing the grid that owns the subject empties the panel (RDT-11). Tested headlessly only. Field headers and nulls borrow `ConsoleAnsiHighlight(5)` and `(6)`. Still to do: look at it in a real window, and a theme change is only picked up on the next selection change.
 3. Phase A backlog from the spec P0 list: paging and footer, column layout load and save (`TableView`), Copy as Markdown and HTML text, context menu, severity tint, search box, filter popover with two conditions, header and corner selection, keyboard, auto-scroll.
 4. Then phases B to E in `kusto-results-workbench-design.md` section 10 (structured view, results panel, execution). Phase F: query parameters, agent handoff.
 5. Open checks: Q-3 (is VS Code multi-word search OR) in a running VS Code; Q-9 (other panels in the bottom dock).
