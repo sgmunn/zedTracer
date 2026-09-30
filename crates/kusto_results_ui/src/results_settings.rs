@@ -57,7 +57,7 @@ impl Settings for ResultsSettings {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui::{BorrowAppContext as _, TestAppContext};
     use settings::{KustoSeverityColorsContent, SettingsStore};
 
     use super::*;
@@ -94,5 +94,30 @@ mod tests {
         assert_eq!(settings.severity_tint(3), None);
         assert_eq!(settings.severity_tint(4), None);
         assert!(settings.severity_tint(5).is_some());
+    }
+
+    /// A user's `""` has to win over the default colour when the settings are merged, not only
+    /// when one section is read on its own.
+    #[gpui::test]
+    fn an_empty_colour_in_the_user_settings_removes_that_tint(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            assert!(ResultsSettings::get_global(cx).severity_tint(2).is_some());
+
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.set_user_settings(
+                    r##"{ "kusto_results": { "severity_colors": { "error": "", "warning": "#ff0000" } } }"##,
+                    cx,
+                );
+            });
+            let settings = ResultsSettings::get_global(cx);
+            assert_eq!(settings.severity_tint(2), None, "the empty colour removes the tint");
+            assert!(settings.severity_tint(3).is_some(), "a colour replaces the default");
+            assert!(
+                settings.severity_tint(1).is_some(),
+                "a level the user did not mention keeps its default"
+            );
+        });
     }
 }
