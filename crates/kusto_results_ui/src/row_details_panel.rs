@@ -191,6 +191,7 @@ impl RowDetailsPanel {
             }),
             header: theme.colors().text_accent,
             null: theme.colors().text_muted,
+            code_background: theme.colors().element_background,
         }
     }
 
@@ -576,6 +577,13 @@ mod tests {
             "Message · string\nTimeout talking to sql-01\n\nException · dynamic\n{\n  \"type\": \"SqlException\",\n  \"message\": \"Timeout expired\"\n}\n\nTrace · string\nnull"
         );
 
+        let inspector_editor =
+            panel.read_with(cx, |panel, cx| panel.inspector().read(cx).editor().clone());
+        assert!(
+            inspector_editor.read_with(cx, |editor, _| editor
+                .has_background_highlights(crate::inspector_text::CODE_BACKGROUND_KEY)),
+            "a JSON value is set apart as code (JSN-2)"
+        );
         let find_editor = panel.read_with(cx, |panel, _| panel.find_editor().clone());
         find_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("TIMEOUT", window, cx)
