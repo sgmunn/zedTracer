@@ -129,6 +129,12 @@ impl RowDetailsPanel {
             cx.observe_in(&selection, window, |this, _, window, cx| {
                 this.refresh(window, cx)
             }),
+            cx.observe_global_in::<theme::GlobalTheme>(window, |this, window, cx| {
+                // The colours were chosen when the document was shown; show it again in the
+                // new theme.
+                this.shown = InspectorDocument::default();
+                this.refresh(window, cx);
+            }),
             cx.subscribe_in(&find_editor, window, |this, _, event, window, cx| {
                 if matches!(event, editor::EditorEvent::BufferEdited) {
                     this.apply_find(window, cx);
@@ -659,5 +665,51 @@ mod tests {
             });
         });
         assert_eq!(position(cx), DockPosition::Left);
+    }
+
+    /// A change of theme restyles what the open panel already shows.
+    #[gpui::test]
+    async fn a_theme_change_restyles_the_shown_row(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+        });
+        cx.simulate_resize(gpui::size(px(360.), px(600.)));
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        active.update(cx, |active, cx| {
+            active.result = Some(exception_result());
+            active.table_index = 0;
+            active.rows = vec![0];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let header_colour = |cx: &mut gpui::VisualTestContext| {
+            let editor =
+                panel.read_with(cx, |panel, cx| panel.inspector().read(cx).editor().clone());
+            editor.update(cx, |editor, cx| {
+                editor
+                    .text_highlights(
+                        editor::display_map::HighlightKey::ConsoleAnsiHighlight(5),
+                        cx,
+                    )
+                    .and_then(|(style, _)| style.color)
+            })
+        };
+        let before = header_colour(cx);
+        assert!(before.is_some());
+
+        cx.update(|_, cx| {
+            let mut changed = (**theme::GlobalTheme::theme(cx)).clone();
+            changed.styles.colors.text_accent = gpui::hsla(0.5, 1., 0.5, 1.);
+            theme::GlobalTheme::update_theme(cx, std::sync::Arc::new(changed));
+        });
+        cx.run_until_parked();
+        let after = header_colour(cx);
+        assert_eq!(after, Some(gpui::hsla(0.5, 1., 0.5, 1.)));
+        assert_ne!(before, after);
     }
 }

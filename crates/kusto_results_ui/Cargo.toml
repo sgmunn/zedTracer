@@ -28,6 +28,7 @@ project.workspace = true
 rope.workspace = true
 settings.workspace = true
 text.workspace = true
+theme.workspace = true
 ui.workspace = true
 util.workspace = true
 workspace.workspace = true
@@ -42,5 +43,4 @@ project = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 settings = { workspace = true, features = ["test-support"] }
-theme.workspace = true
 theme_settings.workspace = true
