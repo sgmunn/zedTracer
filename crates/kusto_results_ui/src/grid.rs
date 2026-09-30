@@ -1090,6 +1090,51 @@ mod tests {
         );
     }
 
+    /// A sideways wheel moves the columns and leaves the rows where they are.
+    #[gpui::test]
+    async fn horizontal_wheel_scrolls_only_horizontally(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 20);
+        let state = grid.read_with(cx, |grid, _| grid.interaction_state().clone());
+        let offsets = |cx: &mut VisualTestContext| {
+            state.read_with(cx, |state, _| {
+                (
+                    state.scroll_offset(),
+                    state.horizontal_scroll_handle.offset(),
+                )
+            })
+        };
+        let (vertical_before, _) = offsets(cx);
+        let over_rows = centre_of(cx, "cell-3-2");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: over_rows,
+            delta: gpui::ScrollDelta::Lines(gpui::point(-3., 0.)),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let (vertical_after, horizontal_after) = offsets(cx);
+        assert_ne!(horizontal_after.x, px(0.), "the columns scrolled");
+        assert_eq!(vertical_after, vertical_before, "the rows did not scroll");
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: over_rows,
+            delta: gpui::ScrollDelta::Lines(gpui::point(0., -3.)),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let (vertical_scrolled, horizontal_unchanged) = offsets(cx);
+        assert_ne!(
+            vertical_scrolled.y,
+            px(0.),
+            "a vertical wheel scrolls the rows"
+        );
+        assert_eq!(
+            horizontal_unchanged, horizontal_after,
+            "and not the columns"
+        );
+    }
+
     /// S6: a grid publishes its selection to the shared state the Row Details panel follows.
     #[gpui::test]
     async fn a_grid_publishes_its_selection_for_row_details(cx: &mut TestAppContext) {
