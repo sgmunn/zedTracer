@@ -13,5 +13,6 @@ pub mod typed;
 pub mod view;
 
 pub use result::{
-    Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, ResultSet, Table, TableView,
+    Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, NoResultData, ResultSet, Table,
+    TableView,
 };

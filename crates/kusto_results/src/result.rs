@@ -191,6 +191,18 @@ impl PartialEq for ExtraProperty {
     }
 }
 
+/// A result file that is valid JSON but holds no `tables`, so there is nothing to show.
+#[derive(Debug)]
+pub struct NoResultData;
+
+impl std::fmt::Display for NoResultData {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the result file has no tables property")
+    }
+}
+
+impl std::error::Error for NoResultData {}
+
 /// Everything one query run returned, plus what was saved with it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResultSet {
@@ -243,7 +255,7 @@ impl ResultSet {
             }
         }
         if !saw_tables {
-            bail!("the result file has no tables property");
+            return Err(NoResultData.into());
         }
         Ok(result)
     }
@@ -534,8 +546,10 @@ mod tests {
 
     #[test]
     fn rejects_a_file_without_tables() {
-        assert!(ResultSet::from_json(r#"{"query":"q"}"#).is_err());
-        assert!(ResultSet::from_json("[]").is_err());
+        let no_tables = ResultSet::from_json(r#"{"query":"q"}"#).unwrap_err();
+        assert!(no_tables.is::<NoResultData>());
+        let not_an_object = ResultSet::from_json("[]").unwrap_err();
+        assert!(!not_an_object.is::<NoResultData>());
     }
 
     #[test]
