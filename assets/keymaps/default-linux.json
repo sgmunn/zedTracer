@@ -1687,6 +1687,18 @@
     "context": "ResultGrid",
     "bindings": {
       "ctrl-c": "result_grid::Copy",
+      "up": "result_grid::MoveUp",
+      "down": "result_grid::MoveDown",
+      "left": "result_grid::MoveLeft",
+      "right": "result_grid::MoveRight",
+      "shift-up": "result_grid::ExtendUp",
+      "shift-down": "result_grid::ExtendDown",
+      "shift-left": "result_grid::ExtendLeft",
+      "shift-right": "result_grid::ExtendRight",
+      "pageup": "result_grid::PageUp",
+      "pagedown": "result_grid::PageDown",
+      "ctrl-a": "result_grid::SelectAll",
+      "escape": "result_grid::ClearSelection",
     },
   },
 ]
