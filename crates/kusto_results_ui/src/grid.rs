@@ -1141,6 +1141,54 @@ mod tests {
         assert!(!popover_is_open(cx), "Clear closes the popover");
     }
 
+    /// FLT-3: a column takes two conditions, joined by all, and the second can be removed again.
+    #[gpui::test]
+    async fn a_column_can_have_two_conditions(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 6);
+        let visible =
+            |cx: &VisualTestContext| grid.read_with(cx, |grid, _| grid.visible_row_count());
+        click(cx, "header-filter-1", Modifiers::default());
+        assert!(cx.debug_bounds("filter-remove").is_none());
+        cx.simulate_input("message 1");
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(visible(cx), 111);
+
+        click(cx, "filter-add", Modifiers::default());
+        assert!(cx.debug_bounds("filter-value-1").is_some());
+        assert!(cx.debug_bounds("filter-add").is_none(), "two is the most");
+        cx.simulate_input("message 10");
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(visible(cx), 11, "both conditions must match");
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.view_state().filters[&1].conditions.len()),
+            2
+        );
+
+        // The join list is drawn outside the popover, so a click on it is a click outside the
+        // popover; that must not close the popover.
+        click(cx, "filter-join", Modifiers::default());
+        cx.simulate_click(
+            Point {
+                x: px(700.),
+                y: px(500.),
+            },
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert!(
+            popover_is_open(cx),
+            "a click outside while a list is open keeps the popover"
+        );
+
+        click(cx, "filter-remove", Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(visible(cx), 111);
+        assert!(cx.debug_bounds("filter-value-1").is_none());
+    }
+
     /// S5: a popover anchored to its funnel's right edge would run off the left side of the
     /// window for the first column; the window keeps it on screen.
     #[gpui::test]
