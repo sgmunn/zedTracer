@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use editor::{Editor, EditorEvent};
 use gpui::{
-    Anchor, AnyElement, ClickEvent, ClipboardItem, Context, DefiniteLength, DismissEvent,
+    Anchor, AnyElement, Bounds, ClickEvent, ClipboardItem, Context, DefiniteLength, DismissEvent,
     DragMoveEvent, Empty, Entity, EventEmitter, FocusHandle, Focusable, Hsla, Length, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, SharedString, Subscription,
-    Task, Window, actions, anchored, deferred, div, px, rgba,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, ScrollStrategy,
+    SharedString, Subscription, Task, Window, actions, anchored, canvas, deferred, div, px, rgba,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::export::{copy_text, html, markdown};
@@ -37,6 +37,30 @@ actions!(
         CopyAsMarkdown,
         /// Copies the selection as HTML table markup.
         CopyAsHtml,
+        /// Moves the selected cell up.
+        MoveUp,
+        /// Moves the selected cell down.
+        MoveDown,
+        /// Moves the selected cell left.
+        MoveLeft,
+        /// Moves the selected cell right.
+        MoveRight,
+        /// Extends the selection up.
+        ExtendUp,
+        /// Extends the selection down.
+        ExtendDown,
+        /// Extends the selection left.
+        ExtendLeft,
+        /// Extends the selection right.
+        ExtendRight,
+        /// Moves the selected cell up by a screen of rows.
+        PageUp,
+        /// Moves the selected cell down by a screen of rows.
+        PageDown,
+        /// Selects the whole table.
+        SelectAll,
+        /// Clears the selection.
+        ClearSelection,
     ]
 );
 
@@ -74,6 +98,11 @@ fn content_width(table: &kusto_results::Table, column: usize) -> Pixels {
     let characters = label.max(longest_value) as f32;
     px((characters * CHARACTER_WIDTH + HEADER_CHROME).clamp(96., 500.))
 }
+
+/// How often a drag held beyond the top or bottom edge scrolls and extends the selection.
+const AUTO_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+/// The header sits above the rows inside the table's bounds.
+const HEADER_HEIGHT: Pixels = px(32.);
 
 const GUTTER_WIDTH: Pixels = px(56.);
 const DEFAULT_COLUMN_WIDTH: Pixels = px(160.);
@@ -127,6 +156,9 @@ pub struct ResultGrid {
     added_rows: BTreeSet<usize>,
     /// A column edge is being dragged, so the layout is saved when the drag ends.
     layout_dirty: bool,
+    /// Where the table, header included, was last laid out, to tell when a drag leaves it.
+    table_bounds: Rc<Cell<Bounds<Pixels>>>,
+    auto_scroll_task: Option<Task<()>>,
     dragging_selection: bool,
     /// Whether the drag in progress started on a row number, and so selects whole rows.
     dragging_rows: bool,
@@ -224,6 +256,8 @@ impl ResultGrid {
             selection: None,
             added_rows: BTreeSet::new(),
             layout_dirty: false,
+            table_bounds: Rc::new(Cell::new(Bounds::default())),
+            auto_scroll_task: None,
             dragging_selection: false,
             dragging_rows: false,
             interaction_state: cx.new(|cx| TableInteractionState::new(cx)),
@@ -505,10 +539,11 @@ impl ResultGrid {
         row: usize,
         position: usize,
         modifiers: Modifiers,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         if modifiers.secondary() {
-            self.select_row(row, modifiers, cx);
+            self.select_row(row, modifiers, window, cx);
             return;
         }
         let only_this_cell = CellSelection::cell(row, position);
@@ -526,6 +561,7 @@ impl ResultGrid {
         self.dragging_selection = true;
         self.dragging_rows = false;
         self.set_selection_and_added_rows(Some(selection), added_rows, cx);
+        self.start_auto_scroll(window, cx);
     }
 
     fn extend_selection(&mut self, row: usize, position: usize, cx: &mut Context<Self>) {
@@ -544,7 +580,13 @@ impl ResultGrid {
         self.set_selection_and_added_rows(Some(extended), added_rows, cx);
     }
 
-    fn select_row(&mut self, row: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+    fn select_row(
+        &mut self,
+        row: usize,
+        modifiers: Modifiers,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let column_count = self.column_order.len();
         if modifiers.secondary() {
             let (selection, added_rows) =
@@ -567,6 +609,7 @@ impl ResultGrid {
         self.dragging_selection = true;
         self.dragging_rows = true;
         self.set_selection_and_added_rows(Some(selection), added_rows, cx);
+        self.start_auto_scroll(window, cx);
     }
 
     /// Shift+click on a header: selects the whole column, extends a whole-column selection to
@@ -646,9 +689,101 @@ impl ResultGrid {
         cx.notify();
     }
 
+    /// While a drag is held above or below the rows, keeps extending the selection and scrolling.
+    fn start_auto_scroll(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.auto_scroll_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTO_SCROLL_INTERVAL).await;
+                let keep_going = this
+                    .update_in(cx, |this, window, cx| this.auto_scroll_tick(window, cx))
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn auto_scroll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !self.dragging_selection {
+            return false;
+        }
+        let bounds = self.table_bounds.get();
+        let pointer = window.mouse_position();
+        let rows_top = bounds.top() + HEADER_HEIGHT;
+        let (direction, distance): (isize, Pixels) = if pointer.y < rows_top {
+            (-1, rows_top - pointer.y)
+        } else if pointer.y > bounds.bottom() {
+            (1, pointer.y - bounds.bottom())
+        } else {
+            return true;
+        };
+        let Some(selection) = self.selection else {
+            return true;
+        };
+        // The further the pointer is from the edge, the more rows each tick covers.
+        let step = 1 + (f32::from(distance) / 40.) as isize;
+        let last_row = self.visible_rows.len().saturating_sub(1) as isize;
+        let row = (selection.focus.0 as isize + direction * step).clamp(0, last_row) as usize;
+        let extended = if self.dragging_rows {
+            CellSelection::rows(selection.anchor.0, row, self.column_order.len())
+        } else {
+            selection.extended_to(row, selection.focus.1)
+        };
+        let added_rows = self.added_rows.clone();
+        self.set_selection_and_added_rows(Some(extended), added_rows, cx);
+        self.reveal_row(row, cx);
+        true
+    }
+
+    /// Scrolls, and turns to another page when needed, so that the row at this position of the
+    /// visible rows shows.
+    fn reveal_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.interaction_state
+            .read(cx)
+            .scroll_handle
+            .scroll_to_item(row, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Moves the selected cell, or with `extend` the far corner of the selection.
+    fn move_selection(
+        &mut self,
+        row_delta: isize,
+        column_delta: isize,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let row_count = self.visible_rows.len();
+        let column_count = self.column_order.len();
+        if row_count == 0 || column_count == 0 {
+            return;
+        }
+        let Some(existing) = self.selection else {
+            self.set_selection(Some(CellSelection::cell(0, 0)), cx);
+            self.reveal_row(0, cx);
+            return;
+        };
+        let row = (existing.focus.0 as isize + row_delta).clamp(0, row_count as isize - 1);
+        let column = (existing.focus.1 as isize + column_delta).clamp(0, column_count as isize - 1);
+        let (row, column) = (row as usize, column as usize);
+        let selection = if extend {
+            existing.extended_to(row, column)
+        } else {
+            CellSelection::cell(row, column)
+        };
+        self.set_selection(Some(selection), cx);
+        self.reveal_row(row, cx);
+    }
+
+    fn page_rows(&self) -> isize {
+        self.last_rendered_rows.get().saturating_sub(1).max(1) as isize
+    }
+
     fn end_drag(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.dragging_selection = false;
         self.dragging_rows = false;
+        self.auto_scroll_task = None;
         if std::mem::take(&mut self.layout_dirty) {
             self.emit_layout(window, cx);
         }
@@ -849,7 +984,7 @@ impl ResultGrid {
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                 window.focus(&this.focus_handle, cx);
-                                this.select_row(display_row, event.modifiers, cx)
+                                this.select_row(display_row, event.modifiers, window, cx)
                             }),
                         )
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -879,7 +1014,13 @@ impl ResultGrid {
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                     window.focus(&this.focus_handle, cx);
-                                    this.begin_selection(display_row, position, event.modifiers, cx)
+                                    this.begin_selection(
+                                        display_row,
+                                        position,
+                                        event.modifiers,
+                                        window,
+                                        cx,
+                                    )
                                 }),
                             )
                             .on_mouse_move(cx.listener(
@@ -998,6 +1139,36 @@ impl Render for ResultGrid {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_selection(cx)))
             .on_action(cx.listener(|this, _: &CopyAsMarkdown, _, cx| this.copy_as_markdown(cx)))
             .on_action(cx.listener(|this, _: &CopyAsHtml, _, cx| this.copy_as_html(cx)))
+            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selection(-1, 0, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selection(1, 0, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_selection(0, -1, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveRight, _, cx| this.move_selection(0, 1, false, cx)))
+            .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.move_selection(-1, 0, true, cx)))
+            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.move_selection(1, 0, true, cx)))
+            .on_action(cx.listener(|this, _: &ExtendLeft, _, cx| this.move_selection(0, -1, true, cx)))
+            .on_action(cx.listener(|this, _: &ExtendRight, _, cx| this.move_selection(0, 1, true, cx)))
+            .on_action(cx.listener(|this, _: &PageUp, _, cx| {
+                let rows = this.page_rows();
+                this.move_selection(-rows, 0, false, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PageDown, _, cx| {
+                let rows = this.page_rows();
+                this.move_selection(rows, 0, false, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
+                let everything =
+                    CellSelection::everything(this.visible_rows.len(), this.column_order.len());
+                if !this.visible_rows.is_empty() {
+                    this.set_selection(Some(everything), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                if this.selection.is_some() || !this.added_rows.is_empty() {
+                    this.set_selection(None, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1026,7 +1197,7 @@ impl Render for ResultGrid {
             )
             .child(toolbar)
             .child(
-                div().flex_1().min_h_0().child(
+                div().relative().flex_1().min_h_0().child(
                     Table::new(column_count)
                         .interactable(&self.interaction_state)
                         .width_config(ColumnWidthConfig::Resizable(self.column_widths.clone()))
@@ -1050,6 +1221,19 @@ impl Render for ResultGrid {
                                 },
                             ),
                         ),
+                )
+                .child(
+                    canvas(
+                        {
+                            let table_bounds = self.table_bounds.clone();
+                            move |bounds, _, _| table_bounds.set(bounds)
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
                 ),
             )
             .child(footer)
@@ -1668,6 +1852,101 @@ mod tests {
             whole(widths(cx)),
             "widths are saved in whole pixels"
         );
+    }
+
+    /// Keyboard: arrows move the selected cell, shift extends, and the view follows.
+    #[gpui::test]
+    async fn the_keyboard_moves_and_extends_the_selection(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 6);
+        let selection = |cx: &VisualTestContext| grid.read_with(cx, |grid, _| grid.selection());
+        click(cx, "cell-2-1", Modifiers::default());
+
+        cx.dispatch_action(MoveDown);
+        cx.dispatch_action(MoveRight);
+        assert_eq!(selection(cx), Some(CellSelection::cell(3, 2)));
+        cx.dispatch_action(ExtendDown);
+        cx.dispatch_action(ExtendDown);
+        cx.dispatch_action(ExtendLeft);
+        assert_eq!(
+            selection(cx),
+            Some(CellSelection {
+                anchor: (3, 2),
+                focus: (5, 1)
+            })
+        );
+        cx.dispatch_action(MoveUp);
+        assert_eq!(selection(cx), Some(CellSelection::cell(4, 1)));
+
+        cx.dispatch_action(SelectAll);
+        assert_eq!(selection(cx), Some(CellSelection::everything(200, 6)));
+        cx.dispatch_action(ClearSelection);
+        assert_eq!(selection(cx), None);
+        cx.dispatch_action(MoveDown);
+        assert_eq!(
+            selection(cx),
+            Some(CellSelection::cell(0, 0)),
+            "it starts at the top"
+        );
+
+        for _ in 0..60 {
+            cx.dispatch_action(MoveDown);
+            draw(cx);
+        }
+        assert_eq!(selection(cx), Some(CellSelection::cell(60, 0)));
+        let scrolled = grid.read_with(cx, |grid, cx| {
+            grid.interaction_state().read(cx).scroll_offset()
+        });
+        assert!(
+            scrolled.y < px(0.),
+            "the view followed the selection: {scrolled:?}"
+        );
+        cx.dispatch_action(PageDown);
+        let Some(paged) = selection(cx) else {
+            panic!("a selection");
+        };
+        assert!(
+            paged.focus.0 > 60 + 5,
+            "a page moves several rows: {paged:?}"
+        );
+    }
+
+    /// SEL-2: a drag held below the rows keeps extending the selection and scrolling.
+    #[gpui::test]
+    async fn dragging_past_the_bottom_scrolls_and_extends(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 500, 4);
+        let from = centre_of(cx, "cell-2-1");
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let below = Point {
+            x: from.x,
+            y: px(690.),
+        };
+        cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
+        for _ in 0..20 {
+            cx.executor().advance_clock(AUTO_SCROLL_INTERVAL);
+            cx.run_until_parked();
+            draw(cx);
+        }
+        let Some(selection) = grid.read_with(cx, |grid, _| grid.selection()) else {
+            panic!("a selection");
+        };
+        assert_eq!(selection.anchor, (2, 1));
+        assert!(
+            selection.focus.0 >= 20,
+            "the drag reached {:?}",
+            selection.focus
+        );
+        let scrolled = grid.read_with(cx, |grid, cx| {
+            grid.interaction_state().read(cx).scroll_offset()
+        });
+        assert!(scrolled.y < px(0.), "the rows scrolled: {scrolled:?}");
+
+        cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
+        let stopped = grid.read_with(cx, |grid, _| grid.selection());
+        for _ in 0..5 {
+            cx.executor().advance_clock(AUTO_SCROLL_INTERVAL);
+            cx.run_until_parked();
+        }
+        assert_eq!(grid.read_with(cx, |grid, _| grid.selection()), stopped);
     }
 
     /// SEL-1, SEL-3 to SEL-5: clicking the only selected cell or row clears it, dragging on row
