@@ -2743,6 +2743,41 @@ mod tests {
         assert!(!has_result);
     }
 
+    /// How long a real result takes to show: parsing it, building the grid and drawing the first
+    /// frame. Set `KUSTO_TIMING_RESULT` to a `.ktt` file.
+    #[gpui::test]
+    #[ignore = "benchmark"]
+    async fn open_time_of_a_real_result(cx: &mut TestAppContext) {
+        init_test(cx);
+        let path = std::env::var("KUSTO_TIMING_RESULT").expect("KUSTO_TIMING_RESULT is set");
+        let text = std::fs::read_to_string(path).expect("the result file reads");
+
+        let started = std::time::Instant::now();
+        let rope = rope::Rope::from(text.as_str());
+        println!("Rope::from: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        let started = std::time::Instant::now();
+        let again = rope.to_string();
+        println!("Rope::to_string: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(again.len(), text.len());
+
+        let started = std::time::Instant::now();
+        let result = ResultSet::from_json(&text).expect("the file parses");
+        println!("parse: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "{} rows x {} columns",
+            result.tables[0].rows.len(),
+            result.tables[0].columns.len()
+        );
+
+        let result = Arc::new(result);
+        let started = std::time::Instant::now();
+        let (_grid, cx) = cx.add_window_view(|window, cx| ResultGrid::new(result, 0, window, cx));
+        println!("grid built: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        println!("first frame: {:.0} ms", draw(cx).as_secs_f64() * 1000.0);
+        println!("second frame: {:.0} ms", draw(cx).as_secs_f64() * 1000.0);
+    }
+
     /// Frame cost of building, laying out and painting the grid for 200,000 rows by 20 columns.
     /// `cargo test -p kusto_results_ui --profile release-fast -- --ignored --nocapture frame_time`
     #[gpui::test]

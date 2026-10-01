@@ -263,8 +263,16 @@ impl project::ProjectItem for ResultsFile {
             .into();
         let load = worktree.update(cx, |worktree, cx| worktree.load_file(&path.path, cx));
         Some(cx.spawn(async move |cx| {
+            let started = std::time::Instant::now();
             let loaded = load.await.with_context(|| format!("reading {file_name}"))?;
+            log::info!(
+                "kusto: read {file_name} ({:.1} MB) in {:?}",
+                loaded.text.len() as f64 / 1e6,
+                started.elapsed()
+            );
+            let started = std::time::Instant::now();
             let (result, problem) = parse(loaded.text.to_string(), &file_name, cx).await;
+            log::info!("kusto: parsed {file_name} in {:?}", started.elapsed());
             let storage = FileStorage::new(&loaded, &worktree);
             Ok(cx.new(|cx| {
                 let watch = cx.subscribe(&worktree, |this: &mut Self, _, event, cx| {

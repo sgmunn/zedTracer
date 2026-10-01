@@ -86,3 +86,46 @@ fn timings() -> Result<()> {
     time("from_json (what opening the file does)", started);
     Ok(())
 }
+
+/// Times a query read from the file named by `KUSTO_TIMING_QUERY`, on the cluster and database
+/// from `KUSTO_TIMING_CLUSTER` and `KUSTO_TIMING_DATABASE`. Prints sizes, never values.
+#[test]
+#[ignore = "needs a network, an Azure CLI sign-in and environment variables"]
+fn time_a_query_from_a_file() -> Result<()> {
+    use std::time::Instant;
+
+    let query = std::fs::read_to_string(std::env::var("KUSTO_TIMING_QUERY")?)?;
+    let request = QueryRequest {
+        cluster: Cluster::parse(&std::env::var("KUSTO_TIMING_CLUSTER")?)?,
+        database: std::env::var("KUSTO_TIMING_DATABASE")?,
+        query,
+        client_request_id: "ZedTracer;timing".into(),
+    };
+    let client = client();
+    block_on(client.execute(&self::request("print 1")?)).ok();
+    for run in 1..=3 {
+        let started = Instant::now();
+        let result = block_on(client.execute(&request))?;
+        let fetched = started.elapsed();
+        let started = Instant::now();
+        let json = result.to_json()?;
+        let serialised = started.elapsed();
+        if let Ok(path) = std::env::var("KUSTO_TIMING_SAVE") {
+            std::fs::write(path, &json)?;
+        }
+        let started = Instant::now();
+        kusto_results::ResultSet::from_json(&json)?;
+        let parsed = started.elapsed();
+        println!(
+            "run {run}: execute {:>6.0} ms ({} tables, {} rows, server says {} ms) | to_json {:>4.0} ms ({:.1} MB) | from_json {:>4.0} ms",
+            fetched.as_secs_f64() * 1000.0,
+            result.tables.len(),
+            result.total_rows(),
+            result.execution_duration_ms.unwrap_or_default(),
+            serialised.as_secs_f64() * 1000.0,
+            json.len() as f64 / 1e6,
+            parsed.as_secs_f64() * 1000.0,
+        );
+    }
+    Ok(())
+}
