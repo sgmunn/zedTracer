@@ -8,14 +8,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use editor::Editor;
 use fs::Fs;
-use gpui::{App, AsyncWindowContext, WeakEntity, AppContext as _, BackgroundExecutor, Context, Entity, Task, TaskExt as _, Window, actions};
+use gpui::{
+    Action, App, AppContext as _, AsyncWindowContext, BackgroundExecutor, ClipboardItem, Context,
+    Entity, Task, TaskExt as _, WeakEntity, Window, actions,
+};
 use gpui_util::ResultExt as _;
 use kusto_client::{
-    AzureCliTokenProvider, Cluster, KustoClient, QueryRequest, TokenProvider, query_range_at,
+    AzureCliTokenProvider, Cluster, KustoClient, QueryRequest, RUN_LOG_FILE, RunRecord,
+    TokenProvider, append_record, query_range_at,
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
 use settings::{KustoResultsLocation, RegisterSetting, Settings};
@@ -29,9 +35,27 @@ actions!(
     kusto,
     [
         /// Runs the selected text, or the query around the cursor, on the configured cluster.
-        RunQuery
+        RunQuery,
+        /// Cancels the running query around the cursor, or the newest running query.
+        CancelQuery
     ]
 );
+
+/// Shows a saved result, such as one from the history folder, in the Results panel.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = kusto)]
+#[serde(deny_unknown_fields)]
+pub struct ShowResult {
+    pub path: String,
+}
+
+/// Copies the client request id of a run, which names it to the service and to support.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = kusto)]
+#[serde(deny_unknown_fields)]
+pub struct CopyClientRequestId {
+    pub id: String,
+}
 
 /// Where queries run.
 #[derive(Clone, Debug, RegisterSetting)]
@@ -63,9 +87,47 @@ impl Settings for KustoSettings {
 
 pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
     let runs = cx.new(|_| QueryRuns::default());
-    workspace.register_action(move |workspace, _: &RunQuery, window, cx| {
-        run_query(workspace, &runs, window, cx)
+    workspace.register_action({
+        let runs = runs.clone();
+        move |workspace, _: &RunQuery, window, cx| run_query(workspace, &runs, window, cx)
     });
+    workspace.register_action(move |workspace, _: &CancelQuery, _, cx| {
+        cancel_query(workspace, &runs, cx)
+    });
+    workspace.register_action(|_, action: &CopyClientRequestId, _, cx| {
+        copy_client_request_id(&action.id, cx)
+    });
+    workspace.register_action(|workspace, action: &ShowResult, window, cx| {
+        show_saved_result(workspace, PathBuf::from(&action.path), window, cx)
+    });
+}
+
+fn copy_client_request_id(id: &str, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
+}
+
+fn show_saved_result(
+    _: &mut Workspace,
+    path: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    cx.spawn_in(window, async move |workspace, cx| {
+        display(&workspace, Ok(path), cx).await
+    })
+    .detach();
+}
+
+/// Cancels what the lens or the keyboard points at: the newest run of the query around the
+/// cursor, or else the newest run of all.
+fn cancel_query(workspace: &mut Workspace, runs: &Entity<QueryRuns>, cx: &mut Context<Workspace>) {
+    let query = workspace
+        .active_item_as::<Editor>(cx)
+        .and_then(|editor| editor.update(cx, |editor, cx| query_to_run(editor, cx)));
+    let cancelled = runs.update(cx, |runs, cx| runs.cancel_newest(query.as_deref(), cx));
+    if let Some(run_id) = cancelled {
+        workspace.dismiss_toast(&NotificationId::composite::<QueryRuns>(run_id), cx);
+    }
 }
 
 fn run_query(
@@ -85,11 +147,18 @@ struct QueryRuns {
     active: Vec<ActiveRun>,
     /// Shared by every run, because the client remembers tokens and token audiences.
     client: Option<Arc<KustoClient>>,
+    /// Keeps this workspace's writes to the run log from overwriting each other. Another window
+    /// can still lose a record to a write at the same moment, which only costs a lens.
+    log_lock: Arc<futures::lock::Mutex<()>>,
 }
 
 struct ActiveRun {
     id: usize,
     request: QueryRequest,
+    /// When the run started, which every record of the run carries.
+    started_at: String,
+    fs: Arc<dyn Fs>,
+    log_lock: Arc<futures::lock::Mutex<()>>,
     /// Known once the shell environment is loaded. A run cancelled before then sent nothing.
     client: Option<Arc<KustoClient>>,
     task: Task<()>,
@@ -115,14 +184,38 @@ impl QueryRuns {
         let ActiveRun {
             client,
             request,
+            started_at,
+            fs,
+            log_lock,
             task,
             ..
         } = self.active.remove(index);
         drop(task);
+        cx.background_spawn(log_run(
+            fs,
+            log_lock,
+            RunLog::of(&request, &started_at).cancelled(),
+        ))
+        .detach();
         if let Some(client) = client {
             cx.background_spawn(async move { client.cancel(&request).await })
                 .detach_and_log_err(cx);
         }
+    }
+
+    /// Cancels the newest run of `query` if there is one, otherwise the newest run, and says
+    /// which it was.
+    fn cancel_newest(&mut self, query: Option<&str>, cx: &mut App) -> Option<usize> {
+        let newest = |matching: Option<&str>| {
+            self.active
+                .iter()
+                .filter(|run| matching.is_none_or(|query| run.request.query.trim() == query.trim()))
+                .map(|run| run.id)
+                .max()
+        };
+        let id = newest(query).or_else(|| newest(None))?;
+        self.cancel(id, cx);
+        Some(id)
     }
 }
 
@@ -204,9 +297,14 @@ fn start_run(
         cx,
     );
 
+    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let log_lock = runs.read(cx).log_lock.clone();
     let task = cx.spawn_in(window, {
         let runs = runs.downgrade();
         let request = request.clone();
+        let started_at = started_at.clone();
+        let fs = fs.clone();
+        let log_lock = log_lock.clone();
         async move |workspace, cx| {
             let existing = runs
                 .update(cx, |runs, _| runs.client.clone())
@@ -228,15 +326,26 @@ fn start_run(
             runs.update(cx, |runs, _| runs.set_client(run_id, client.clone()))
                 .log_err();
 
+            let run_log = RunLog::of(&request, &started_at);
+            log_run(fs.clone(), log_lock.clone(), run_log.started()).await;
             let outcome = save_run(
                 client,
                 request,
-                fs,
+                fs.clone(),
                 run_uuid,
                 cx.background_executor().clone(),
             )
             .await;
-            publish(&workspace, &toast_id, outcome, cx).await;
+            log_run(
+                fs,
+                log_lock,
+                match &outcome {
+                    Ok(saved) => run_log.finished(saved),
+                    Err(error) => run_log.failed(format!("{error:#}")),
+                },
+            )
+            .await;
+            publish(&workspace, &toast_id, outcome.map(|saved| saved.path), cx).await;
             runs.update(cx, |runs, _| runs.finish(run_id)).log_err();
         }
     });
@@ -244,6 +353,9 @@ fn start_run(
         runs.active.push(ActiveRun {
             id: run_id,
             request,
+            started_at,
+            fs,
+            log_lock,
             client: None,
             task,
         })
@@ -251,17 +363,27 @@ fn start_run(
     Ok(())
 }
 
-/// Shows what a run produced: in the Results panel, or in a tab of its own. Either way the run
-/// has finished, so its "running" notice goes away.
+/// Shows what a run produced. The run has finished, so its "running" notice goes away.
 async fn publish(
     workspace: &WeakEntity<Workspace>,
     toast_id: &NotificationId,
     outcome: Result<PathBuf>,
     cx: &mut AsyncWindowContext,
 ) {
+    workspace
+        .update_in(cx, |workspace, _, cx| workspace.dismiss_toast(toast_id, cx))
+        .log_err();
+    display(workspace, outcome, cx).await;
+}
+
+/// Shows a saved result, or why there is none: in the Results panel, or in a tab of its own.
+async fn display(
+    workspace: &WeakEntity<Workspace>,
+    outcome: Result<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) {
     let in_panel = workspace
         .update_in(cx, |workspace, _, cx| {
-            workspace.dismiss_toast(toast_id, cx);
             KustoSettings::get_global(cx).results_location == KustoResultsLocation::Panel
                 && workspace.panel::<ResultsPanel>(cx).is_some()
         })
@@ -345,21 +467,32 @@ fn token_provider(
     Arc::new(AzureCliTokenProvider::new(environment))
 }
 
-/// Runs the query and writes its result to the history folder, returning the file.
+/// A run's result, saved in the history folder.
+struct SavedRun {
+    path: PathBuf,
+    rows: usize,
+    duration_ms: u64,
+}
+
+/// Runs the query and writes its result to the history folder.
 async fn save_run(
     client: Arc<KustoClient>,
     request: QueryRequest,
     fs: Arc<dyn Fs>,
     run_uuid: uuid::Uuid,
     executor: BackgroundExecutor,
-) -> Result<PathBuf> {
-    let json = executor
+) -> Result<SavedRun> {
+    let (json, rows, duration_ms) = executor
         .spawn(async move {
             let result = client.execute(&request).await?;
             let started = std::time::Instant::now();
-            let json = result.to_json();
+            let json = result.to_json()?;
             log::info!("kusto: serialised the result in {:?}", started.elapsed());
-            json
+            Ok::<_, anyhow::Error>((
+                json,
+                result.total_rows(),
+                result.execution_duration_ms.unwrap_or_default(),
+            ))
         })
         .await?;
 
@@ -380,7 +513,97 @@ async fn save_run(
         json.len() as f64 / 1e6,
         started.elapsed()
     );
-    Ok(path)
+    Ok(SavedRun {
+        path,
+        rows,
+        duration_ms,
+    })
+}
+
+/// The identity every record of one run carries.
+struct RunLog {
+    cid: String,
+    query: String,
+    cluster: String,
+    database: String,
+    at: String,
+}
+
+impl RunLog {
+    fn of(request: &QueryRequest, started_at: &str) -> Self {
+        Self {
+            cid: request.client_request_id.clone(),
+            query: request.query.clone(),
+            cluster: request.cluster.host().to_string(),
+            database: request.database.clone(),
+            at: started_at.to_string(),
+        }
+    }
+
+    fn started(&self) -> RunRecord {
+        RunRecord::Started {
+            cid: self.cid.clone(),
+            query: self.query.clone(),
+            cluster: self.cluster.clone(),
+            database: self.database.clone(),
+            at: self.at.clone(),
+        }
+    }
+
+    fn finished(&self, saved: &SavedRun) -> RunRecord {
+        RunRecord::Finished {
+            cid: self.cid.clone(),
+            query: self.query.clone(),
+            cluster: self.cluster.clone(),
+            database: self.database.clone(),
+            at: self.at.clone(),
+            duration_ms: saved.duration_ms,
+            rows: saved.rows,
+            path: saved.path.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn failed(&self, message: String) -> RunRecord {
+        RunRecord::Failed {
+            cid: self.cid.clone(),
+            query: self.query.clone(),
+            cluster: self.cluster.clone(),
+            database: self.database.clone(),
+            at: self.at.clone(),
+            message,
+        }
+    }
+
+    fn cancelled(&self) -> RunRecord {
+        RunRecord::Cancelled {
+            cid: self.cid.clone(),
+            query: self.query.clone(),
+            cluster: self.cluster.clone(),
+            database: self.database.clone(),
+            at: self.at.clone(),
+        }
+    }
+}
+
+/// Adds a record to the log the language server reads. Failing to is not worth failing a run.
+async fn log_run(
+    fs: Arc<dyn Fs>,
+    lock: Arc<futures::lock::Mutex<()>>,
+    record: RunRecord,
+) {
+    let _guard = lock.lock().await;
+    let history = paths::data_dir().join("kusto").join("history");
+    let path = history.join(RUN_LOG_FILE);
+    let result = async {
+        fs.create_dir(&history).await?;
+        let existing = fs.load(&path).await.unwrap_or_default();
+        let text = append_record(&existing, &record)?;
+        fs.write(&path, text.as_bytes()).await
+    }
+    .await;
+    result
+        .context("could not record the run for the code lenses")
+        .log_err();
 }
 
 #[cfg(test)]
@@ -755,6 +978,169 @@ mod tests {
             bodies(&sent, "/v1/rest/auth/metadata").len(),
             1,
             "the token audience is asked for once"
+        );
+    }
+
+    async fn run_log(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> Vec<serde_json::Value> {
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        let path = paths::data_dir().join("kusto").join("history").join(RUN_LOG_FILE);
+        fs.load(&path)
+            .await
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each record is JSON"))
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn a_run_is_recorded_when_it_starts_and_when_it_finishes(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        run(&workspace, cx);
+
+        let records = run_log(&workspace, cx).await;
+        let events: Vec<&str> = records
+            .iter()
+            .map(|record| record["event"].as_str().expect("an event"))
+            .collect();
+        assert_eq!(events, ["started", "finished"]);
+        assert_eq!(records[0]["query"], "StormEvents\n| take 1");
+        assert_eq!(records[0]["cluster"], "help.kusto.windows.net");
+        assert_eq!(records[0]["database"], "Samples");
+        assert_eq!(records[0]["cid"], records[1]["cid"]);
+        assert_eq!(records[0]["at"], records[1]["at"], "both name the start of the run");
+        assert_eq!(records[1]["rows"], 2);
+        let path = records[1]["path"].as_str().expect("the result file");
+        assert!(path.ends_with(".ktt"), "{path}");
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        assert!(fs.is_file(std::path::Path::new(path)).await, "the file is on disk");
+    }
+
+    #[gpui::test]
+    async fn a_failed_run_is_recorded_with_its_message(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(
+            cx,
+            400,
+            r#"{"error":{"message":"outer","innererror":{"@message":"Semantic error: SEM0100"}}}"#,
+        )
+        .await;
+        run(&workspace, cx);
+
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(records[1]["event"], "failed");
+        assert_eq!(records[1]["message"], "Semantic error: SEM0100");
+    }
+
+    #[gpui::test]
+    async fn cancelling_from_a_lens_stops_the_run_at_the_cursor_and_records_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup(cx, 0, ANSWER).await;
+        let runs = cx.new(|_| QueryRuns::default());
+        start(&workspace, &runs, cx);
+        assert!(workspace.read_with(cx, |workspace, _| {
+            workspace.has_notification(&NotificationId::composite::<QueryRuns>(1))
+        }));
+
+        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        cx.run_until_parked();
+
+        assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
+        assert!(
+            !workspace.read_with(cx, |workspace, _| {
+                workspace.has_notification(&NotificationId::composite::<QueryRuns>(1))
+            }),
+            "the running notice goes away"
+        );
+        assert_eq!(bodies(&sent, "/v1/rest/mgmt").len(), 1, "the service is told to stop");
+        let events: Vec<String> = run_log(&workspace, cx)
+            .await
+            .iter()
+            .map(|record| record["event"].as_str().expect("an event").to_string())
+            .collect();
+        assert_eq!(events, ["started", "cancelled"]);
+    }
+
+    #[gpui::test]
+    async fn cancelling_with_nothing_running_does_nothing(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        let runs = cx.new(|_| QueryRuns::default());
+        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        cx.run_until_parked();
+        assert!(bodies(&sent, "/v1/rest/mgmt").is_empty());
+        assert!(run_log(&workspace, cx).await.is_empty());
+    }
+
+    #[gpui::test]
+    async fn cancel_prefers_the_run_of_the_query_it_points_at(cx: &mut TestAppContext) {
+        let (workspace, editor, _sent, cx) = setup(cx, 0, ANSWER).await;
+        let runs = cx.new(|_| QueryRuns::default());
+        start(&workspace, &runs, cx);
+        // Move to the second query and start it too.
+        editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([text::Point::new(3, 0)..text::Point::new(3, 0)])
+            })
+        });
+        start(&workspace, &runs, cx);
+        assert_eq!(runs.read_with(cx, |runs, _| runs.active.len()), 2);
+
+        // The cursor is in the second query, so that is the one that is cancelled.
+        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        cx.run_until_parked();
+
+        let remaining = runs.read_with(cx, |runs, _| {
+            runs.active
+                .iter()
+                .map(|run| run.request.query.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(remaining, ["StormEvents\n| take 1".to_string()]);
+    }
+
+    #[gpui::test]
+    async fn show_result_displays_a_result_from_history_in_the_panel(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        run(&workspace, cx);
+        let path = run_log(&workspace, cx).await[1]["path"]
+            .as_str()
+            .expect("the result file")
+            .to_string();
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        panel.update(cx, |panel, cx| panel.show_error("an earlier failure", cx));
+        assert!(panel.read_with(cx, |panel, _| panel.shown_viewer().is_none()));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            show_saved_result(workspace, PathBuf::from(path), window, cx)
+        });
+        cx.run_until_parked();
+
+        let viewer = panel
+            .read_with(cx, |panel, _| panel.shown_viewer().cloned())
+            .expect("the saved result replaces the error");
+        assert_eq!(viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()), 2);
+    }
+
+    #[gpui::test]
+    async fn show_result_on_a_missing_file_says_so_in_the_panel(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        workspace.update_in(cx, |workspace, window, cx| {
+            show_saved_result(workspace, PathBuf::from("/gone/result.ktt"), window, cx)
+        });
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |panel, _| panel.shown_error().is_some()));
+    }
+
+    #[gpui::test]
+    async fn copying_a_client_request_id_puts_it_on_the_clipboard(cx: &mut TestAppContext) {
+        cx.update(|cx| copy_client_request_id("ZedTracer;abc", cx));
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("ZedTracer;abc".to_string())
         );
     }
 
