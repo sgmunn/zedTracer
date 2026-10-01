@@ -1,0 +1,30 @@
+[package]
+name = "kusto_client"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/kusto_client.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+futures.workspace = true
+http_client.workspace = true
+kusto_results.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+util.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+http_client = { workspace = true, features = ["test-support"] }
+pretty_assertions.workspace = true
+reqwest_client.workspace = true
