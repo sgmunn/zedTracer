@@ -9435,6 +9435,7 @@ dependencies = [
  "log",
  "parking_lot",
  "pretty_assertions",
+ "regex",
  "reqwest_client",
  "serde",
  "serde_json",
