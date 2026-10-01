@@ -142,6 +142,39 @@ pub struct Table {
 }
 
 impl Table {
+    /// Builds a table from rows whose cells are still JSON text, reading each cell by the kind of
+    /// its column. This is how a server response becomes a table without losing any digits.
+    pub fn from_raw_rows(
+        name: String,
+        columns: Vec<Column>,
+        raw_rows: &[Vec<&RawValue>],
+    ) -> Result<Self> {
+        let mut rows = Vec::with_capacity(raw_rows.len());
+        for (row_index, raw_row) in raw_rows.iter().enumerate() {
+            if raw_row.len() != columns.len() {
+                bail!(
+                    "table {} row {} has {} cells but the table has {} columns",
+                    name,
+                    row_index + 1,
+                    raw_row.len(),
+                    columns.len()
+                );
+            }
+            let mut row = Vec::with_capacity(columns.len());
+            for (column, raw_cell) in columns.iter().zip(raw_row) {
+                row.push(parse_cell(raw_cell, column.kind).with_context(|| {
+                    format!("table {} row {} column {}", name, row_index + 1, column.name)
+                })?);
+            }
+            rows.push(row);
+        }
+        Ok(Table {
+            name,
+            columns,
+            rows,
+        })
+    }
+
     /// Finds a column by name, preferring an exact match over a case-insensitive one.
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.columns
@@ -409,40 +442,12 @@ fn parse_tables(raw: &RawValue) -> Result<Vec<Table>> {
 }
 
 fn parse_table(raw: RawTable<'_>) -> Result<Table> {
-    let columns: Vec<Column> = raw
+    let columns = raw
         .columns
         .into_iter()
         .map(|column| Column::new(column.name, column.type_name))
         .collect();
-    let mut rows = Vec::with_capacity(raw.rows.len());
-    for (row_index, raw_row) in raw.rows.iter().enumerate() {
-        if raw_row.len() != columns.len() {
-            bail!(
-                "table {} row {} has {} cells but the table has {} columns",
-                raw.name,
-                row_index + 1,
-                raw_row.len(),
-                columns.len()
-            );
-        }
-        let mut row = Vec::with_capacity(columns.len());
-        for (column, raw_cell) in columns.iter().zip(raw_row) {
-            row.push(parse_cell(raw_cell, column.kind).with_context(|| {
-                format!(
-                    "table {} row {} column {}",
-                    raw.name,
-                    row_index + 1,
-                    column.name
-                )
-            })?);
-        }
-        rows.push(row);
-    }
-    Ok(Table {
-        name: raw.name,
-        columns,
-        rows,
-    })
+    Table::from_raw_rows(raw.name, columns, &raw.rows)
 }
 
 fn parse_cell(raw: &RawValue, kind: ColumnKind) -> Result<Cell> {
