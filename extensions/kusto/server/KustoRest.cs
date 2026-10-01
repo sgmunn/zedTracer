@@ -16,6 +16,7 @@ internal sealed class KustoRestClient
     private readonly Dictionary<string, string> testEndpoints = ReadTestEndpoints();
     private readonly string? testToken = Environment.GetEnvironmentVariable("KUSTO_LSP_TEST_TOKEN");
     private readonly Dictionary<string, (string Token, DateTime FetchedAt)> tokens = new();
+    private readonly Dictionary<string, Task<string?>> resources = new();
     private readonly SemaphoreSlim tokenLock = new(1, 1);
 
     /// <summary>
@@ -41,21 +42,9 @@ internal sealed class KustoRestClient
         var baseUrl = BaseUrl(host);
         var token = await GetTokenAsync(host, baseUrl, cancellationToken);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/v1/rest/mgmt")
-        {
-            Content = new StringContent(
-                JsonSerializer.Serialize(new { db = database, csl = command }),
-                Encoding.UTF8,
-                "application/json")
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Add("x-ms-client-request-id", $"ZedKustoLsp;{Guid.NewGuid()}");
-
-        using var response = await Http.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"{host}: {ErrorMessage((int)response.StatusCode, body)}");
+        var (status, body) = await SendManagementAsync(baseUrl, token, database, command, cancellationToken);
+        if (status is < 200 or >= 300)
+            throw new InvalidOperationException($"{host}: {ErrorMessage(status, body)}");
 
         using var document = JsonDocument.Parse(body);
         var rows = new List<Dictionary<string, JsonElement>>();
@@ -72,6 +61,41 @@ internal sealed class KustoRestClient
             rows.Add(values);
         }
         return rows;
+    }
+
+    /// <summary>
+    /// Management commands here only read, so a request that fails to be sent is sent once more: a
+    /// connection kept from an earlier request may have been closed by the other end.
+    /// </summary>
+    private static async Task<(int Status, string Body)> SendManagementAsync(
+        string baseUrl,
+        string token,
+        string database,
+        string command,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/v1/rest/mgmt")
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { db = database, csl = command }),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Add("x-ms-client-request-id", $"ZedKustoLsp;{Guid.NewGuid()}");
+
+            try
+            {
+                using var response = await Http.SendAsync(request, cancellationToken);
+                return ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+            }
+            catch (HttpRequestException) when (attempt == 1)
+            {
+            }
+        }
     }
 
     private string BaseUrl(string host) =>
@@ -99,12 +123,37 @@ internal sealed class KustoRestClient
         }
     }
 
-    /// <summary>The audience the service wants in a token; every public cluster says kusto.kusto.windows.net.</summary>
-    private static async Task<string> GetResourceAsync(string baseUrl, CancellationToken cancellationToken)
+    /// <summary>
+    /// The audience the service wants in a token; every public cluster says kusto.kusto.windows.net.
+    /// It does not change, so it is asked for once per cluster, and requests that arrive while it
+    /// is being asked for wait for that answer. A failed answer is not remembered.
+    /// </summary>
+    private async Task<string> GetResourceAsync(string baseUrl, CancellationToken cancellationToken)
+    {
+        Task<string?> pending;
+        lock (resources)
+        {
+            if (!resources.TryGetValue(baseUrl, out pending!))
+                resources[baseUrl] = pending = FetchResourceAsync(baseUrl);
+        }
+
+        var resource = await pending.WaitAsync(cancellationToken);
+        if (resource is not null)
+            return resource;
+
+        lock (resources)
+        {
+            if (resources.TryGetValue(baseUrl, out var current) && current == pending)
+                resources.Remove(baseUrl);
+        }
+        return baseUrl;
+    }
+
+    private static async Task<string?> FetchResourceAsync(string baseUrl)
     {
         try
         {
-            var body = await Http.GetStringAsync(baseUrl + "/v1/rest/auth/metadata", cancellationToken);
+            var body = await Http.GetStringAsync(baseUrl + "/v1/rest/auth/metadata");
             using var document = JsonDocument.Parse(body);
             var resource = document.RootElement.GetProperty("AzureAD").GetProperty("KustoServiceResourceId").GetString();
             if (!string.IsNullOrEmpty(resource))
@@ -114,7 +163,7 @@ internal sealed class KustoRestClient
         {
             Console.Error.WriteLine($"Could not read the token audience of {baseUrl}: {exception.Message}");
         }
-        return baseUrl;
+        return null;
     }
 
     private static async Task<string> RunAzureCliAsync(string resource, CancellationToken cancellationToken)
