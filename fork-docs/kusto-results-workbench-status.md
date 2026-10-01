@@ -79,6 +79,38 @@ Decided with the user: execution is native Rust over the Kusto v2 REST API (not 
 
 Not built yet: query parameters (`declare query_parameters`, profiles), choosing a cluster or database from a list (settings only for now), a per-document connection, the results panel in the bottom dock (results open as tabs), history browsing, rerun from a saved result (RUN-8), the per-query inline actions (RUN-9), the minimum-500 ms indicator, a sign-in that does not need the Azure CLI, and charts. A long-running response is parsed whole; progressive frames are not requested.
 
+## Known issue: large results are very slow to download in a debug build
+
+Judge speed in a release build (`cargo run --release -p zed`, or `--profile release-fast`). In a debug build (`cargo run -p zed`) a result of about 13 MB took 250 to 290 seconds to download; in a release build the same query matches VS Code (about 2 seconds).
+
+What was measured (the `kusto:` lines in `~/Library/Logs/Zed/Zed.log`, which Zed writes there instead of the terminal when stdout is piped):
+
+| Stage | Time |
+| --- | --- |
+| token audience, new token | 0.4 s, 0.7 s (once; later runs reuse both) |
+| response headers | 0.09 s |
+| reading the 13.4 MB body | 288.9 s |
+| parse, serialise, save, open the tab | 0.1 s, 0.2 s, 3 ms, 0.24 s |
+
+How it was narrowed down, with the ignored tests in `crates/kusto_client/tests/live.rs`:
+
+- The same query through `ReqwestClient::new()` takes about 1.4 s, even in a debug build. Through `ReqwestClient::proxy_and_user_agent` (what `crates/zed/src/main.rs` builds for the app) it takes 250 to 283 s.
+- The two clients differ in HTTP version: the plain clients negotiate HTTP/2, the app's negotiates HTTP/1.1 (`http_version_by_client_construction`). The app's client uses a preconfigured rustls config (`http_client_tls::tls_config`), which seems not to offer h2.
+- A 1 MB result is fast with every client in debug and release, so the slowdown needs a large response, and a release build does not show it.
+- Not the cause: gzip (runs before and after we asked for it were both slow), JSON parsing, saving, opening the file, the grid, the proxy (none is set) or the token. Compiling `hyper`, `hyper-util`, `httparse`, `rustls` and `bytes` with `opt-level = 3` in `[profile.dev.package]` did not help (about 248 s), so it is not just unoptimised HTTP code. That change was reverted.
+
+Not found: why an HTTP/1.1 body read is slow only in a debug build. Ideas, cheapest first: log chunk sizes and the time between reads of the body in `KustoClient::send`; try `read_to_end` through a larger fixed buffer; build a client with h2 for Kusto only (a second `reqwest` client in `kusto_client`, leaving the shared Zed client alone); look at `ReqwestClient`'s `StreamReader` and `into_async_read` path for a debug-only cost. Do not change the shared client's TLS config without checking what else relies on it.
+
+Reproduce:
+
+```sh
+KUSTO_TIMING_QUERY=<file> KUSTO_TIMING_CLUSTER=<url> KUSTO_TIMING_DATABASE=<db> KUSTO_TIMING_APP_CLIENT=1 \
+  cargo test -p kusto_client --test live time_a_query_from_a_file -- --ignored --nocapture
+cargo test -p kusto_client --release --test live http_version_by_client_construction -- --ignored --nocapture
+```
+
+Also found at the same time, and fixed: every run built a new client and so asked for the token audience and started `az` again. The client is now shared and caches both (a repeat run went from about 470 ms to about 60 ms), and it asks for gzip because Zed's reqwest has no decompression feature.
+
 ## Not proven yet
 
 Everything ran on GPUI's test platform: no GPU, no pixels. Looked at in a real window: the grid, Row Details, row picking, the wheel, the filter popover. Not looked at: severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.
