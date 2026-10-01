@@ -9423,6 +9423,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "kusto_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures 0.3.34",
+ "http_client",
+ "kusto_results",
+ "log",
+ "pretty_assertions",
+ "reqwest_client",
+ "serde",
+ "serde_json",
+ "util",
+ "which",
+]
+
+[[package]]
 name = "kusto_results"
 version = "0.1.0"
 dependencies = [
