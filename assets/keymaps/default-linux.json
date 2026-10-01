@@ -1684,6 +1684,14 @@
     },
   },
   {
+    "context": "Editor && extension == kql",
+    "use_key_equivalents": true,
+    "bindings": {
+      "f5": "kusto::RunQuery",
+      "shift-enter": "kusto::RunQuery",
+    },
+  },
+  {
     "context": "ResultGrid",
     "bindings": {
       "ctrl-c": "result_grid::Copy",
