@@ -110,6 +110,13 @@
     // The unit for image file sizes: "binary" (KiB, MiB) or decimal (KB, MB)
     "unit": "binary",
   },
+  // Where Kusto queries run. Set both, usually in a project's `.zed/settings.json`.
+  "kusto": {
+    // The cluster, such as "https://help.kusto.windows.net"
+    "cluster": null,
+    // The database, such as "Samples"
+    "database": null,
+  },
   // Kusto results grid settings
   "kusto_results": {
     // Where the Row Details panel docks: "left" or "right"
