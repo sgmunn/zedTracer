@@ -8,14 +8,18 @@ mod query_text;
 mod response;
 mod token;
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::{SecondsFormat, Utc};
+use async_compression::futures::bufread::GzipDecoder;
 use futures::AsyncReadExt as _;
+use futures::io::BufReader;
 use http_client::{AsyncBody, HttpClient, Method, Request};
 use kusto_results::ResultSet;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -66,9 +70,15 @@ pub struct QueryRequest {
     pub client_request_id: String,
 }
 
+/// Runs queries. Keep one around and reuse it: it remembers each cluster's token audience and
+/// the tokens it was given, which saves a request and a sign-in call on every run after the first.
 pub struct KustoClient {
     http_client: Arc<dyn HttpClient>,
     token_provider: Arc<dyn TokenProvider>,
+    /// The token audience of each cluster host.
+    resources: Mutex<HashMap<String, String>>,
+    /// The latest token for each audience, while it has time left.
+    tokens: Mutex<HashMap<String, AccessToken>>,
 }
 
 impl KustoClient {
@@ -76,6 +86,8 @@ impl KustoClient {
         Self {
             http_client,
             token_provider,
+            resources: Mutex::default(),
+            tokens: Mutex::default(),
         }
     }
 
@@ -85,13 +97,11 @@ impl KustoClient {
         let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let timer = Instant::now();
 
-        let token = self.token(&request.cluster).await?;
         let body = json!({ "db": request.database, "csl": request.query });
         let body = self
             .post(
                 &request.cluster,
                 "/v2/rest/query",
-                &token,
                 &request.client_request_id,
                 body.to_string(),
             )
@@ -114,7 +124,6 @@ impl KustoClient {
 
     /// Asks the service to stop the query that was started with this client request id.
     pub async fn cancel(&self, request: &QueryRequest) -> Result<()> {
-        let token = self.token(&request.cluster).await?;
         let command = format!(
             ".cancel query \"{}\"",
             request
@@ -126,7 +135,6 @@ impl KustoClient {
         self.post(
             &request.cluster,
             "/v1/rest/mgmt",
-            &token,
             &format!("{};cancel", request.client_request_id),
             body.to_string(),
         )
@@ -135,16 +143,39 @@ impl KustoClient {
         Ok(())
     }
 
-    /// The service says which audience its tokens need. Every public cluster answers
-    /// `https://kusto.kusto.windows.net`, but other clouds differ.
+    /// A token for the cluster: the one from earlier while it has time left, otherwise a new one.
     async fn token(&self, cluster: &Cluster) -> Result<AccessToken> {
         let resource = self.service_resource(cluster).await;
-        self.token_provider.token(&resource).await
+        if let Some(token) = self.tokens.lock().get(&resource)
+            && token.is_usable(SystemTime::now())
+        {
+            return Ok(token.clone());
+        }
+        let token = self.token_provider.token(&resource).await?;
+        self.tokens.lock().insert(resource, token.clone());
+        Ok(token)
     }
 
+    fn forget_token(&self, cluster: &Cluster) {
+        if let Some(resource) = self.resources.lock().get(cluster.host()) {
+            self.tokens.lock().remove(resource);
+        }
+    }
+
+    /// The service says which audience its tokens need. Every public cluster answers
+    /// `https://kusto.kusto.windows.net`, but other clouds differ.
     async fn service_resource(&self, cluster: &Cluster) -> String {
+        if let Some(resource) = self.resources.lock().get(cluster.host()) {
+            return resource.clone();
+        }
         match self.fetch_service_resource(cluster).await {
-            Ok(resource) => resource,
+            Ok(resource) => {
+                self.resources
+                    .lock()
+                    .insert(cluster.host().to_string(), resource.clone());
+                resource
+            }
+            // Not remembered, so a hiccup does not stick.
             Err(error) => {
                 log::warn!(
                     "could not read the token audience of {}, using the cluster address: {error:#}",
@@ -182,20 +213,49 @@ impl KustoClient {
             .ok_or_else(|| anyhow!("the cluster does not name an Azure AD resource"))
     }
 
+    /// Sends an authorized request. A token the service refuses may have been revoked or may
+    /// have expired early, so one refusal gets a new token and one more try.
     async fn post(
+        &self,
+        cluster: &Cluster,
+        path: &str,
+        client_request_id: &str,
+        body: String,
+    ) -> Result<Vec<u8>> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let token = self.token(cluster).await?;
+            let (status, response_body) = self
+                .send(cluster, path, &token, client_request_id, body.clone())
+                .await?;
+            if status == 401 && attempts == 1 {
+                self.forget_token(cluster);
+                continue;
+            }
+            if !(200..300).contains(&status) {
+                return Err(response::http_error(status, &response_body));
+            }
+            return Ok(response_body);
+        }
+    }
+
+    async fn send(
         &self,
         cluster: &Cluster,
         path: &str,
         token: &AccessToken,
         client_request_id: &str,
         body: String,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(u16, Vec<u8>)> {
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!("{}{path}", cluster.url()))
             .header("Authorization", format!("Bearer {}", token.secret()))
             .header("Content-Type", "application/json; charset=utf-8")
             .header("Accept", "application/json")
+            // The HTTP client does not decompress by itself, so this has to be handled below.
+            .header("Accept-Encoding", "gzip")
             .header("x-ms-client-request-id", client_request_id)
             .body(AsyncBody::from(body))
             .context("could not build the request")?;
@@ -204,22 +264,29 @@ impl KustoClient {
             .send(request)
             .await
             .with_context(|| format!("could not reach {}", cluster.host()))?;
+        let is_gzip = response
+            .headers()
+            .get("Content-Encoding")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("gzip"));
+
         let mut body = Vec::new();
-        response
-            .body_mut()
-            .read_to_end(&mut body)
-            .await
-            .context("could not read the response")?;
-        if !response.status().is_success() {
-            return Err(response::http_error(response.status().as_u16(), &body));
+        if is_gzip {
+            GzipDecoder::new(BufReader::new(response.body_mut()))
+                .read_to_end(&mut body)
+                .await
+        } else {
+            response.body_mut().read_to_end(&mut body).await
         }
-        Ok(body)
+        .context("could not read the response")?;
+        Ok((response.status().as_u16(), body))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::time::Duration;
 
     use futures::executor::block_on;
     use futures::future::BoxFuture;
@@ -229,30 +296,65 @@ mod tests {
 
     use super::*;
 
+    /// Hands out tokens named `secret-1`, `secret-2`, and so on, with a lifetime only if asked to.
+    #[derive(Default)]
     struct FixedToken {
         resources: Mutex<Vec<String>>,
+        expiring: Mutex<bool>,
     }
 
     impl TokenProvider for Arc<FixedToken> {
         fn token(&self, resource: &str) -> BoxFuture<'static, Result<AccessToken>> {
-            self.resources
-                .lock()
-                .expect("test lock")
-                .push(resource.to_string());
-            Box::pin(async { Ok(AccessToken::new("secret")) })
+            let mut resources = self.resources.lock().expect("test lock");
+            resources.push(resource.to_string());
+            let secret = format!("secret-{}", resources.len());
+            let token = if *self.expiring.lock().expect("test lock") {
+                AccessToken::expiring_at(secret, SystemTime::now() + Duration::from_secs(3600))
+            } else {
+                AccessToken::new(secret)
+            };
+            Box::pin(async { Ok(token) })
         }
     }
 
     type Seen = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
-    fn client(answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static) -> (KustoClient, Seen, Arc<FixedToken>) {
+    struct Reply {
+        status: u16,
+        body: Vec<u8>,
+        gzip: bool,
+    }
+
+    fn client(
+        answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+    ) -> (KustoClient, Seen, Arc<FixedToken>) {
+        client_with(move |path, _| {
+            let (status, body) = answer(path);
+            Reply {
+                status,
+                body: body.into_bytes(),
+                gzip: false,
+            }
+        })
+    }
+
+    /// `reply` is given the path and how many requests that path has had before this one.
+    fn client_with(
+        reply: impl Fn(&str, usize) -> Reply + Send + Sync + 'static,
+    ) -> (KustoClient, Seen, Arc<FixedToken>) {
         let seen: Seen = Arc::default();
         let recorded = seen.clone();
         let http = FakeHttpClient::create(move |request| {
             let recorded = recorded.clone();
-            let (status, body) = answer(request.uri().path());
+            let path = request.uri().path().to_string();
+            let earlier = recorded
+                .lock()
+                .expect("test lock")
+                .iter()
+                .filter(|(seen_path, ..)| *seen_path == path)
+                .count();
+            let reply = reply(&path, earlier);
             async move {
-                let path = request.uri().path().to_string();
                 let header = |name: &str| {
                     request
                         .headers()
@@ -269,14 +371,24 @@ mod tests {
                     .lock()
                     .expect("test lock")
                     .push((path, authorization, request_id, sent));
-                Ok(Response::builder()
-                    .status(status)
-                    .body(AsyncBody::from(body))?)
+
+                let mut response = Response::builder().status(reply.status);
+                let body = if reply.gzip {
+                    response = response.header("Content-Encoding", "gzip");
+                    let mut compressed = Vec::new();
+                    async_compression::futures::bufread::GzipEncoder::new(
+                        futures::io::Cursor::new(reply.body),
+                    )
+                    .read_to_end(&mut compressed)
+                    .await?;
+                    compressed
+                } else {
+                    reply.body
+                };
+                Ok(response.body(AsyncBody::from(body))?)
             }
         });
-        let tokens = Arc::new(FixedToken {
-            resources: Mutex::default(),
-        });
+        let tokens = Arc::new(FixedToken::default());
         (
             KustoClient::new(http, Arc::new(tokens.clone())),
             seen,
@@ -324,7 +436,7 @@ mod tests {
         let seen = seen.lock().expect("test lock");
         let (path, authorization, request_id, body) = &seen[1];
         assert_eq!(path, "/v2/rest/query");
-        assert_eq!(authorization, "Bearer secret");
+        assert_eq!(authorization, "Bearer secret-1");
         assert_eq!(request_id, "ZedTracer;1");
         assert_eq!(body, r#"{"db":"Samples","csl":"print a=1"}"#);
     }
@@ -370,6 +482,111 @@ mod tests {
             body,
             r#"{"db":"Samples","csl":".cancel query \"ZedTracer;1\""}"#
         );
+    }
+
+    fn count(seen: &Seen, path: &str) -> usize {
+        seen.lock()
+            .expect("test lock")
+            .iter()
+            .filter(|(seen_path, ..)| seen_path == path)
+            .count()
+    }
+
+    #[test]
+    fn a_second_run_reuses_the_audience_and_a_token_that_has_time_left() {
+        let (client, seen, tokens) = client(answer);
+        *tokens.expiring.lock().expect("test lock") = true;
+
+        block_on(client.execute(&request())).expect("first run");
+        block_on(client.execute(&request())).expect("second run");
+
+        assert_eq!(count(&seen, "/v1/rest/auth/metadata"), 1);
+        assert_eq!(tokens.resources.lock().expect("test lock").len(), 1);
+        assert_eq!(count(&seen, "/v2/rest/query"), 2);
+        let seen = seen.lock().expect("test lock");
+        assert!(seen.iter().filter(|(path, ..)| path == "/v2/rest/query").all(
+            |(_, authorization, ..)| authorization == "Bearer secret-1"
+        ));
+    }
+
+    #[test]
+    fn a_token_without_a_known_end_is_asked_for_again_but_the_audience_is_not() {
+        let (client, seen, tokens) = client(answer);
+
+        block_on(client.execute(&request())).expect("first run");
+        block_on(client.execute(&request())).expect("second run");
+
+        assert_eq!(count(&seen, "/v1/rest/auth/metadata"), 1);
+        assert_eq!(tokens.resources.lock().expect("test lock").len(), 2);
+    }
+
+    #[test]
+    fn a_failed_audience_lookup_is_tried_again_on_the_next_run() {
+        let (client, seen, _) = client(|path| match path {
+            "/v1/rest/auth/metadata" => (503, String::new()),
+            _ => (200, ANSWER.into()),
+        });
+        block_on(client.execute(&request())).expect("first run");
+        block_on(client.execute(&request())).expect("second run");
+        assert_eq!(count(&seen, "/v1/rest/auth/metadata"), 2);
+    }
+
+    #[test]
+    fn a_refused_token_is_replaced_and_the_request_tried_once_more() {
+        let (client, seen, tokens) = client_with(|path, earlier| match path {
+            "/v1/rest/auth/metadata" => Reply {
+                status: 200,
+                body: METADATA.as_bytes().to_vec(),
+                gzip: false,
+            },
+            _ if earlier == 0 => Reply {
+                status: 401,
+                body: Vec::new(),
+                gzip: false,
+            },
+            _ => Reply {
+                status: 200,
+                body: ANSWER.as_bytes().to_vec(),
+                gzip: false,
+            },
+        });
+        *tokens.expiring.lock().expect("test lock") = true;
+
+        block_on(client.execute(&request())).expect("the retry succeeds");
+
+        let seen = seen.lock().expect("test lock");
+        let used: Vec<&str> = seen
+            .iter()
+            .filter(|(path, ..)| path == "/v2/rest/query")
+            .map(|(_, authorization, ..)| authorization.as_str())
+            .collect();
+        assert_eq!(used, ["Bearer secret-1", "Bearer secret-2"]);
+    }
+
+    #[test]
+    fn a_token_that_is_refused_twice_is_reported() {
+        let (client, seen, _) = client(|path| match path {
+            "/v1/rest/auth/metadata" => (200, METADATA.into()),
+            _ => (401, String::new()),
+        });
+        let error = block_on(client.execute(&request())).expect_err("refused");
+        assert!(error.to_string().contains("rejected the access token"));
+        assert_eq!(count(&seen, "/v2/rest/query"), 2);
+    }
+
+    #[test]
+    fn a_compressed_response_is_decoded() {
+        let (client, _, _) = client_with(|path, _| Reply {
+            status: 200,
+            body: if path == "/v1/rest/auth/metadata" {
+                METADATA.as_bytes().to_vec()
+            } else {
+                ANSWER.as_bytes().to_vec()
+            },
+            gzip: path != "/v1/rest/auth/metadata",
+        });
+        let result = block_on(client.execute(&request())).expect("result");
+        assert_eq!(result.tables[0].rows[0][0].display_text(), "1");
     }
 
     #[test]
