@@ -24,11 +24,13 @@ Diagnostics cover syntax only.
 
 ## Where a query runs
 
-A file can say where its queries run with comment lines like these:
+A file can say where its queries run with comment lines like these. The space after the slashes is optional
+(Zed adds `// ` when you press Enter in a comment, so `// :` is what you type; `//:` is what other Kusto extensions
+write, and it works too):
 
 ```kql
-//:setDefaultCluster("https://help.kusto.windows.net")
-//:setDefaultDb("Samples")
+// :setDefaultCluster("https://help.kusto.windows.net")
+// :setDefaultDb("Samples")
 
 StormEvents
 | take 10
@@ -39,7 +41,7 @@ move between clusters and databases. A directive in the same block as a query (t
 between them) applies to that query too. **Setting the cluster clears the database**, so a query after
 `setDefaultCluster` needs a `setDefaultDb` of its own. A short cluster name such as `help` means
 `help.kusto.windows.net`. A block of only comments, such as a directive on its own, is not a query: it gets no
-lenses and F5 does not run it. A directive that does not parse gets a warning. Typing `//:` offers both.
+lenses and F5 does not run it. A directive that does not parse gets a warning. Typing `// :` offers both, as soon as the colon is typed.
 
 A query with no directive above it uses the defaults from Zed settings, which can be your global default or a
 project's `.zed/settings.json`:
