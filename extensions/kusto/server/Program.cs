@@ -137,9 +137,10 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return [];
 
-        var completions = new KustoCodeService(document.Text, schema.GlobalsForDocument())
-            .GetCompletionItems(offset);
-        var start = Math.Clamp(completions.EditStart, 0, document.Text.Length);
+        var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
+        var completions = new KustoCodeService(queryText, schema.GlobalsForDocument())
+            .GetCompletionItems(offset - queryStart);
+        var start = Math.Clamp(queryStart + completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
         var range = new { start = document.PositionAt(start), end = document.PositionAt(end) };
 
@@ -170,16 +171,21 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return null;
 
-        var info = new KustoCodeService(document.Text, schema.GlobalsForDocument()).GetQuickInfo(offset);
+        var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
+        var info = new KustoCodeService(queryText, schema.GlobalsForDocument())
+            .GetQuickInfo(offset - queryStart);
         return string.IsNullOrWhiteSpace(info.Text)
             ? null
             : new { contents = new { kind = "plaintext", value = info.Text } };
     }
 
-    private object? GetSignatureHelp(JsonElement parameters) =>
-        TryGetDocumentAndPosition(parameters, out var document, out var offset)
-            ? SignatureHelp.Get(document.Text, schema.GlobalsForDocument(), offset)
-            : null;
+    private object? GetSignatureHelp(JsonElement parameters)
+    {
+        if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
+            return null;
+        var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
+        return SignatureHelp.Get(queryText, schema.GlobalsForDocument(), offset - queryStart);
+    }
 
     private object[] GetCodeLenses(JsonElement parameters)
     {
@@ -279,11 +285,14 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     /// <summary>Starts fetching the schema of every cluster and database the query mentions.</summary>
     private void LoadReferencedSchema(DocumentSnapshot document)
     {
-        var service = new KustoCodeService(document.Text, schema.GlobalsForDocument());
-        foreach (var reference in service.GetClusterReferences())
-            schema.EnsureReference(reference.Cluster, null);
-        foreach (var reference in service.GetDatabaseReferences())
-            schema.EnsureReference(reference.Cluster, reference.Database);
+        foreach (var block in QueryBlocks.Find(document.Text))
+        {
+            var service = new KustoCodeService(block.Text, schema.GlobalsForDocument());
+            foreach (var reference in service.GetClusterReferences())
+                schema.EnsureReference(reference.Cluster, null);
+            foreach (var reference in service.GetDatabaseReferences())
+                schema.EnsureReference(reference.Cluster, reference.Database);
+        }
     }
 
     private bool TryGetDocumentAndPosition(
@@ -308,27 +317,28 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
 
     private async Task PublishDiagnosticsAsync(string uri, DocumentSnapshot document)
     {
-        var diagnostics = KustoCode.Parse(document.Text)
-            .GetSyntaxDiagnostics()
-            .Where(diagnostic => diagnostic.HasLocation)
-            .Select(diagnostic => new
-            {
-                range = new
+        var diagnostics = QueryBlocks.Find(document.Text)
+            .SelectMany(block => KustoCode.Parse(block.Text)
+                .GetSyntaxDiagnostics()
+                .Where(diagnostic => diagnostic.HasLocation)
+                .Select(diagnostic => new
                 {
-                    start = document.PositionAt(diagnostic.Start),
-                    end = document.PositionAt(diagnostic.Start + diagnostic.Length)
-                },
-                severity = diagnostic.Severity.ToString() switch
-                {
-                    "Warning" => 2,
-                    "Information" => 3,
-                    "Suggestion" => 4,
-                    _ => 1
-                },
-                code = diagnostic.Code,
-                source = "Kusto",
-                message = diagnostic.Message
-            })
+                    range = new
+                    {
+                        start = document.PositionAt(block.Start + diagnostic.Start),
+                        end = document.PositionAt(block.Start + diagnostic.Start + diagnostic.Length)
+                    },
+                    severity = diagnostic.Severity.ToString() switch
+                    {
+                        "Warning" => 2,
+                        "Information" => 3,
+                        "Suggestion" => 4,
+                        _ => 1
+                    },
+                    code = diagnostic.Code,
+                    source = "Kusto",
+                    message = diagnostic.Message
+                }))
             .ToArray();
 
         await SendAsync(new

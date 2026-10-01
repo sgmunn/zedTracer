@@ -10,27 +10,6 @@ internal static class CodeLenses
     public const string DispatchActionCommand = "zed.dispatchAction";
     public const string NoopCommand = "kusto.noop";
 
-    /// <summary>
-    /// A query is a run of non-blank lines, the same rule the editor uses to pick the query to run.
-    /// </summary>
-    public static IEnumerable<QueryBlock> FindQueries(DocumentSnapshot document)
-    {
-        var lines = document.Text.Split('\n');
-        var start = -1;
-        for (var line = 0; line <= lines.Length; line++)
-        {
-            var blank = line == lines.Length || string.IsNullOrWhiteSpace(lines[line]);
-            if (!blank && start < 0)
-                start = line;
-            if (blank && start >= 0)
-            {
-                var text = string.Join("\n", lines[start..line]).TrimEnd('\r');
-                yield return new QueryBlock(start, line - 1, text);
-                start = -1;
-            }
-        }
-    }
-
     /// <summary>Braille spinner frames, one per refresh while a query runs.</summary>
     private const string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
@@ -39,7 +18,7 @@ internal static class CodeLenses
     public static object[] For(DocumentSnapshot document, Dictionary<string, QueryRuns> runs, DateTimeOffset now)
     {
         var lenses = new List<object>();
-        foreach (var block in FindQueries(document))
+        foreach (var block in QueryBlocks.Find(document.Text))
         {
             runs.TryGetValue(RunLog.Normalize(block.Text), out var state);
             var range = new
@@ -111,5 +90,3 @@ internal static class CodeLenses
         return line.Length > 80 ? line[..79] + "…" : line;
     }
 }
-
-internal sealed record QueryBlock(int FirstLine, int LastLine, string Text);
