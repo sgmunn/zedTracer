@@ -9,7 +9,8 @@ await new KustoLanguageServer(Console.OpenStandardInput(), Console.OpenStandardO
 internal sealed class KustoLanguageServer(Stream input, Stream output)
 {
     private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
-    private GlobalState globals = GlobalState.Default;
+    private readonly SemaphoreSlim writeLock = new(1, 1);
+    private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default);
 
     public async Task RunAsync()
     {
@@ -55,13 +56,15 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         switch (method)
         {
             case "initialize":
-                globals = LoadGlobals(parameters);
+                schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters));
+                ApplyInitializationOptions(parameters);
                 return new
                 {
                     capabilities = new
                     {
                         textDocumentSync = 1,
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(" } },
+                        signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         hoverProvider = true
                     },
                     serverInfo = new { name = "kusto-lsp", version = "0.1.0" }
@@ -77,6 +80,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                 var document = new DocumentSnapshot(textDocument.GetProperty("text").GetString() ?? "");
                 documents[uri] = document;
                 await PublishDiagnosticsAsync(uri, document);
+                LoadReferencedSchema(document);
                 return null;
             }
             case "textDocument/didChange":
@@ -89,6 +93,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                         .GetProperty("text").GetString() ?? "");
                     documents[uri] = document;
                     await PublishDiagnosticsAsync(uri, document);
+                    LoadReferencedSchema(document);
                 }
                 return null;
             }
@@ -108,6 +113,8 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                 return Complete(parameters);
             case "textDocument/hover":
                 return Hover(parameters);
+            case "textDocument/signatureHelp":
+                return GetSignatureHelp(parameters);
             default:
                 return null;
         }
@@ -118,7 +125,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return [];
 
-        var completions = new KustoCodeService(document.Text, globals)
+        var completions = new KustoCodeService(document.Text, schema.GlobalsForDocument())
             .GetCompletionItems(offset);
         var start = Math.Clamp(completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
@@ -145,10 +152,39 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return null;
 
-        var info = new KustoCodeService(document.Text, globals).GetQuickInfo(offset);
+        var info = new KustoCodeService(document.Text, schema.GlobalsForDocument()).GetQuickInfo(offset);
         return string.IsNullOrWhiteSpace(info.Text)
             ? null
             : new { contents = new { kind = "plaintext", value = info.Text } };
+    }
+
+    private object? GetSignatureHelp(JsonElement parameters) =>
+        TryGetDocumentAndPosition(parameters, out var document, out var offset)
+            ? SignatureHelp.Get(document.Text, schema.GlobalsForDocument(), offset)
+            : null;
+
+    /// <summary>The cluster and database queries run on, from `lsp.kusto-lsp.initialization_options`.</summary>
+    private void ApplyInitializationOptions(JsonElement parameters)
+    {
+        if (!parameters.TryGetProperty("initializationOptions", out var options)
+            || options.ValueKind != JsonValueKind.Object)
+            return;
+
+        string? Text(string name) =>
+            options.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        schema.SetDefaults(Text("cluster"), Text("database"));
+    }
+
+    /// <summary>Starts fetching the schema of every cluster and database the query mentions.</summary>
+    private void LoadReferencedSchema(DocumentSnapshot document)
+    {
+        var service = new KustoCodeService(document.Text, schema.GlobalsForDocument());
+        foreach (var reference in service.GetClusterReferences())
+            schema.EnsureReference(reference.Cluster, null);
+        foreach (var reference in service.GetDatabaseReferences())
+            schema.EnsureReference(reference.Cluster, reference.Database);
     }
 
     private bool TryGetDocumentAndPosition(
@@ -270,9 +306,17 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(message);
         var header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
-        await output.WriteAsync(header);
-        await output.WriteAsync(body);
-        await output.FlushAsync();
+        await writeLock.WaitAsync();
+        try
+        {
+            await output.WriteAsync(header);
+            await output.WriteAsync(body);
+            await output.FlushAsync();
+        }
+        finally
+        {
+            writeLock.Release();
+        }
     }
 
     private static async Task<JsonDocument?> ReadMessageAsync(Stream stream)
