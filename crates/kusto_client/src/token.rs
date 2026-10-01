@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::future::BoxFuture;
@@ -7,15 +8,37 @@ use serde::Deserialize;
 
 /// A bearer token. Its `Debug` output hides the secret so a token never reaches a log.
 #[derive(Clone, PartialEq, Eq)]
-pub struct AccessToken(String);
+pub struct AccessToken {
+    secret: String,
+    expires_at: Option<SystemTime>,
+}
 
 impl AccessToken {
+    /// A token whose lifetime is not known, so it is never reused.
     pub fn new(secret: impl Into<String>) -> Self {
-        Self(secret.into())
+        Self {
+            secret: secret.into(),
+            expires_at: None,
+        }
+    }
+
+    pub fn expiring_at(secret: impl Into<String>, expires_at: SystemTime) -> Self {
+        Self {
+            secret: secret.into(),
+            expires_at: Some(expires_at),
+        }
     }
 
     pub fn secret(&self) -> &str {
-        &self.0
+        &self.secret
+    }
+
+    /// Whether the token can still be used for a request that starts now. A token close to its
+    /// end is not worth sending, because the request could outlive it.
+    pub fn is_usable(&self, now: SystemTime) -> bool {
+        const MARGIN: Duration = Duration::from_secs(120);
+        self.expires_at
+            .is_some_and(|expires_at| expires_at > now + MARGIN)
     }
 }
 
@@ -85,9 +108,12 @@ impl TokenProvider for AzureCliTokenProvider {
 
 fn parse_az_output(stdout: &[u8]) -> Result<AccessToken> {
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
     struct AzureToken {
+        #[serde(rename = "accessToken")]
         access_token: String,
+        /// Seconds since the epoch. Older versions of the CLI only print a local-time string,
+        /// which is ambiguous, so such a token is simply not reused.
+        expires_on: Option<u64>,
     }
 
     let token: AzureToken = serde_json::from_slice(stdout)
@@ -95,7 +121,13 @@ fn parse_az_output(stdout: &[u8]) -> Result<AccessToken> {
     if token.access_token.is_empty() {
         bail!("the Azure CLI returned an empty token");
     }
-    Ok(AccessToken::new(token.access_token))
+    Ok(match token.expires_on {
+        Some(seconds) => AccessToken::expiring_at(
+            token.access_token,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+        ),
+        None => AccessToken::new(token.access_token),
+    })
 }
 
 #[cfg(test)]
@@ -109,6 +141,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(token.secret(), "secret");
+    }
+
+    #[test]
+    fn a_token_is_reused_only_with_a_known_end_that_is_not_close() {
+        let output = br#"{"accessToken":"secret","expires_on":4102444800}"#;
+        let token = parse_az_output(output).unwrap();
+        assert!(token.is_usable(SystemTime::UNIX_EPOCH + Duration::from_secs(4102444800 - 600)));
+        assert!(!token.is_usable(SystemTime::UNIX_EPOCH + Duration::from_secs(4102444800 - 60)));
+
+        let unknown = parse_az_output(br#"{"accessToken":"secret"}"#).unwrap();
+        assert!(!unknown.is_usable(SystemTime::UNIX_EPOCH));
     }
 
     #[test]

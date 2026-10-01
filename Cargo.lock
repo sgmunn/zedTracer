@@ -9585,11 +9585,13 @@ name = "kusto_client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-compression",
  "chrono",
  "futures 0.3.34",
  "http_client",
  "kusto_results",
  "log",
+ "parking_lot",
  "pretty_assertions",
  "reqwest_client",
  "serde",
