@@ -116,6 +116,9 @@
     "cluster": null,
     // The database, such as "Samples"
     "database": null,
+    // Where a run's result is shown: "panel" (the Results panel, each run replaces the last) or
+    // "editor" (a tab for every run)
+    "results_location": "panel",
   },
   // Kusto results grid settings
   "kusto_results": {
