@@ -1,5 +1,7 @@
+import datetime
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -390,6 +392,172 @@ class SchemaTest(unittest.TestCase):
             self.change(f"print {version}", version)
         time.sleep(0.5)
         self.assertLessEqual(len(cluster.commands), 2, cluster.commands)
+
+
+class CodeLensTest(unittest.TestCase):
+    """Lenses above each query, from what the editor recorded about its runs."""
+
+    QUERIES = "T1\n| take 1\n\nT2\n| count\n"
+
+    def setUp(self):
+        self.data = tempfile.TemporaryDirectory()
+        self.log = Path(self.data.name) / "kusto" / "history" / "runs.jsonl"
+        self.log.parent.mkdir(parents=True)
+        LanguageServerTest.start_server(
+            self, None, {}, {"KUSTO_ZED_DATA_DIR": self.data.name}
+        )
+
+    def tearDown(self):
+        self.process.terminate()
+        try:
+            self.process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.communicate()
+        self.data.cleanup()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+
+    def receive_where(self, wanted):
+        """The next message that `wanted` accepts. The server may ask for a refresh at any time."""
+        while True:
+            message = self.receive()
+            if wanted(message):
+                return message
+
+    def open_document(self, text):
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": URI, "languageId": "kusto", "version": 1, "text": text}},
+        )
+        return self.receive_where(
+            lambda message: message.get("method") == "textDocument/publishDiagnostics"
+        )
+
+    def request(self, request_id, method, parameters):
+        self.send(request_id, method, parameters)
+        return self.receive_where(lambda message: message.get("id") == request_id and "result" in message)["result"]
+
+    def record(self, event, run_id, query, minutes_ago=0, **fields):
+        started = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes_ago)
+        line = {
+            "event": event,
+            "cid": run_id,
+            "query": query,
+            "cluster": "help.kusto.windows.net",
+            "database": "Samples",
+            "at": started.isoformat().replace("+00:00", "Z"),
+            **fields,
+        }
+        with self.log.open("a") as file:
+            file.write(json.dumps(line) + "\n")
+
+    def lenses(self, text=None):
+        self.open_document(text or self.QUERIES)
+        return self.request(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+
+    def titles(self, lenses, line):
+        return [lens["command"]["title"] for lens in lenses if lens["range"]["start"]["line"] == line]
+
+    def wait_for_refresh(self, timeout=10):
+        """The server asks the client to ask again when the log changes."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([self.process.stdout], [], [], 0.2)
+            if ready:
+                message = self.receive()
+                if message.get("method") == "workspace/codeLens/refresh":
+                    return True
+        return False
+
+    def test_each_query_has_a_run_lens_on_its_first_line(self):
+        lenses = self.lenses()
+        self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
+        self.assertEqual(self.titles(lenses, 3), ["▶ Run"])
+        self.assertEqual(len(lenses), 2)
+        command = lenses[0]["command"]
+        self.assertEqual(command["command"], "zed.dispatchAction")
+        self.assertEqual(command["arguments"], ["kusto::RunQuery"])
+
+    def test_the_last_run_of_the_same_query_is_shown_even_when_it_was_reformatted(self):
+        self.record("started", "id-1", "T1 | take 1")
+        self.record(
+            "finished", "id-1", "T1 | take 1",
+            durationMs=1840, rows=1240, path="/history/a.ktt",
+        )
+        lenses = self.lenses("T1\n| take 1 // the first ten\n\nT2\n| count\n")
+
+        first = self.titles(lenses, 0)
+        self.assertEqual(first[0], "▶ Run")
+        self.assertTrue(first[1].startswith("Last run: "), first)
+        self.assertTrue(first[1].endswith("took 1.8 s, 1,240 rows"), first)
+        self.assertEqual(first[2:], ["Results", "Copy CID"])
+        self.assertEqual(self.titles(lenses, 3), ["▶ Run"], "another query has no history")
+
+        by_title = {lens["command"]["title"]: lens["command"] for lens in lenses}
+        self.assertEqual(
+            by_title["Results"]["arguments"],
+            ["kusto::ShowResult", {"path": "/history/a.ktt"}],
+        )
+        self.assertEqual(
+            by_title["Copy CID"]["arguments"],
+            ["kusto::CopyClientRequestId", {"id": "id-1"}],
+        )
+
+    def test_a_running_query_offers_cancel_instead_of_run(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        lenses = self.lenses()
+        self.assertEqual(self.titles(lenses, 0), ["Running…", "Cancel"])
+        cancel = next(lens for lens in lenses if lens["command"]["title"] == "Cancel")
+        self.assertEqual(cancel["command"]["arguments"], ["kusto::CancelQuery"])
+        self.assertEqual(self.titles(lenses, 3), ["▶ Run"])
+
+    def test_the_server_asks_for_fresh_lenses_when_a_run_ends(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        self.assertEqual(self.titles(self.lenses(), 0), ["Running…", "Cancel"])
+
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=500, rows=3, path="/history/a.ktt")
+        self.assertTrue(self.wait_for_refresh(), "no refresh request arrived")
+
+        titles = self.titles(
+            self.request(8, "textDocument/codeLens", {"textDocument": {"uri": URI}}), 0
+        )
+        self.assertEqual(titles[0], "▶ Run")
+        self.assertTrue(titles[1].endswith("took 500 ms, 3 rows"), titles)
+
+    def test_a_failed_run_shows_the_first_line_of_its_message(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        self.record(
+            "failed", "id-1", "T1\n| take 1",
+            message="Semantic error: SEM0100: bad table\nmore details",
+        )
+        titles = self.titles(self.lenses(), 0)
+        self.assertEqual(titles[0], "▶ Run")
+        self.assertEqual(titles[1], "Last run failed: Semantic error: SEM0100: bad table")
+        self.assertEqual(titles[2], "Copy CID")
+
+    def test_a_cancelled_run_leaves_the_earlier_result_in_place(self):
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")
+        self.record("started", "id-2", "T1\n| take 1")
+        self.record("cancelled", "id-2", "T1\n| take 1")
+        titles = self.titles(self.lenses(), 0)
+        self.assertEqual(titles[0], "▶ Run")
+        self.assertTrue(titles[1].endswith("took 900 ms, 7 rows"), titles)
+
+    def test_a_run_that_never_reported_an_end_stops_counting_as_running(self):
+        self.record("started", "id-1", "T1\n| take 1", minutes_ago=60)
+        self.assertEqual(self.titles(self.lenses(), 0), ["▶ Run"])
+
+    def test_without_a_log_there_are_only_run_lenses(self):
+        self.assertFalse(self.log.exists())
+        self.assertEqual(len(self.lenses()), 2)
+
+    def test_the_noop_command_is_accepted(self):
+        self.assertIsNone(
+            self.request(9, "workspace/executeCommand", {"command": "kusto.noop", "arguments": []})
+        )
 
 
 if __name__ == "__main__":
