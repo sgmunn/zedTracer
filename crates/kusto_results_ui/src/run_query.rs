@@ -11,15 +11,19 @@ use anyhow::{Context as _, Result};
 use chrono::Utc;
 use editor::Editor;
 use fs::Fs;
-use gpui::{App, AsyncWindowContext, AppContext as _, BackgroundExecutor, Context, Entity, Task, TaskExt as _, Window, actions};
+use gpui::{App, AsyncWindowContext, WeakEntity, AppContext as _, BackgroundExecutor, Context, Entity, Task, TaskExt as _, Window, actions};
 use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, KustoClient, QueryRequest, TokenProvider, query_range_at,
 };
 use multi_buffer::MultiBufferOffset;
-use settings::{RegisterSetting, Settings};
+use project::{ProjectItem as _, ProjectPath};
+use settings::{KustoResultsLocation, RegisterSetting, Settings};
 use workspace::notifications::{DetachAndPromptErr as _, NotificationId};
 use workspace::{OpenOptions, OpenVisible, Toast, Workspace};
+
+use crate::results_panel::ResultsPanel;
+use crate::results_viewer::ResultsFile;
 
 actions!(
     kusto,
@@ -34,6 +38,7 @@ actions!(
 pub struct KustoSettings {
     pub cluster: Option<String>,
     pub database: Option<String>,
+    pub results_location: KustoResultsLocation,
 }
 
 impl Settings for KustoSettings {
@@ -49,6 +54,9 @@ impl Settings for KustoSettings {
         Self {
             cluster: text(|kusto| &kusto.cluster),
             database: text(|kusto| &kusto.database),
+            results_location: kusto
+                .and_then(|kusto| kusto.results_location)
+                .unwrap_or(KustoResultsLocation::Panel),
         }
     }
 }
@@ -228,30 +236,7 @@ fn start_run(
                 cx.background_executor().clone(),
             )
             .await;
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    workspace.dismiss_toast(&toast_id, cx);
-                    match outcome {
-                        Ok(path) => workspace
-                            .open_abs_path(
-                                path,
-                                OpenOptions {
-                                    visible: Some(OpenVisible::None),
-                                    ..Default::default()
-                                },
-                                window,
-                                cx,
-                            )
-                            .detach_and_prompt_err(
-                                "Could not open the query results",
-                                window,
-                                cx,
-                                |_, _, _| None,
-                            ),
-                        Err(error) => workspace.show_error(error, cx),
-                    }
-                })
-                .log_err();
+            publish(&workspace, &toast_id, outcome, cx).await;
             runs.update(cx, |runs, _| runs.finish(run_id)).log_err();
         }
     });
@@ -264,6 +249,83 @@ fn start_run(
         })
     });
     Ok(())
+}
+
+/// Shows what a run produced: in the Results panel, or in a tab of its own. Either way the run
+/// has finished, so its "running" notice goes away.
+async fn publish(
+    workspace: &WeakEntity<Workspace>,
+    toast_id: &NotificationId,
+    outcome: Result<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) {
+    let in_panel = workspace
+        .update_in(cx, |workspace, _, cx| {
+            workspace.dismiss_toast(toast_id, cx);
+            KustoSettings::get_global(cx).results_location == KustoResultsLocation::Panel
+                && workspace.panel::<ResultsPanel>(cx).is_some()
+        })
+        .unwrap_or(false);
+
+    if in_panel {
+        let loaded = match outcome {
+            Ok(path) => load_result_file(workspace, path, cx).await,
+            Err(error) => Err(error),
+        };
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                let Some(panel) = workspace.panel::<ResultsPanel>(cx) else {
+                    return;
+                };
+                panel.update(cx, |panel, cx| match loaded {
+                    Ok(file) => panel.show_result(file, window, cx),
+                    Err(error) => panel.show_error(format!("{error:#}"), cx),
+                });
+                workspace.open_panel::<ResultsPanel>(window, cx);
+            })
+            .log_err();
+        return;
+    }
+
+    workspace
+        .update_in(cx, |workspace, window, cx| match outcome {
+            Ok(path) => workspace
+                .open_abs_path(
+                    path,
+                    OpenOptions {
+                        visible: Some(OpenVisible::None),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+                .detach_and_prompt_err("Could not open the query results", window, cx, |_, _, _| {
+                    None
+                }),
+            Err(error) => workspace.show_error(error, cx),
+        })
+        .log_err();
+}
+
+/// Opens a saved result the way a results tab does, without making a tab.
+async fn load_result_file(
+    workspace: &WeakEntity<Workspace>,
+    path: PathBuf,
+    cx: &mut AsyncWindowContext,
+) -> Result<Entity<ResultsFile>> {
+    let project = workspace.update(cx, |workspace, _| workspace.project().clone())?;
+    let (worktree, relative_path) = project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(&path, false, cx)
+        })
+        .await?;
+    let project_path = ProjectPath {
+        worktree_id: worktree.read_with(cx, |worktree, _| worktree.id()),
+        path: relative_path,
+    };
+    cx.update(|_, cx| ResultsFile::try_open(&project, &project_path, cx))?
+        .with_context(|| format!("{} is not a results file", path.display()))?
+        .await
 }
 
 fn token_provider(
@@ -335,6 +397,7 @@ mod tests {
     use settings::SettingsStore;
     use util::rel_path::RelPath;
     use workspace::AppState;
+    use workspace::dock::Panel as _;
 
     use crate::ResultsViewer;
 
@@ -452,6 +515,10 @@ mod tests {
             })
             .await
             .expect("the query file opens");
+        let panel = cx.new(ResultsPanel::new);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_panel(panel, window, cx)
+        });
         let editor = item.downcast::<Editor>().expect("the file opens in an editor");
         editor.update_in(cx, |editor, window, cx| {
             window.focus(&editor.focus_handle(cx), cx)
@@ -480,6 +547,20 @@ mod tests {
         cx.run_until_parked();
     }
 
+    /// Shows results in tabs of their own, as the `editor` setting does.
+    fn use_editor_tabs(cx: &mut gpui::VisualTestContext) {
+        cx.update(|_, cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto": { "cluster": "https://help.kusto.windows.net", "database": "Samples", "results_location": "editor" } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+        });
+    }
+
     fn results_viewers(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> usize {
         workspace.read_with(cx, |workspace, cx| {
             workspace
@@ -491,6 +572,7 @@ mod tests {
     #[gpui::test]
     async fn runs_the_query_at_the_cursor_and_opens_the_result(cx: &mut TestAppContext) {
         let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        use_editor_tabs(cx);
 
         run(&workspace, cx);
         cx.run_until_parked();
@@ -515,6 +597,59 @@ mod tests {
             }),
             "the running notice is gone"
         );
+    }
+
+    #[gpui::test]
+    async fn a_run_shows_its_result_in_the_panel_and_leaves_the_editor_active(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        assert!(!workspace.read_with(cx, |workspace, cx| workspace.bottom_dock().read(cx).is_open()));
+
+        run(&workspace, cx);
+
+        let viewer = panel
+            .read_with(cx, |panel, _| panel.shown_viewer().cloned())
+            .expect("the panel shows the result");
+        assert_eq!(viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()), 2);
+        assert_eq!(
+            cx.update(|window, cx| panel.read(cx).icon_label(window, cx)),
+            Some("2".to_string())
+        );
+        assert!(
+            workspace.read_with(cx, |workspace, cx| workspace.bottom_dock().read(cx).is_open()),
+            "the panel opens"
+        );
+        assert!(
+            workspace.read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx).is_some()),
+            "the query stays in front, so it can be run again"
+        );
+        assert_eq!(results_viewers(&workspace, cx), 0, "no tab is opened");
+    }
+
+    #[gpui::test]
+    async fn the_next_run_replaces_the_result_in_the_panel(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        let runs = cx.new(|_| QueryRuns::default());
+
+        start(&workspace, &runs, cx);
+        let first = panel
+            .read_with(cx, |panel, _| panel.shown_viewer().cloned())
+            .expect("a first result");
+        start(&workspace, &runs, cx);
+        let second = panel
+            .read_with(cx, |panel, _| panel.shown_viewer().cloned())
+            .expect("a second result");
+
+        assert_eq!(bodies(&sent, "/v2/rest/query").len(), 2);
+        assert_ne!(first.entity_id(), second.entity_id(), "the second run's result is shown");
+        assert_eq!(results_viewers(&workspace, cx), 0);
     }
 
     #[gpui::test]
@@ -543,6 +678,38 @@ mod tests {
 
         run(&workspace, cx);
         cx.run_until_parked();
+
+        assert_eq!(results_viewers(&workspace, cx), 0);
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.shown_error().map(str::to_string)),
+            Some("Semantic error: SEM0100".to_string())
+        );
+        assert_eq!(
+            cx.update(|window, cx| panel.read(cx).icon_label(window, cx)),
+            Some("!".to_string())
+        );
+        assert!(
+            !workspace.read_with(cx, |workspace, _| {
+                workspace.has_notification(&NotificationId::unique::<anyhow::Error>())
+            }),
+            "the error is in the panel, not a notification"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_failed_run_in_editor_mode_shows_a_notification(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(
+            cx,
+            400,
+            r#"{"error":{"message":"outer","innererror":{"@message":"Semantic error: SEM0100"}}}"#,
+        )
+        .await;
+        use_editor_tabs(cx);
+
+        run(&workspace, cx);
 
         assert_eq!(results_viewers(&workspace, cx), 0);
         assert!(workspace.read_with(cx, |workspace, _| {
@@ -614,6 +781,7 @@ mod tests {
     #[gpui::test]
     async fn the_history_file_reads_back_as_the_result(cx: &mut TestAppContext) {
         let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        use_editor_tabs(cx);
         run(&workspace, cx);
         cx.run_until_parked();
 
@@ -640,6 +808,7 @@ mod tests {
         content.kusto = Some(settings::KustoSettingsContent {
             cluster: Some("  https://help.kusto.windows.net ".into()),
             database: Some("   ".into()),
+            results_location: None,
         });
         let settings = KustoSettings::from_settings(&content);
         assert_eq!(
@@ -647,5 +816,10 @@ mod tests {
             Some("https://help.kusto.windows.net")
         );
         assert_eq!(settings.database, None);
+        assert_eq!(
+            settings.results_location,
+            KustoResultsLocation::Panel,
+            "results go to the panel unless asked otherwise"
+        );
     }
 }
