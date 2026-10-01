@@ -125,6 +125,54 @@ class LanguageServerTest(unittest.TestCase):
         self.assertEqual(keyword["insertTextFormat"], 1)
         self.assertNotIn("$0", keyword["textEdit"]["newText"])
 
+    def test_a_query_does_not_continue_into_the_next_one(self):
+        # With the text after the blank line read as part of the first query, the last column of
+        # the project is reported as followed by something that is not a comma.
+        diagnostics = self.open_document("T1\n| project a, b\n\nT2\n| take 1")
+        self.assertEqual(diagnostics, [])
+
+    def test_a_syntax_error_in_a_later_query_is_reported_where_it_is(self):
+        diagnostics = self.open_document("print 1\n\nprint 2\n\nlet = 5;")
+        self.assertTrue(diagnostics)
+        self.assertEqual(diagnostics[0]["range"]["start"]["line"], 4)
+        self.assertEqual(diagnostics[0]["range"]["start"]["character"], 4)
+
+    def test_names_declared_in_one_query_are_not_offered_in_the_next(self):
+        self.open_document("let threshold = 5;\nprint threshold\n\nprint x = thr")
+        labels = [item["label"] for item in self.complete(3, 13)]
+        self.assertNotIn("threshold", labels)
+
+    def test_completion_in_a_later_query_replaces_the_text_being_typed(self):
+        self.open_document("print 1\n\nprint x = strle")
+        strlen = next(
+            item for item in self.complete(2, 15) if item["label"].startswith("strlen")
+        )
+        self.assertEqual(
+            strlen["textEdit"]["range"],
+            {"start": {"line": 2, "character": 10}, "end": {"line": 2, "character": 15}},
+        )
+
+    def test_a_blank_line_between_queries_starts_a_fresh_query(self):
+        self.open_document("print 1\n\n")
+        labels = [item["label"] for item in self.complete(2, 0)]
+        self.assertIn("print", labels)
+
+    def test_hover_and_signature_help_work_in_a_later_query(self):
+        self.open_document("print 1\n\nprint value = strlen('abc')")
+        self.send(
+            3,
+            "textDocument/hover",
+            {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 17}},
+        )
+        self.assertIn("strlen", self.receive()["result"]["contents"]["value"])
+        self.send(
+            4,
+            "textDocument/signatureHelp",
+            {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 24}},
+        )
+        help_ = self.receive()["result"]
+        self.assertTrue(help_["signatures"][0]["label"].startswith("strlen("))
+
     def test_syntax_diagnostics_and_close(self):
         diagnostics = self.open_document("let = 5;")
         self.assertTrue(diagnostics)

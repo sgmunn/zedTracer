@@ -56,7 +56,8 @@ Signature help appears inside the parentheses of a function call, including
 database functions with their parameter names and types. It finds unqualified
 function names only.
 
-Diagnostics are still syntax-only: table and column references are not
+A file holds several queries separated by blank lines, and each is analysed on its own: a query
+never continues into the next one, and a `let` in one is not visible in the next. Diagnostics are still syntax-only: table and column references are not
 validated.
 
 ## Code lenses
