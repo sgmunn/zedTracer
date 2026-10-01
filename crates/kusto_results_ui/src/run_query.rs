@@ -272,11 +272,11 @@ fn start_run(
         .context("There is no query at the cursor.")?;
 
     let cluster = query.connection.cluster.as_deref().context(
-        "This query has no cluster. Add //:setDefaultCluster(\"https://…\") above it, or set `kusto.cluster` in your settings.",
+        "This query has no cluster. Add // :setDefaultCluster(\"https://…\") above it, or set `kusto.cluster` in your settings.",
     )?;
     let cluster = Cluster::parse(cluster)?;
     let database = query.connection.database.clone().context(
-        "This query has no database. Add //:setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
+        "This query has no database. Add // :setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
     )?;
     let query = query.text;
 
@@ -1186,7 +1186,7 @@ mod tests {
             cx,
             200,
             ANSWER,
-            "//:setDefaultCluster(\"https://other.kusto.windows.net\")\n//:setDefaultDb(\"Logs\")\nT1\n| take 1",
+            "// :setDefaultCluster(\"https://other.kusto.windows.net\")\n// :setDefaultDb(\"Logs\")\nT1\n| take 1",
         )
         .await;
         run(&workspace, cx);
@@ -1224,7 +1224,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(error.contains("no database"), "{error}");
-        assert!(error.contains("//:setDefaultDb"), "it says how to fix it: {error}");
+        assert!(error.contains("setDefaultDb"), "it says how to fix it: {error}");
         assert!(bodies(&sent, "/v2/rest/query").is_empty(), "nothing was sent");
     }
 

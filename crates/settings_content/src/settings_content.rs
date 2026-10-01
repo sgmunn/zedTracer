@@ -1370,13 +1370,13 @@ pub struct MarkdownPreviewSettingsContent {
 #[with_fallible_options]
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
 pub struct KustoSettingsContent {
-    /// The cluster that queries run on when no `//:setDefaultCluster("…")` comment above them says
+    /// The cluster that queries run on when no `// :setDefaultCluster("…")` comment above them says
     /// otherwise, such as "https://help.kusto.windows.net".
     ///
     /// Default: null
     pub cluster: Option<String>,
 
-    /// The database that queries run in when no `//:setDefaultDb("…")` comment above them says
+    /// The database that queries run in when no `// :setDefaultDb("…")` comment above them says
     /// otherwise.
     ///
     /// Default: null

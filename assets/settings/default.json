@@ -114,7 +114,7 @@
     "unit": "binary",
   },
   // Where Kusto queries run when the file does not say. A file can say with comments above a
-  // query: //:setDefaultCluster("https://...") and //:setDefaultDb("..."), which apply to every
+  // query: // :setDefaultCluster("https://...") and // :setDefaultDb("..."), which apply to every
   // query below until a later comment changes them. Setting the cluster clears the database.
   "kusto": {
     // The cluster, such as "https://help.kusto.windows.net"

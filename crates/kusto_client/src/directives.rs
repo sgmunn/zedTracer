@@ -1,10 +1,12 @@
 //! Where a query runs, as the file says.
 //!
-//! A line that is a comment of the form `//:setDefaultCluster("https://…")` or
-//! `//:setDefaultDb("…")` sets the cluster or the database for every query below it, until a later
+//! A line that is a comment of the form `// :setDefaultCluster("https://…")` or
+//! `// :setDefaultDb("…")` sets the cluster or the database for every query below it, until a later
 //! line sets it again. Setting the cluster clears the database, because a database name from
 //! another cluster is more likely to fail confusingly than to be the right one. Before the
-//! first directive the defaults apply, which come from the settings.
+//! first directive the defaults apply, which come from the settings. The space after the slashes is
+//! optional: Zed adds `// ` when a comment line is continued, so `// :` is what gets typed, and
+//! `//:` is what other Kusto extensions write.
 
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -14,7 +16,7 @@ use regex::Regex;
 use crate::query_text::{query_blocks, query_range_at};
 
 static DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^\s*//:\s*([A-Za-z]+)\s*\(\s*(?:"([^"]*)"|'([^']*)')\s*\)\s*$"#)
+    Regex::new(r#"^\s*//\s*:\s*([A-Za-z]+)\s*\(\s*(?:"([^"]*)"|'([^']*)')\s*\)\s*$"#)
         .expect("the directive pattern is valid")
 });
 
