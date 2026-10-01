@@ -22,11 +22,35 @@ Completion includes Kusto keywords, built-in functions, and names declared in
 the current query. Hover shows Kusto's quick information for supported symbols.
 Diagnostics cover syntax only.
 
-## Schema from your clusters
+## Where a query runs
 
-Tell the server which cluster and database unqualified names refer to in Zed
-settings (this is separate from the `kusto` settings that choose where F5 runs
-queries, so set both):
+A file can say where its queries run with comment lines like these:
+
+```kql
+//:setDefaultCluster("https://help.kusto.windows.net")
+//:setDefaultDb("Samples")
+
+StormEvents
+| take 10
+```
+
+A directive applies to every query below it until a later directive of the same kind changes it, so one file can
+move between clusters and databases. A directive in the same block as a query (the lines with no blank line
+between them) applies to that query too. **Setting the cluster clears the database**, so a query after
+`setDefaultCluster` needs a `setDefaultDb` of its own. A short cluster name such as `help` means
+`help.kusto.windows.net`. A block of only comments, such as a directive on its own, is not a query: it gets no
+lenses and F5 does not run it. A directive that does not parse gets a warning. Typing `//:` offers both.
+
+A query with no directive above it uses the defaults from Zed settings, which can be your global default or a
+project's `.zed/settings.json`:
+
+```json
+{ "kusto": { "cluster": "https://help.kusto.windows.net", "database": "Samples" } }
+```
+
+The language server needs the same default for completion, because an extension cannot read the `kusto` settings.
+Until the fork passes them on, put them in the server's own settings too (a file whose directives name the cluster and
+database does not need this):
 
 ```json
 {
@@ -41,9 +65,15 @@ queries, so set both):
 }
 ```
 
+Each query shows where it will run in a lens, for example `help.kusto.windows.net / Samples`, and the last run
+that lens row remembers is of that query on that cluster and database. Both the editor and the language server read
+the directives with the same rule, and both are tested against `fork-docs/samples/connection-directives.json`.
+
+## Schema from your clusters
+
 The server signs in with `az account get-access-token`, so run `az login`
 first. It fetches the schema in the background the first time a cluster or
-database is referred to, so the first completion after opening a file may not
+database is used by a query, so the first completion after opening a file may not
 list tables yet; ask again a moment later. Tables, external tables,
 materialized views and functions are loaded, including each function's
 parameters and doc string. A query that names another cluster, such as

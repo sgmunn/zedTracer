@@ -16,6 +16,7 @@ internal sealed class SchemaManager
     private readonly object gate = new();
     private readonly Dictionary<string, Attempt> attempts = new();
     private GlobalState globals;
+    private string? defaultCluster;
     private string? defaultHost;
     private string? defaultDatabase;
 
@@ -30,25 +31,33 @@ internal sealed class SchemaManager
     {
         lock (gate)
         {
+            defaultCluster = string.IsNullOrWhiteSpace(cluster) ? null : cluster.Trim();
             defaultHost = string.IsNullOrWhiteSpace(cluster) ? null : KustoRestClient.ClusterHost(cluster);
             defaultDatabase = string.IsNullOrWhiteSpace(database) ? null : database.Trim();
         }
         EnsureDefaults();
     }
 
-    /// <summary>The symbols to analyse a document with, with the default cluster and database applied.</summary>
-    public GlobalState GlobalsForDocument()
+    /// <summary>The cluster and database a query has when the file does not say.</summary>
+    public Connection Defaults
+    {
+        get
+        {
+            lock (gate)
+                return new Connection(defaultCluster, defaultDatabase);
+        }
+    }
+
+    /// <summary>The symbols to analyse a query with, with its cluster and database applied.</summary>
+    public GlobalState GlobalsFor(Connection connection)
     {
         lock (gate)
         {
             var current = globals;
-            if (defaultHost is null)
-                return current;
-            var cluster = current.GetCluster(defaultHost);
-            if (cluster is null)
+            if (connection.Host is not { } host || current.GetCluster(host) is not { } cluster)
                 return current;
             current = current.WithCluster(cluster);
-            if (defaultDatabase is not null && cluster.GetDatabase(defaultDatabase) is { IsOpen: false } database)
+            if (connection.Database is { } name && cluster.GetDatabase(name) is { IsOpen: false } database)
                 current = current.WithDatabase(database);
             return current;
         }

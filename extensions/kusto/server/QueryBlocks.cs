@@ -2,9 +2,10 @@
 /// A file holds several queries, each a run of non-blank lines, with blank lines between them.
 /// That is how Kusto Explorer reads a file and how the editor chooses the query to run. Each
 /// query is analysed on its own, so a query never continues into the one after it and a `let`
-/// in one is not visible in the next.
+/// in one is not visible in the next. A block of only comments, such as a directive or a note, is
+/// not a query.
 /// </summary>
-internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string Text)
+internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string Text, bool IsQuery)
 {
     public int End => Start + Text.Length;
 }
@@ -29,7 +30,8 @@ internal static class QueryBlocks
             if (blank && firstLine >= 0)
             {
                 var queryText = text[firstStart..Math.Min(lineStart, text.Length)].TrimEnd('\r', '\n');
-                blocks.Add(new QueryBlock(firstLine, line - 1, firstStart, queryText));
+                var isQuery = lines[firstLine..line].Any(text => !text.TrimStart().StartsWith("//", StringComparison.Ordinal));
+                blocks.Add(new QueryBlock(firstLine, line - 1, firstStart, queryText, isQuery));
                 firstLine = -1;
             }
             if (line < lines.Length)

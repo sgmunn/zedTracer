@@ -59,7 +59,14 @@ internal sealed class RunLog : IDisposable
         debounce?.Dispose();
     }
 
-    /// <summary>The latest news about each query, keyed by its normalized text.</summary>
+    /// <summary>
+    /// What names a query for the log: where it runs and its text without comments and layout,
+    /// so the same text on another cluster or database is another query.
+    /// </summary>
+    public static string Key(string query, string? cluster, string? database) =>
+        string.Join("|", cluster is null ? "" : KustoRestClient.ClusterHost(cluster), database ?? "", Normalize(query));
+
+    /// <summary>The latest news about each query, keyed by [Key].</summary>
     public Dictionary<string, QueryRuns> Read()
     {
         var result = new Dictionary<string, QueryRuns>(StringComparer.Ordinal);
@@ -83,7 +90,7 @@ internal sealed class RunLog : IDisposable
                 var query = Text(root, "query");
                 if (runId is null || query is null)
                     continue;
-                var key = Normalize(query);
+                var key = Key(query, Text(root, "cluster"), Text(root, "database"));
                 queryOfRun[runId] = key;
                 if (!result.TryGetValue(key, out var runs))
                     result[key] = runs = new QueryRuns();

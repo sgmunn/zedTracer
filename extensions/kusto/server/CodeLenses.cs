@@ -9,18 +9,24 @@ internal static class CodeLenses
 {
     public const string DispatchActionCommand = "zed.dispatchAction";
     public const string NoopCommand = "kusto.noop";
+    public const string ConnectionCommand = "kusto.connection";
 
     /// <summary>Braille spinner frames, one per refresh while a query runs.</summary>
     private const string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
     private const int FrameMilliseconds = 250;
 
-    public static object[] For(DocumentSnapshot document, Dictionary<string, QueryRuns> runs, DateTimeOffset now)
+    public static object[] For(
+        DocumentSnapshot document,
+        Dictionary<string, QueryRuns> runs,
+        DateTimeOffset now,
+        Connection defaults)
     {
         var lenses = new List<object>();
-        foreach (var block in QueryBlocks.Find(document.Text))
+        foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
         {
-            runs.TryGetValue(RunLog.Normalize(block.Text), out var state);
+            var connection = ConnectionDirectives.Before(document.Text, block.End, defaults);
+            runs.TryGetValue(RunLog.Key(block.Text, connection.Cluster, connection.Database), out var state);
             var range = new
             {
                 start = new { line = block.FirstLine, character = 0 },
@@ -38,6 +44,7 @@ internal static class CodeLenses
             {
                 Add("▶ Run", DispatchActionCommand, "kusto::RunQuery");
             }
+            Add(Describe(connection), ConnectionCommand);
 
             if (state?.Last is { } last)
             {
@@ -69,6 +76,12 @@ internal static class CodeLenses
             : $"{elapsed / 60} m {elapsed % 60:00} s";
         return $"{SpinnerFrames[frame]} Running… {time}";
     }
+
+    /// <summary>Where the query runs: `help.kusto.windows.net / Samples`.</summary>
+    public static string Describe(Connection connection) =>
+        connection.Host is not { } host
+            ? "no cluster"
+            : connection.Database is { } database ? $"{host} / {database}" : $"{host} / no database";
 
     private static string Describe(FinishedRun run)
     {
