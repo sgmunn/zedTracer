@@ -394,6 +394,10 @@ class SchemaTest(unittest.TestCase):
         self.assertLessEqual(len(cluster.commands), 2, cluster.commands)
 
 
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNING = rf"^[{SPINNER}] Running… \d+ s$"
+
+
 class CodeLensTest(unittest.TestCase):
     """Lenses above each query, from what the editor recorded about its runs."""
 
@@ -509,14 +513,16 @@ class CodeLensTest(unittest.TestCase):
     def test_a_running_query_offers_cancel_instead_of_run(self):
         self.record("started", "id-1", "T1\n| take 1")
         lenses = self.lenses()
-        self.assertEqual(self.titles(lenses, 0), ["Running…", "Cancel"])
+        first = self.titles(lenses, 0)
+        self.assertRegex(first[0], SPINNING)
+        self.assertEqual(first[1:], ["Cancel"])
         cancel = next(lens for lens in lenses if lens["command"]["title"] == "Cancel")
         self.assertEqual(cancel["command"]["arguments"], ["kusto::CancelQuery"])
         self.assertEqual(self.titles(lenses, 3), ["▶ Run"])
 
     def test_the_server_asks_for_fresh_lenses_when_a_run_ends(self):
         self.record("started", "id-1", "T1\n| take 1")
-        self.assertEqual(self.titles(self.lenses(), 0), ["Running…", "Cancel"])
+        self.assertRegex(self.titles(self.lenses(), 0)[0], SPINNING)
 
         self.record("finished", "id-1", "T1\n| take 1", durationMs=500, rows=3, path="/history/a.ktt")
         self.assertTrue(self.wait_for_refresh(), "no refresh request arrived")
@@ -526,6 +532,30 @@ class CodeLensTest(unittest.TestCase):
         )
         self.assertEqual(titles[0], "▶ Run")
         self.assertTrue(titles[1].endswith("took 500 ms, 3 rows"), titles)
+
+    def test_the_running_lens_shows_the_elapsed_time(self):
+        self.record("started", "id-1", "T1\n| take 1", minutes_ago=2)
+        title = self.titles(self.lenses(), 0)[0]
+        self.assertRegex(title, rf"^[{SPINNER}] Running… 2 m 0\d s$")
+
+    def test_lenses_are_refreshed_repeatedly_while_a_query_runs_and_stop_when_it_ends(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        self.lenses()
+
+        refreshes = 0
+        deadline = time.time() + 3
+        while refreshes < 5 and time.time() < deadline:
+            if self.wait_for_refresh(timeout=1):
+                refreshes += 1
+        self.assertGreaterEqual(refreshes, 5, "the spinner needs repeated refreshes")
+
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=500, rows=1, path="/history/a.ktt")
+        # One refresh announces the change; once it has been seen the refreshing stops.
+        self.assertTrue(self.wait_for_refresh())
+        time.sleep(0.6)
+        while self.wait_for_refresh(timeout=0.1):
+            pass
+        self.assertFalse(self.wait_for_refresh(timeout=1.2), "refreshing went on after the run ended")
 
     def test_a_failed_run_shows_the_first_line_of_its_message(self):
         self.record("started", "id-1", "T1\n| take 1")

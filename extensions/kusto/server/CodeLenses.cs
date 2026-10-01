@@ -31,7 +31,12 @@ internal static class CodeLenses
         }
     }
 
-    public static object[] For(DocumentSnapshot document, Dictionary<string, QueryRuns> runs)
+    /// <summary>Braille spinner frames, one per refresh while a query runs.</summary>
+    private const string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+    private const int FrameMilliseconds = 250;
+
+    public static object[] For(DocumentSnapshot document, Dictionary<string, QueryRuns> runs, DateTimeOffset now)
     {
         var lenses = new List<object>();
         foreach (var block in FindQueries(document))
@@ -47,7 +52,7 @@ internal static class CodeLenses
 
             if (state?.Running is { } running)
             {
-                Add("Running…", NoopCommand);
+                Add(Running(running, now), NoopCommand);
                 Add("Cancel", DispatchActionCommand, "kusto::CancelQuery");
             }
             else
@@ -71,6 +76,19 @@ internal static class CodeLenses
             }
         }
         return lenses.ToArray();
+    }
+
+    /// <summary>`⠹ Running… 12 s`: the frame follows the clock, so each refresh moves the spinner.</summary>
+    public static string Running(RunningRun run, DateTimeOffset now)
+    {
+        var frame = (int)(now.ToUnixTimeMilliseconds() / FrameMilliseconds % SpinnerFrames.Length);
+        if (run.StartedAt is not { } started)
+            return $"{SpinnerFrames[frame]} Running…";
+        var elapsed = (int)Math.Max(0, (now - started).TotalSeconds);
+        var time = elapsed < 60
+            ? $"{elapsed} s"
+            : $"{elapsed / 60} m {elapsed % 60:00} s";
+        return $"{SpinnerFrames[frame]} Running… {time}";
     }
 
     private static string Describe(FinishedRun run)

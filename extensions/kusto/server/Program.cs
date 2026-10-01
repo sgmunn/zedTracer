@@ -13,6 +13,8 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default);
     private RunLog runLog = new(null);
     private int nextRequestId;
+    private Timer? spinner;
+    private readonly object spinnerGate = new();
 
     public async Task RunAsync()
     {
@@ -183,7 +185,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     {
         var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
         return uri is not null && documents.TryGetValue(uri, out var document)
-            ? CodeLenses.For(document, runLog.Read())
+            ? CodeLenses.For(document, runLog.Read(), DateTimeOffset.UtcNow)
             : [];
     }
 
@@ -202,8 +204,45 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
 
         runLog.Dispose();
         runLog = new RunLog(directory);
-        runLog.Changed += () => _ = RequestCodeLensRefreshAsync();
+        runLog.Changed += OnRunLogChanged;
         runLog.Watch();
+    }
+
+    private void OnRunLogChanged()
+    {
+        _ = RequestCodeLensRefreshAsync();
+        UpdateSpinner();
+    }
+
+    /// <summary>
+    /// While a query runs its lens shows a spinner and the elapsed time, which only moves if Zed
+    /// is asked for the lenses again, so a timer asks four times a second until nothing runs.
+    /// </summary>
+    private void UpdateSpinner()
+    {
+        var anyRunning = runLog.Read().Values.Any(runs => runs.Running is not null);
+        lock (spinnerGate)
+        {
+            if (anyRunning && spinner is null)
+            {
+                spinner = new Timer(_ => OnSpinnerTick(), null, 250, 250);
+            }
+            else if (!anyRunning && spinner is not null)
+            {
+                spinner.Dispose();
+                spinner = null;
+            }
+        }
+    }
+
+    private int spinnerTicks;
+
+    private void OnSpinnerTick()
+    {
+        _ = RequestCodeLensRefreshAsync();
+        // A run that never reported an end stops counting as running, which no file change announces.
+        if (Interlocked.Increment(ref spinnerTicks) % 20 == 0)
+            UpdateSpinner();
     }
 
     private async Task RequestCodeLensRefreshAsync()
