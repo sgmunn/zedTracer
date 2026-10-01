@@ -39,6 +39,7 @@ static ESCAPED_BREAK_BEFORE_FRAME: LazyLock<Regex> =
     LazyLock::new(|| regex(r"(?:\\[rn])+(\s*at\s)"));
 static ESCAPED_BREAK_AT_END: LazyLock<Regex> = LazyLock::new(|| regex(r"(?:\\[rn])+\s*$"));
 static REAL_BREAK: LazyLock<Regex> = LazyLock::new(|| regex(r"[\r\n]+"));
+static ANY_LINE_BREAK: LazyLock<Regex> = LazyLock::new(|| regex(r"\r\n|\r"));
 static FRAME_START: LazyLock<Regex> = LazyLock::new(|| regex(r"\bat\s+[\w<]"));
 static ASYNC_STATE_MACHINE: LazyLock<Regex> =
     LazyLock::new(|| regex(r"\.<([^>]+)>d__[0-9]+\.MoveNext\(\)"));
@@ -451,12 +452,16 @@ pub struct InspectorDocument {
 }
 
 impl InspectorDocument {
+    /// Line breaks are stored as `\n`, which is what the editor that shows the text turns them
+    /// into. The ranges kept here are byte offsets into this text, and they would point at the
+    /// wrong place after any `\r\n` or `\r` that was left in.
     fn push_field(&mut self, header: &str, value: &FieldValue) {
+        let header = ANY_LINE_BREAK.replace_all(header, "\n");
         if !self.text.is_empty() {
             self.text.push_str("\n\n");
         }
         let start = self.text.len();
-        self.text.push_str(header);
+        self.text.push_str(&header);
         self.headers.push(start..self.text.len());
         self.text.push('\n');
         let start = self.text.len();
@@ -465,12 +470,15 @@ impl InspectorDocument {
                 self.text.push_str("null");
                 self.nulls.push(start..self.text.len());
             }
-            FieldValue::Text(text) => self.text.push_str(text),
+            FieldValue::Text(text) => self
+                .text
+                .push_str(&ANY_LINE_BREAK.replace_all(text, "\n")),
             FieldValue::Json(text) => {
-                self.text.push_str(text);
+                let text = ANY_LINE_BREAK.replace_all(text, "\n");
+                self.text.push_str(&text);
                 self.code_blocks.push(start..self.text.len());
                 self.json_tokens
-                    .extend(highlight_json(text).into_iter().map(|token| JsonToken {
+                    .extend(highlight_json(&text).into_iter().map(|token| JsonToken {
                         range: token.range.start + start..token.range.end + start,
                         kind: token.kind,
                     }));
@@ -797,6 +805,35 @@ mod tests {
         );
     }
 
+
+    /// The editor that shows the document rewrites `\r\n` and `\r` to `\n`, so a document with
+    /// either would have every range after it point at the wrong text, or into the middle of a
+    /// character.
+    #[test]
+    fn line_breaks_in_values_are_stored_as_newlines_so_ranges_stay_valid() {
+        let table = Table {
+            name: "t".into(),
+            columns: vec![
+                Column::new("Message", "string"),
+                Column::new("Detail", "string"),
+            ],
+            rows: vec![vec![
+                Cell::Text("one\r\ntwo\rthree".into()),
+                Cell::Text("x".into()),
+            ]],
+        };
+        let document = build_document(&table, &InspectorSubject::Row { row: 0 });
+        assert_eq!(
+            document.text,
+            "Message · string\none\ntwo\nthree\n\nDetail · string\nx"
+        );
+        let headers: Vec<&str> = document
+            .headers
+            .iter()
+            .map(|range| &document.text[range.clone()])
+            .collect();
+        assert_eq!(headers, ["Message · string", "Detail · string"]);
+    }
     #[test]
     fn an_assembled_message_shows_only_the_merged_fields() {
         let table = Table {
