@@ -1,0 +1,103 @@
+[
+  {
+    "name": "without a directive the defaults apply to every query",
+    "text": "T1\n| take 1\n\nT2",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "da" },
+      { "cluster": "https://a.kusto.windows.net", "database": "da" }
+    ]
+  },
+  {
+    "name": "without defaults or directives there is no connection",
+    "text": "T1\n\nT2",
+    "defaults": {},
+    "queries": [
+      { "cluster": null, "database": null },
+      { "cluster": null, "database": null }
+    ]
+  },
+  {
+    "name": "a directive applies to every query below it",
+    "text": "//:setDefaultCluster(\"https://b.kusto.windows.net\")\n//:setDefaultDb(\"db\")\n\nT1\n\nT2",
+    "defaults": {},
+    "queries": [
+      { "cluster": "https://b.kusto.windows.net", "database": "db" },
+      { "cluster": "https://b.kusto.windows.net", "database": "db" }
+    ]
+  },
+  {
+    "name": "queries above a directive are not affected by it",
+    "text": "T0\n\n//:setDefaultDb(\"later\")\n\nT1",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "da" },
+      { "cluster": "https://a.kusto.windows.net", "database": "later" }
+    ]
+  },
+  {
+    "name": "a later directive overrides an earlier one",
+    "text": "//:setDefaultCluster(\"https://b.kusto.windows.net\")\n//:setDefaultDb(\"one\")\nT1\n\n//:setDefaultDb(\"two\")\nT2\n\nT3",
+    "defaults": {},
+    "queries": [
+      { "cluster": "https://b.kusto.windows.net", "database": "one" },
+      { "cluster": "https://b.kusto.windows.net", "database": "two" },
+      { "cluster": "https://b.kusto.windows.net", "database": "two" }
+    ]
+  },
+  {
+    "name": "changing the cluster resets the database",
+    "text": "T1\n\n//:setDefaultCluster(\"https://b.kusto.windows.net\")\nT2\n\n//:setDefaultDb(\"dbb\")\nT3",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "da" },
+      { "cluster": "https://b.kusto.windows.net", "database": null },
+      { "cluster": "https://b.kusto.windows.net", "database": "dbb" }
+    ]
+  },
+  {
+    "name": "setting only the database keeps the cluster",
+    "text": "//:setDefaultDb(\"other\")\nT1",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [{ "cluster": "https://a.kusto.windows.net", "database": "other" }]
+  },
+  {
+    "name": "a directive in the same block applies to that query and the ones below",
+    "text": "//:setDefaultDb(\"x\")\nT1\n| take 1\n\nT2",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "x" },
+      { "cluster": "https://a.kusto.windows.net", "database": "x" }
+    ]
+  },
+  {
+    "name": "single quotes and spaces are accepted",
+    "text": "//: setDefaultDb ( 'spaced' )\nT1",
+    "defaults": { "cluster": "https://a.kusto.windows.net" },
+    "queries": [{ "cluster": "https://a.kusto.windows.net", "database": "spaced" }]
+  },
+  {
+    "name": "a directive has to start its line",
+    "text": "T1 | take 1 //:setDefaultDb(\"not-a-directive\")\n\nT2",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "da" },
+      { "cluster": "https://a.kusto.windows.net", "database": "da" }
+    ]
+  },
+  {
+    "name": "other comments and unknown directives change nothing, and a block of only comments is not a query",
+    "text": "// notes about the query below\n\n//:somethingElse(\"x\")\n\nT1",
+    "defaults": { "cluster": "https://a.kusto.windows.net", "database": "da" },
+    "queries": [{ "cluster": "https://a.kusto.windows.net", "database": "da" }]
+  },
+  {
+    "name": "windows line endings",
+    "text": "//:setDefaultDb(\"crlf\")\r\nT1\r\n\r\nT2",
+    "defaults": { "cluster": "https://a.kusto.windows.net" },
+    "queries": [
+      { "cluster": "https://a.kusto.windows.net", "database": "crlf" },
+      { "cluster": "https://a.kusto.windows.net", "database": "crlf" }
+    ]
+  }
+]

@@ -4,6 +4,7 @@
 //! tokens come from are both behind small interfaces, so everything can be tested without a
 //! network.
 
+mod directives;
 mod query_text;
 mod response;
 mod run_log;
@@ -24,11 +25,16 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
 
-pub use query_text::query_range_at;
+pub use directives::{
+    Connection, ResolvedQuery, connection_for_selection, connection_up_to, connections_of_queries,
+    resolve_query_at,
+};
+pub use query_text::{query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
 pub use token::{AccessToken, AzureCliTokenProvider, TokenProvider};
 
-/// A cluster, written as `https://help.kusto.windows.net` or as just the host name.
+/// A cluster, written as `https://help.kusto.windows.net`, as the host name, or as a short name
+/// such as `help`, which means `help.kusto.windows.net`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cluster {
     host: String,
@@ -49,9 +55,12 @@ impl Cluster {
                 "The cluster {text:?} is not a cluster address such as https://help.kusto.windows.net."
             );
         }
-        Ok(Self {
-            host: host.to_ascii_lowercase(),
-        })
+        let mut host = host.to_ascii_lowercase();
+        // A host in another cloud has its own domain, which always has `.kusto.` in it.
+        if !host.contains(".kusto.") {
+            host.push_str(".kusto.windows.net");
+        }
+        Ok(Self { host })
     }
 
     pub fn host(&self) -> &str {
@@ -624,6 +633,15 @@ mod tests {
         let expected = Cluster::parse("help.kusto.windows.net").expect("host");
         assert_eq!(Cluster::parse(" https://HELP.kusto.windows.net/ ").expect("url"), expected);
         assert_eq!(expected.url(), "https://help.kusto.windows.net");
+        assert_eq!(Cluster::parse("help").expect("short name").host(), "help.kusto.windows.net");
+        assert_eq!(
+            Cluster::parse("mycluster.westus").expect("short name with a region").host(),
+            "mycluster.westus.kusto.windows.net"
+        );
+        assert_eq!(
+            Cluster::parse("https://x.z9.kusto.fabric.microsoft.com/").expect("fabric").host(),
+            "x.z9.kusto.fabric.microsoft.com"
+        );
         assert!(Cluster::parse("http://help.kusto.windows.net").is_err());
         assert!(Cluster::parse("").is_err());
         assert!(Cluster::parse("https://help.kusto.windows.net/Samples").is_err());
