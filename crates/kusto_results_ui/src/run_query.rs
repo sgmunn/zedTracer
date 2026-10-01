@@ -75,6 +75,8 @@ fn run_query(
 struct QueryRuns {
     next_id: usize,
     active: Vec<ActiveRun>,
+    /// Shared by every run, because the client remembers tokens and token audiences.
+    client: Option<Arc<KustoClient>>,
 }
 
 struct ActiveRun {
@@ -198,13 +200,26 @@ fn start_run(
         let runs = runs.downgrade();
         let request = request.clone();
         async move |workspace, cx| {
-            let environment = environment.await.unwrap_or_default();
-            let client = Arc::new(KustoClient::new(
-                http_client,
-                token_provider(environment, cx),
-            ));
+            let existing = runs
+                .update(cx, |runs, _| runs.client.clone())
+                .log_err()
+                .flatten();
+            let client = match existing {
+                Some(client) => client,
+                None => {
+                    let environment = environment.await.unwrap_or_default();
+                    let client = Arc::new(KustoClient::new(
+                        http_client,
+                        token_provider(environment, cx),
+                    ));
+                    runs.update(cx, |runs, _| runs.client = Some(client.clone()))
+                        .log_err();
+                    client
+                }
+            };
             runs.update(cx, |runs, _| runs.set_client(run_id, client.clone()))
                 .log_err();
+
             let outcome = save_run(
                 client,
                 request,
@@ -545,6 +560,26 @@ mod tests {
             workspace.has_notification(&NotificationId::unique::<anyhow::Error>())
         }));
         assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
+    }
+
+    #[gpui::test]
+    async fn later_runs_reuse_what_the_first_run_learned(cx: &mut TestAppContext) {
+        let (workspace, editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        let runs = cx.new(|_| QueryRuns::default());
+
+        start(&workspace, &runs, cx);
+        // The first run's results are now the active tab.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&editor, true, true, window, cx)
+        });
+        start(&workspace, &runs, cx);
+
+        assert_eq!(bodies(&sent, "/v2/rest/query").len(), 2);
+        assert_eq!(
+            bodies(&sent, "/v1/rest/auth/metadata").len(),
+            1,
+            "the token audience is asked for once"
+        );
     }
 
     #[gpui::test]
