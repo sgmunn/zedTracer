@@ -9476,6 +9476,8 @@ dependencies = [
  "paths",
  "project",
  "rope",
+ "schemars 1.0.4",
+ "serde",
  "serde_json",
  "settings",
  "text",

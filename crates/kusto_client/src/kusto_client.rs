@@ -6,6 +6,7 @@
 
 mod query_text;
 mod response;
+mod run_log;
 mod token;
 
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use query_text::query_range_at;
+pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
 pub use token::{AccessToken, AzureCliTokenProvider, TokenProvider};
 
 /// A cluster, written as `https://help.kusto.windows.net` or as just the host name.
