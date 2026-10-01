@@ -11,6 +11,8 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writeLock = new(1, 1);
     private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default);
+    private RunLog runLog = new(null);
+    private int nextRequestId;
 
     public async Task RunAsync()
     {
@@ -58,6 +60,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
             case "initialize":
                 schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters));
                 ApplyInitializationOptions(parameters);
+                StartRunLog(parameters);
                 return new
                 {
                     capabilities = new
@@ -65,6 +68,8 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                         textDocumentSync = 1,
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
+                        codeLensProvider = new { resolveProvider = false },
+                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand } },
                         hoverProvider = true
                     },
                     serverInfo = new { name = "kusto-lsp", version = "0.1.0" }
@@ -115,6 +120,11 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                 return Hover(parameters);
             case "textDocument/signatureHelp":
                 return GetSignatureHelp(parameters);
+            case "textDocument/codeLens":
+                return GetCodeLenses(parameters);
+            case "workspace/executeCommand":
+                // The lenses that only show text name this command so that Zed treats them as clickable.
+                return null;
             default:
                 return null;
         }
@@ -168,6 +178,50 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         TryGetDocumentAndPosition(parameters, out var document, out var offset)
             ? SignatureHelp.Get(document.Text, schema.GlobalsForDocument(), offset)
             : null;
+
+    private object[] GetCodeLenses(JsonElement parameters)
+    {
+        var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
+        return uri is not null && documents.TryGetValue(uri, out var document)
+            ? CodeLenses.For(document, runLog.Read())
+            : [];
+    }
+
+    /// <summary>
+    /// Follows what the editor records about its runs. Where Zed keeps its data comes from
+    /// `KUSTO_ZED_DATA_DIR`, which the extension sets, or from the `dataDir` initialization option.
+    /// </summary>
+    private void StartRunLog(JsonElement parameters)
+    {
+        string? directory = Environment.GetEnvironmentVariable("KUSTO_ZED_DATA_DIR");
+        if (parameters.TryGetProperty("initializationOptions", out var options)
+            && options.ValueKind == JsonValueKind.Object
+            && options.TryGetProperty("dataDir", out var configured)
+            && configured.ValueKind == JsonValueKind.String)
+            directory = configured.GetString();
+
+        runLog.Dispose();
+        runLog = new RunLog(directory);
+        runLog.Changed += () => _ = RequestCodeLensRefreshAsync();
+        runLog.Watch();
+    }
+
+    private async Task RequestCodeLensRefreshAsync()
+    {
+        try
+        {
+            await SendAsync(new
+            {
+                jsonrpc = "2.0",
+                id = Interlocked.Increment(ref nextRequestId),
+                method = "workspace/codeLens/refresh"
+            });
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            Console.Error.WriteLine($"Could not ask for a code lens refresh: {exception.Message}");
+        }
+    }
 
     /// <summary>The cluster and database queries run on, from `lsp.kusto-lsp.initialization_options`.</summary>
     private void ApplyInitializationOptions(JsonElement parameters)

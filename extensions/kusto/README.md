@@ -59,6 +59,36 @@ function names only.
 Diagnostics are still syntax-only: table and column references are not
 validated.
 
+## Code lenses
+
+Turn code lenses on in Zed settings (they are off by default):
+
+```json
+{ "code_lens": "on" }
+```
+
+Above each query (a run of non-blank lines) the server shows **▶ Run**, which runs that query. While the
+query is running it shows **Running…** and **Cancel** instead. Once the query has been run, the same
+lens row also shows what the last run did, for example `Last run: 10:42:11, took 1.8 s, 1,240 rows`,
+**Results** (shows that run's saved result in the Results panel) and **Copy CID** (copies the run's client
+request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
+matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
+
+The lenses come from a log the editor keeps: every run appends a line when it starts and when it ends
+to `kusto/history/runs.jsonl` in Zed's data folder, and the server watches that file and asks Zed to
+refresh the lenses when it changes. The extension tells the server where the data folder is through
+`KUSTO_ZED_DATA_DIR`, working it out from the extension's own working directory. If you run the
+server some other way, set `dataDir` in `initialization_options` instead. A run that never reports an
+end, such as when Zed was closed while it ran, stops counting as running after 15 minutes. The log keeps
+about the last 200 runs.
+
+A lens acts through `zed.dispatchAction`, a lens command this fork of Zed handles in the editor: its
+arguments are the name of a Zed action (`kusto::RunQuery`, `kusto::CancelQuery`, `kusto::ShowResult`,
+`kusto::CopyClientRequestId`) and, optionally, the data the action takes. Zed moves the cursor to the lens
+before it runs the action, so `RunQuery` and `CancelQuery` act on that query.
+
+After updating, run `./install-server.sh`, then **Zed: Rebuild Dev Extension**, then restart Zed.
+
 ## Offline schema
 
 For offline table and column completion, put a `.kusto-schema.json` file in the
