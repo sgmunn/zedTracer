@@ -58,6 +58,11 @@ impl Default for CodeLensState {
     }
 }
 
+/// A lens command that asks Zed, rather than the language server, to run one of its own actions.
+/// The arguments are the action's name, such as `"kusto::RunQuery"`, and optionally the data the
+/// action takes as JSON. A server uses this for what only the editor can do.
+pub const DISPATCH_ACTION_COMMAND: &str = "zed.dispatchAction";
+
 pub(super) fn try_handle_client_command(
     action: &CodeAction,
     editor: &mut Editor,
@@ -70,6 +75,10 @@ pub(super) fn try_handle_client_command(
     };
 
     let arguments = command.arguments.as_deref().unwrap_or_default();
+    if command.command == DISPATCH_ACTION_COMMAND {
+        dispatch_named_action(arguments, editor, window, cx);
+        return true;
+    }
     let project = workspace.read(cx).project().clone();
     let client_command = project
         .read(cx)
@@ -92,6 +101,27 @@ pub(super) fn try_handle_client_command(
             try_show_references(arguments, action, editor, window, cx)
         }
         None => false,
+    }
+}
+
+/// Runs the action a lens names. The cursor is already on the lens's line, and the editor is
+/// focused first so the action reaches the handlers around it, such as the workspace's.
+fn dispatch_named_action(
+    arguments: &[serde_json::Value],
+    editor: &Editor,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) {
+    let Some(name) = arguments.first().and_then(serde_json::Value::as_str) else {
+        log::warn!("{DISPATCH_ACTION_COMMAND} needs the name of an action as its first argument");
+        return;
+    };
+    match cx.build_action(name, arguments.get(1).cloned()) {
+        Ok(action) => {
+            window.focus(&editor.focus_handle, cx);
+            window.dispatch_action(action, cx);
+        }
+        Err(error) => log::warn!("{DISPATCH_ACTION_COMMAND}: could not build {name}: {error:#}"),
     }
 }
 
@@ -1832,6 +1862,73 @@ mod tests {
             HashSet::from_iter([70, 80, 90]),
             "Only newly visible lenses at the bottom should be resolved, not middle ones"
         );
+    }
+
+    gpui::actions!(test_code_lens, [RunFromLens]);
+
+    #[gpui::test]
+    async fn test_code_lens_dispatches_a_named_action_instead_of_asking_the_server(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.code_lens = Some(CodeLens::On);
+        });
+
+        let mut cx = EditorLspTestContext::new_typescript(
+            lsp::ServerCapabilities {
+                code_lens_provider: Some(lsp::CodeLensOptions {
+                    resolve_provider: None,
+                }),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+        let mut code_lens_request =
+            cx.set_request_handler::<lsp::request::CodeLensRequest, _, _>(move |_, _, _| async {
+                Ok(Some(vec![lsp::CodeLens {
+                    range: lsp::Range::new(lsp::Position::new(1, 0), lsp::Position::new(1, 19)),
+                    command: Some(lsp::Command {
+                        title: "Run".to_owned(),
+                        command: super::DISPATCH_ACTION_COMMAND.to_owned(),
+                        arguments: Some(vec![serde_json::json!("test_code_lens::RunFromLens")]),
+                    }),
+                    data: None,
+                }]))
+            });
+        let dispatched = Arc::new(Mutex::new(0));
+        cx.update(|_, cx| {
+            let dispatched = dispatched.clone();
+            cx.on_action(move |_: &RunFromLens, _| {
+                *dispatched.lock().expect("test lock") += 1;
+            });
+        });
+
+        cx.set_state("ˇfunction hello() {}\nfunction world() {}");
+        assert!(code_lens_request.next().await.is_some());
+        cx.run_until_parked();
+
+        let lens = cx.editor(|editor, _, _| {
+            editor
+                .code_lens
+                .as_ref()
+                .and_then(|state| state.blocks.values().flatten().next())
+                .and_then(|block| block.line.items.first())
+                .map(|item| item.action.clone())
+        });
+        let lens = lens.expect("the server's lens is shown");
+
+        cx.update_editor(|editor, window, cx| {
+            let workspace = editor.workspace().expect("the editor has a workspace");
+            assert!(
+                super::try_handle_client_command(&lens, editor, &workspace, window, cx),
+                "the editor handles the command itself"
+            );
+        });
+        cx.run_until_parked();
+
+        assert_eq!(*dispatched.lock().expect("test lock"), 1);
     }
 
     fn code_lens_assertion_text(editor: &Editor, cx: &ui::App) -> String {
