@@ -120,6 +120,16 @@ impl InspectorText {
             editor.set_text(document.text.as_str(), window, cx);
             editor.set_read_only(true);
             let snapshot = editor.buffer().read(cx).snapshot(cx);
+            // The editor changes some text it is given, such as line breaks. The ranges are byte
+            // offsets into the original, and an anchor inside a character panics.
+            if snapshot.len().0 != document.text.len() {
+                log::error!(
+                    "the inspector shows {} bytes but its document has {}; leaving the text unstyled",
+                    snapshot.len().0,
+                    document.text.len()
+                );
+                return;
+            }
             let anchors = |ranges: &mut dyn Iterator<Item = &Range<usize>>| {
                 ranges
                     .map(|range| {
@@ -254,7 +264,7 @@ mod tests {
     use std::time::Instant;
 
     use gpui::{Hsla, TestAppContext, VisualTestContext, hsla, px, size};
-    use kusto_results::inspector::format_json_for_display;
+    use kusto_results::inspector::{InspectorDocument, format_json_for_display};
     use workspace::AppState;
 
     use super::*;
@@ -284,6 +294,35 @@ mod tests {
         let (view, cx) = cx.add_window_view(|window, cx| InspectorText::new(window, cx));
         cx.simulate_resize(size(px(420.), px(700.)));
         (view, cx)
+    }
+
+    /// A document whose text the editor changes (it turns `\r\n` into `\n`) used to panic when
+    /// a range then fell inside a character.
+    #[gpui::test]
+    async fn a_document_the_editor_changes_is_shown_unstyled_instead_of_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = open(cx);
+        let document = InspectorDocument {
+            text: "one\r\ntwo\n\nMessage · string\nx".to_string(),
+            headers: vec![14..30],
+            ..InspectorDocument::default()
+        };
+        let palette = InspectorPalette {
+            token: Box::new(colour),
+            header: Hsla::default(),
+            null: Hsla::default(),
+            code_background: Hsla::default(),
+        };
+        view.update_in(cx, |view, window, cx| {
+            view.set_document(&document, &palette, window, cx)
+        });
+        cx.run_until_parked();
+
+        let editor = view.read_with(cx, |view, _| view.editor().clone());
+        editor.update_in(cx, |editor, _, cx| {
+            assert_eq!(editor.text(cx), "one\ntwo\n\nMessage · string\nx");
+        });
     }
 
     #[gpui::test]
