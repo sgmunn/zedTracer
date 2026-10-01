@@ -17,8 +17,8 @@ use gpui::{
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
-    AzureCliTokenProvider, Cluster, KustoClient, QueryRequest, RUN_LOG_FILE, RunRecord,
-    TokenProvider, append_record, query_range_at,
+    AzureCliTokenProvider, Cluster, Connection, KustoClient, QueryRequest, RUN_LOG_FILE,
+    RunRecord, TokenProvider, append_record, connection_for_selection, resolve_query_at,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -123,7 +123,8 @@ fn show_saved_result(
 fn cancel_query(workspace: &mut Workspace, runs: &Entity<QueryRuns>, cx: &mut Context<Workspace>) {
     let query = workspace
         .active_item_as::<Editor>(cx)
-        .and_then(|editor| editor.update(cx, |editor, cx| query_to_run(editor, cx)));
+        .and_then(|editor| editor.update(cx, |editor, cx| query_to_run(editor, cx)))
+        .map(|query| query.text);
     let cancelled = runs.update(cx, |runs, cx| runs.cancel_newest(query.as_deref(), cx));
     if let Some(run_id) = cancelled {
         workspace.dismiss_toast(&NotificationId::composite::<QueryRuns>(run_id), cx);
@@ -219,20 +220,42 @@ impl QueryRuns {
     }
 }
 
-fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<String> {
+/// What to run and where, from the selection or the query around the cursor.
+struct QueryToRun {
+    text: String,
+    connection: Connection,
+}
+
+/// The cluster and database that apply where no directive in the file says otherwise.
+fn default_connection(cx: &App) -> Connection {
+    let settings = KustoSettings::get_global(cx);
+    Connection {
+        cluster: settings.cluster.clone(),
+        database: settings.database.clone(),
+    }
+}
+
+fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<QueryToRun> {
     let snapshot = editor.buffer().read(cx).snapshot(cx);
     let display_snapshot = editor.display_snapshot(cx);
     let selection = editor
         .selections
         .newest::<MultiBufferOffset>(&display_snapshot);
     let text = snapshot.text();
-    let range = if selection.is_empty() {
-        query_range_at(&text, selection.head().0)?
+    let defaults = default_connection(cx);
+    let (range, connection) = if selection.is_empty() {
+        let resolved = resolve_query_at(&text, selection.head().0, &defaults)?;
+        (resolved.range, resolved.connection)
     } else {
-        selection.start.0..selection.end.0
+        let range = selection.start.0..selection.end.0;
+        let connection = connection_for_selection(&text, range.clone(), &defaults);
+        (range, connection)
     };
     let query = text.get(range)?.trim();
-    (!query.is_empty()).then(|| query.to_string())
+    (!query.is_empty()).then(|| QueryToRun {
+        text: query.to_string(),
+        connection,
+    })
 }
 
 fn start_run(
@@ -248,16 +271,14 @@ fn start_run(
         .update(cx, |editor, cx| query_to_run(editor, cx))
         .context("There is no query at the cursor.")?;
 
-    let settings = KustoSettings::get_global(cx);
-    let cluster = settings
-        .cluster
-        .as_deref()
-        .context("Set `kusto.cluster` in your settings to the cluster to run queries on.")?;
+    let cluster = query.connection.cluster.as_deref().context(
+        "This query has no cluster. Add //:setDefaultCluster(\"https://…\") above it, or set `kusto.cluster` in your settings.",
+    )?;
     let cluster = Cluster::parse(cluster)?;
-    let database = settings
-        .database
-        .clone()
-        .context("Set `kusto.database` in your settings to the database to run queries in.")?;
+    let database = query.connection.database.clone().context(
+        "This query has no database. Add //:setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
+    )?;
+    let query = query.text;
 
     let run_uuid = uuid::Uuid::new_v4();
     let request = QueryRequest {
@@ -667,6 +688,21 @@ mod tests {
         Sent,
         &'a mut gpui::VisualTestContext,
     ) {
+        setup_with(cx, status, answer, QUERIES).await
+    }
+
+    /// Like [`setup`], with the text of `queries.kql` chosen by the test.
+    async fn setup_with<'a>(
+        cx: &'a mut TestAppContext,
+        status: u16,
+        answer: &'static str,
+        queries: &'static str,
+    ) -> (
+        Entity<Workspace>,
+        Entity<Editor>,
+        Sent,
+        &'a mut gpui::VisualTestContext,
+    ) {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
@@ -714,7 +750,7 @@ mod tests {
         });
 
         let fs = FakeFs::new(cx.executor());
-        fs.insert_tree("/root", json!({ "queries.kql": QUERIES })).await;
+        fs.insert_tree("/root", json!({ "queries.kql": queries })).await;
         let project = Project::test(fs, ["/root".as_ref()], cx).await;
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
@@ -1142,6 +1178,85 @@ mod tests {
             cx.read_from_clipboard().and_then(|item| item.text()),
             Some("ZedTracer;abc".to_string())
         );
+    }
+
+    #[gpui::test]
+    async fn a_directive_in_the_file_overrides_the_settings(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup_with(
+            cx,
+            200,
+            ANSWER,
+            "//:setDefaultCluster(\"https://other.kusto.windows.net\")\n//:setDefaultDb(\"Logs\")\nT1\n| take 1",
+        )
+        .await;
+        run(&workspace, cx);
+
+        let body: serde_json::Value =
+            serde_json::from_str(&bodies(&sent, "/v2/rest/query")[0]).expect("a JSON body");
+        assert_eq!(body["db"], "Logs");
+        assert!(
+            body["csl"].as_str().expect("a query").ends_with("T1\n| take 1"),
+            "the query keeps its comments"
+        );
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(records[0]["cluster"], "other.kusto.windows.net");
+        assert_eq!(records[0]["database"], "Logs");
+    }
+
+    #[gpui::test]
+    async fn changing_the_cluster_in_the_file_clears_the_database_from_the_settings(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_with(
+            cx,
+            200,
+            ANSWER,
+            "//:setDefaultCluster(\"https://other.kusto.windows.net\")\nT1",
+        )
+        .await;
+        let runs = cx.new(|_| QueryRuns::default());
+        let error = workspace
+            .update_in(cx, |workspace, window, cx| {
+                start_run(workspace, &runs, window, cx)
+            })
+            .expect_err("the query has no database");
+        cx.run_until_parked();
+
+        let error = error.to_string();
+        assert!(error.contains("no database"), "{error}");
+        assert!(error.contains("//:setDefaultDb"), "it says how to fix it: {error}");
+        assert!(bodies(&sent, "/v2/rest/query").is_empty(), "nothing was sent");
+    }
+
+    #[gpui::test]
+    async fn the_directive_above_a_query_decides_where_that_query_runs(cx: &mut TestAppContext) {
+        let (workspace, editor, sent, cx) = setup_with(
+            cx,
+            200,
+            ANSWER,
+            "T1\n\n//:setDefaultDb(\"Second\")\n\nT2",
+        )
+        .await;
+        let runs = cx.new(|_| QueryRuns::default());
+
+        start(&workspace, &runs, cx);
+        editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([text::Point::new(4, 0)..text::Point::new(4, 0)])
+            })
+        });
+        start(&workspace, &runs, cx);
+
+        let databases: Vec<String> = bodies(&sent, "/v2/rest/query")
+            .iter()
+            .map(|body| {
+                serde_json::from_str::<serde_json::Value>(body).expect("JSON")["db"]
+                    .as_str()
+                    .expect("a database")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(databases, ["Samples", "Second"]);
     }
 
     #[gpui::test]
