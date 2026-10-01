@@ -106,7 +106,14 @@ impl KustoClient {
                 body.to_string(),
             )
             .await?;
+        let parsing = Instant::now();
         let tables = response::parse_query_response(&body)?;
+        log::info!(
+            "kusto: parsed {:.1} MB in {:?}; the whole run took {:?}",
+            body.len() as f64 / 1e6,
+            parsing.elapsed(),
+            timer.elapsed()
+        );
 
         Ok(ResultSet {
             query: Some(request.query.clone()),
@@ -151,7 +158,12 @@ impl KustoClient {
         {
             return Ok(token.clone());
         }
+        let started = Instant::now();
         let token = self.token_provider.token(&resource).await?;
+        log::info!(
+            "kusto: got a new token for {resource} in {:?}",
+            started.elapsed()
+        );
         self.tokens.lock().insert(resource, token.clone());
         Ok(token)
     }
@@ -168,7 +180,14 @@ impl KustoClient {
         if let Some(resource) = self.resources.lock().get(cluster.host()) {
             return resource.clone();
         }
-        match self.fetch_service_resource(cluster).await {
+        let started = Instant::now();
+        let fetched = self.fetch_service_resource(cluster).await;
+        log::info!(
+            "kusto: read the token audience of {} in {:?}",
+            cluster.host(),
+            started.elapsed()
+        );
+        match fetched {
             Ok(resource) => {
                 self.resources
                     .lock()
@@ -259,11 +278,13 @@ impl KustoClient {
             .header("x-ms-client-request-id", client_request_id)
             .body(AsyncBody::from(body))
             .context("could not build the request")?;
+        let started = Instant::now();
         let mut response = self
             .http_client
             .send(request)
             .await
             .with_context(|| format!("could not reach {}", cluster.host()))?;
+        let headers_after = started.elapsed();
         let is_gzip = response
             .headers()
             .get("Content-Encoding")
@@ -279,6 +300,13 @@ impl KustoClient {
             response.body_mut().read_to_end(&mut body).await
         }
         .context("could not read the response")?;
+        log::info!(
+            "kusto: {path} answered {} after {headers_after:?}, then {:.1} MB{} took {:?} to read",
+            response.status().as_u16(),
+            body.len() as f64 / 1e6,
+            if is_gzip { " (decompressed)" } else { "" },
+            started.elapsed() - headers_after,
+        );
         Ok((response.status().as_u16(), body))
     }
 }

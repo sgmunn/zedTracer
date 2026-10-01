@@ -294,7 +294,10 @@ async fn save_run(
     let json = executor
         .spawn(async move {
             let result = client.execute(&request).await?;
-            result.to_json()
+            let started = std::time::Instant::now();
+            let json = result.to_json();
+            log::info!("kusto: serialised the result in {:?}", started.elapsed());
+            json
         })
         .await?;
 
@@ -306,9 +309,15 @@ async fn save_run(
         "{}-{run_uuid}.ktt",
         Utc::now().format("%Y%m%d-%H%M%S")
     ));
+    let started = std::time::Instant::now();
     fs.write(&path, json.as_bytes())
         .await
         .with_context(|| format!("could not save the result to {}", path.display()))?;
+    log::info!(
+        "kusto: saved {:.1} MB in {:?}",
+        json.len() as f64 / 1e6,
+        started.elapsed()
+    );
     Ok(path)
 }
 
