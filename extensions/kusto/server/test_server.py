@@ -244,17 +244,29 @@ class FakeKusto:
         "CslInputSchema", "Content", "CslOutputSchema", "Properties",
     ]
 
-    def __init__(self, databases, entities=None, status=200):
+    def __init__(self, databases, entities=None, status=200, delay=0):
         self.databases = databases
+        self.delay = delay
         self.entities = entities or {}
         self.status = status
         self.commands = []
+        self.authorizations = []
+        self.metadata_requests = 0
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/v1/rest/auth/metadata":
+                    outer.metadata_requests += 1
+                    self.respond(200, {"AzureAD": {"KustoServiceResourceId": "https://kusto.kusto.windows.net"}})
+                else:
+                    self.respond(404, {})
+
             def do_POST(self):
+                outer.authorizations.append(self.headers.get("Authorization"))
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.commands.append((body["db"], body["csl"]))
+                time.sleep(outer.delay)
                 if outer.status != 200:
                     payload = {"error": {"message": "denied", "innererror": {"@message": "Not authorized"}}}
                     self.respond(outer.status, payload)
@@ -321,13 +333,15 @@ class SchemaTest(unittest.TestCase):
         self.clusters.append(cluster)
         return cluster
 
-    def start(self, endpoints, options=None):
+    def start(self, endpoints, options=None, data_dir=None):
         environment = {
             "KUSTO_LSP_TEST_TOKEN": "test-token",
             "KUSTO_LSP_TEST_ENDPOINTS": json.dumps(
                 {f"{name}.kusto.windows.net": cluster.url for name, cluster in endpoints.items()}
             ),
         }
+        if data_dir is not None:
+            environment["KUSTO_ZED_DATA_DIR"] = data_dir
         LanguageServerTest.start_server(self, None, options, environment)
 
     send = LanguageServerTest.send
@@ -874,6 +888,265 @@ class DirectiveSchemaTest(SchemaTest):
         # Nothing was fetched from a cluster no query names.
         self.assertTrue(first.commands)
         self.assertTrue(second.commands)
+
+
+class SchemaCacheTest(SchemaTest):
+    """Schema kept on disk: used at once, replaced from the cluster when old."""
+
+    HOST = "help.kusto.windows.net"
+
+    def setUp(self):
+        super().setUp()
+        self.data = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data.cleanup)
+        self.cache = Path(self.data.name) / "kusto" / "schema" / self.HOST
+
+    def database_file(self, name="Samples"):
+        return self.cache / f"{name}.json"
+
+    def timestamp(self, hours_ago):
+        moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
+        return moment.isoformat().replace("+00:00", "Z")
+
+    def write_database(self, tables, hours_ago=0, version=1, name="Samples"):
+        entities = [
+            {"kind": "Table", "name": table, "schema": "Id:long, Label:string",
+             "parameters": "", "body": "", "description": None}
+            for table in tables
+        ]
+        self.cache.mkdir(parents=True, exist_ok=True)
+        self.database_file(name).write_text(json.dumps(
+            {"version": version, "fetchedAt": self.timestamp(hours_ago), "entities": entities}
+        ))
+
+    def write_cluster(self, databases=("Samples",), hours_ago=0):
+        self.cache.mkdir(parents=True, exist_ok=True)
+        (self.cache / "@databases.json").write_text(json.dumps({
+            "version": 1,
+            "fetchedAt": self.timestamp(hours_ago),
+            "databases": [{"name": name, "alternate": ""} for name in databases],
+        }))
+
+    def start_with_cache(self, cluster, **options):
+        self.start(
+            {"help": cluster},
+            {"cluster": "help", "database": "Samples", **options},
+            data_dir=self.data.name,
+        )
+        self.open_document("print 1")
+
+    def labels(self, text="Sto"):
+        self.change(text)
+        return [item["label"] for item in self.complete(0, len(text))]
+
+    def wait_until(self, condition, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if condition():
+                return True
+            time.sleep(0.1)
+        return condition()
+
+    def unreachable(self):
+        """A cluster nothing answers for, because it has been shut down."""
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        return cluster
+
+    def test_a_loaded_database_and_cluster_are_written_to_the_cache(self):
+        cluster = self.fake(["Samples", "Other"], STORM_ENTITIES)
+        self.start_with_cache(cluster)
+        self.assertIn("StormEvents", self.completions_include("Sto", "StormEvents"))
+
+        self.assertTrue(self.wait_until(lambda: self.database_file().exists()))
+        stored = json.loads(self.database_file().read_text())
+        self.assertEqual(stored["version"], 1)
+        self.assertEqual(
+            sorted(entity["name"] for entity in stored["entities"]),
+            ["StatesOver", "StormEvents"],
+        )
+        function = next(entity for entity in stored["entities"] if entity["name"] == "StatesOver")
+        self.assertEqual(function["parameters"], "(minimum:long, region:string)")
+        self.assertEqual(function["description"], "States with more than a number of events.")
+        self.assertTrue(self.wait_until(lambda: (self.cache / "@databases.json").exists()))
+        names = [d["name"] for d in json.loads((self.cache / "@databases.json").read_text())["databases"]]
+        self.assertEqual(names, ["Samples", "Other"])
+
+    def test_completion_works_from_the_cache_when_the_cluster_cannot_be_reached(self):
+        self.write_database(["CachedEvents"], hours_ago=5)
+        self.write_cluster(hours_ago=5)
+        self.start_with_cache(self.unreachable())
+
+        self.assertIn("CachedEvents", self.completions_include("Cach", "CachedEvents"))
+
+    def test_a_fresh_cache_is_not_fetched_again(self):
+        self.write_database(["CachedEvents"], hours_ago=0)
+        self.write_cluster(hours_ago=0)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.start_with_cache(cluster)
+
+        self.assertIn("CachedEvents", self.completions_include("Cach", "CachedEvents"))
+        time.sleep(1.5)
+        self.assertEqual(cluster.commands, [], "a fresh copy needs no request")
+
+    def test_an_old_cache_is_used_at_once_and_replaced_by_the_clusters_copy(self):
+        self.write_database(["OldEvents"], hours_ago=5)
+        self.write_cluster(hours_ago=5)
+        cluster = self.fake(
+            ["Samples"],
+            {"Samples": [("Table", "NewEvents", "", "", "", "Id:long")]},
+            delay=2,
+        )
+        started = time.time()
+        self.start_with_cache(cluster)
+
+        self.assertIn("OldEvents", self.completions_include("Ol", "OldEvents", timeout=1.5))
+        self.assertLess(time.time() - started, 2, "the old copy was there before the cluster answered")
+
+        def replaced():
+            labels = self.labels("Ne")
+            return "NewEvents" in labels
+        self.assertTrue(self.wait_until(replaced, timeout=15))
+        self.assertNotIn("OldEvents", self.labels("Ol"))
+        stored = json.loads(self.database_file().read_text())
+        self.assertEqual([entity["name"] for entity in stored["entities"]], ["NewEvents"])
+        written_at = datetime.datetime.fromisoformat(stored["fetchedAt"])
+        age = datetime.datetime.now(datetime.timezone.utc) - written_at
+        self.assertLess(age, datetime.timedelta(minutes=1), "the copy is stamped with when it was fetched")
+
+    def test_a_cache_that_cannot_be_read_is_ignored_and_replaced(self):
+        self.cache.mkdir(parents=True)
+        self.database_file().write_text("{ this is not json")
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.start_with_cache(cluster)
+
+        self.assertIn("StormEvents", self.completions_include("Sto", "StormEvents"))
+        self.assertTrue(self.wait_until(
+            lambda: self.database_file().read_text().startswith('{"version":1')
+        ))
+
+    def test_a_cache_written_by_another_version_is_ignored(self):
+        self.write_database(["FutureEvents"], version=99)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.start_with_cache(cluster)
+
+        labels = self.completions_include("Sto", "StormEvents")
+        self.assertIn("StormEvents", labels)
+        self.assertNotIn("FutureEvents", self.labels("Fut"))
+
+    def test_zero_minutes_asks_the_cluster_even_when_the_cache_is_fresh(self):
+        self.write_database(["CachedEvents"], hours_ago=0)
+        self.write_cluster(hours_ago=0)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.start_with_cache(cluster, schemaCacheMinutes=0)
+
+        self.assertIn("StormEvents", self.completions_include("Sto", "StormEvents"))
+        self.assertTrue(any(command.startswith(".show databases entities") for _, command in cluster.commands))
+
+    def test_a_refresh_that_fails_leaves_the_cached_schema_in_place(self):
+        self.write_database(["CachedEvents"], hours_ago=5)
+        self.write_cluster(hours_ago=5)
+        before = self.database_file().read_text()
+        cluster = self.fake(["Samples"], STORM_ENTITIES, status=401)
+        self.start_with_cache(cluster)
+
+        self.assertIn("CachedEvents", self.completions_include("Cach", "CachedEvents"))
+        self.assertTrue(self.wait_until(lambda: bool(cluster.commands)))
+        time.sleep(0.5)
+        self.assertIn("CachedEvents", self.labels("Cach"))
+        self.assertEqual(self.database_file().read_text(), before)
+
+    def test_a_database_name_cannot_write_outside_the_cache(self):
+        cluster = self.fake(
+            ["../../escape"],
+            {"../../escape": [("Table", "Odd", "", "", "", "Id:long")]},
+        )
+        self.start(
+            {"help": cluster},
+            {"cluster": "help", "database": "../../escape"},
+            data_dir=self.data.name,
+        )
+        self.open_document("print 1")
+        self.assertIn("Odd", self.completions_include("Od", "Odd"))
+
+        self.assertTrue(self.wait_until(lambda: any(self.cache.glob("*escape*.json"))))
+        written = sorted(
+            str(path.relative_to(self.data.name)) for path in Path(self.data.name).rglob("*") if path.is_file()
+        )
+        self.assertTrue(
+            all(path.startswith(str(Path("kusto", "schema", self.HOST))) for path in written),
+            written,
+        )
+        self.assertTrue(any("%2F" in path for path in written), written)
+
+
+class SigningInTest(SchemaTest):
+    """The real sign-in route: the server runs `az`, with a stand-in for it on the path."""
+
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.calls = Path(self.directory.name) / "az-calls"
+        script = Path(self.directory.name) / "az"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> "{self.calls}"\n'
+            "echo '{\"accessToken\":\"fake-token\",\"expires_on\":4102444800}'\n"
+        )
+        script.chmod(0o755)
+
+    def start_signing_in(self, cluster, options):
+        endpoints = {"help.kusto.windows.net": cluster.url}
+        self.process = subprocess.Popen(
+            SERVER_COMMAND,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "PATH": self.directory.name + os.pathsep + os.environ["PATH"],
+                "KUSTO_LSP_TEST_ENDPOINTS": json.dumps(endpoints),
+            },
+        )
+        self.send(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}, "initializationOptions": options})
+        self.receive()
+
+    def test_the_server_signs_in_with_az_once_and_asks_for_the_audience_once(self):
+        cluster = self.fake(["Samples", "Logs"], {
+            "Samples": [("Table", "StormEvents", "", "", "", "State:string")],
+            "Logs": [("Table", "Requests", "", "", "", "Id:long")],
+        })
+        self.start_signing_in(cluster, {"cluster": "help", "database": "Samples"})
+        text = "print 1\n\ncluster('help').database('Logs').Requ"
+        self.open_document(text)
+
+        def labels(line, character, wanted):
+            deadline = time.time() + 10
+            while True:
+                self.change(text)
+                found = [item["label"] for item in self.complete(line, character)]
+                if wanted in found or time.time() > deadline:
+                    return found
+                time.sleep(0.1)
+
+        self.assertIn("Requests", labels(2, len(text.split("\n")[2]), "Requests"))
+        # The cluster list, the default database and the other database are three requests, which
+        # may arrive in any order.
+        deadline = time.time() + 10
+        while len(cluster.commands) < 3 and time.time() < deadline:
+            time.sleep(0.1)
+        if len(cluster.commands) != 3:
+            self.process.terminate()
+            log = self.process.communicate(timeout=5)[1].decode()
+            self.process = None
+            self.fail(f"{len(cluster.commands)} requests: {cluster.commands}\nserver log:\n{log}")
+        self.assertEqual(set(cluster.authorizations), {"Bearer fake-token"})
+        self.assertEqual(cluster.metadata_requests, 1, "the audience is asked for once")
+        asked = self.calls.read_text().strip().splitlines()
+        self.assertEqual(len(asked), 1, f"az ran more than once: {asked}")
+        self.assertIn("get-access-token", asked[0])
+        self.assertIn("https://kusto.kusto.windows.net", asked[0])
 
 
 if __name__ == "__main__":
