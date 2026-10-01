@@ -4,7 +4,7 @@ Read this first in a new session. Last updated at the end of the phase A spikes.
 
 ## Goal
 
-Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projects/Kusto-Explorer-VsCode`, branch `dev/gregm`) into the user's Zed fork (this repo): typed results grid, sorting, filtering, search, Row Details inspector (JSON, exception call stacks, multipart messages), structured activity view, results panel. Charts and `render` are out of scope for now. Execution (running queries) comes later.
+Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projects/Kusto-Explorer-VsCode`, branch `dev/gregm`) into the user's Zed fork (this repo): typed results grid, sorting, filtering, search, Row Details inspector (JSON, exception call stacks, multipart messages), structured activity view, results panel. Charts and `render` are out of scope for now. Execution: the first slice is built (see "Running queries" below).
 
 ## Documents (all in `fork-docs/`)
 
@@ -68,6 +68,16 @@ Still open in the inspector: EXC-9 and SET-5 (a user list of call-stack frames t
 Phase D (structured activity view), built and tested headlessly. Core: `kusto_results::activity_tree::ActivityTreeState` (which branches are open, the selection, Left and Right, Up and Down, Deepest and its cycling; a 20,000-deep chain is tested). UI, in `kusto_results_ui`: `ActivityTree` (nodes with disclosure, warning triangle, marker name, id, event count, depth badge, severity colour at full or 30 % strength, tooltips including the hierarchy problem lines of ACT-17, tree roles for assistive technology, Enter, Space, arrows, double-click), `StructuredView` (tree, splitter and a scoped `ResultGrid`; splitter default 340 px, minimum 180 px, events pane keeps 280 px, arrows move 20 px or 80 with shift, Home and End, double-click resets, separator role with min, max and current values), and a Data and Structured tab switch in `ResultsViewer` that appears when the table has both activity columns and builds the projection on first use. The grid gained `GridOptions` (a row scope and a view name), so the structured grid saves its layout as `<table>::activity-structured:<index>` (ACT-14) and `set_scope` clears and republishes the selection (ACT-13). Key bindings are in the three default keymaps (contexts `ActivityTree` and `StructuredSplitter`).
 
 Not done for phase D: ACT-16 (the structured tab in the bottom results panel, which arrives with phase E), the Query tab of PER-4 (phase E), and nobody has looked at any of it in a real window.
+
+## Running queries (first slice of phase E)
+
+Decided with the user: execution is native Rust over the Kusto v2 REST API (not a .NET process, not the LSP), and the first version gets tokens from the Azure CLI.
+
+- `crates/kusto_client` (UI-free, tested): `KustoClient::execute` posts to `/v2/rest/query` and returns a `kusto_results::ResultSet` (primary tables only; repeated `PrimaryResult` names become `PrimaryResult_2`, and so on, because saved table views are found by name). `KustoClient::cancel` sends `.cancel query "<client request id>"` to `/v1/rest/mgmt`. The token audience is read from `/v1/rest/auth/metadata` (`KustoServiceResourceId`, `https://kusto.kusto.windows.net` for every cluster tried, Fabric eventhouses included) and falls back to the cluster address. `TokenProvider` is the seam; `AzureCliTokenProvider` runs `az account get-access-token` with the project's shell environment, because a desktop app does not inherit the `PATH` where `az` lives. Error bodies are reduced to the innermost service message. `query_range_at` finds the query around the cursor: the run of non-blank lines, with a cursor on a blank line belonging to the query above.
+- `crates/kusto_results_ui/src/run_query.rs`: the `kusto::RunQuery` action (F5 and Shift+Enter in `.kql` editors, in the three default keymaps) runs the selection, or the query at the cursor, on `kusto.cluster` and `kusto.database` from settings (a project's `.zed/settings.json` works). A "Running query on <cluster>…" toast offers Cancel. A successful run is written to `<data dir>/kusto/history/<UTC time>-<uuid>.ktt` and opened in the existing results viewer, so each result lives in its own tab (RUN-5) and the file is a normal `.ktt` (PER-2). Failures are shown with `Workspace::show_error`. A cancelled run shows nothing (RUN-3).
+- Live check, not run in CI: `cargo test -p kusto_client --test live -- --ignored --nocapture` runs real queries against `help.kusto.windows.net` with your `az login`.
+
+Not built yet: query parameters (`declare query_parameters`, profiles), choosing a cluster or database from a list (settings only for now), a per-document connection, the results panel in the bottom dock (results open as tabs), history browsing, rerun from a saved result (RUN-8), the per-query inline actions (RUN-9), the minimum-500 ms indicator, a sign-in that does not need the Azure CLI, and charts. A long-running response is parsed whole; progressive frames are not requested.
 
 ## Not proven yet
 
