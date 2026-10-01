@@ -1379,6 +1379,32 @@ pub struct KustoSettingsContent {
     ///
     /// Default: null
     pub database: Option<String>,
+
+    /// Where the result of a run is shown: "panel" (the Results panel in the bottom dock, where
+    /// a run replaces the previous one) or "editor" (a tab of its own for every run).
+    ///
+    /// Default: "panel"
+    pub results_location: Option<KustoResultsLocation>,
+}
+
+/// Where the result of a Kusto query is shown.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KustoResultsLocation {
+    Panel,
+    Editor,
 }
 
 /// The settings for the Kusto results grid.
