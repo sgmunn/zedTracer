@@ -101,6 +101,28 @@ class LanguageServerTest(unittest.TestCase):
         functions = self.complete(0, 33)
         self.assertIn("strlen(string)", [item["label"] for item in functions])
 
+    def test_a_completion_with_closing_text_is_a_snippet_that_keeps_the_cursor_inside(self):
+        self.open_document("print x = strle")
+        function = next(item for item in self.complete(0, 15) if item["label"].startswith("strlen"))
+        self.assertEqual(function["insertTextFormat"], 2)
+        self.assertEqual(function["textEdit"]["newText"], "strlen($0)")
+
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2},
+             "contentChanges": [{"text": "datatable(a:long)[1] | where a be"}]},
+        )
+        self.receive()
+        between = next(item for item in self.complete(0, 33) if item["label"] == "between")
+        self.assertEqual(between["textEdit"]["newText"], "between ($0 .. )")
+
+    def test_a_completion_without_closing_text_is_plain_text(self):
+        self.open_document("pri")
+        keyword = next(item for item in self.complete(0, 3) if item["label"] == "print")
+        self.assertEqual(keyword["insertTextFormat"], 1)
+        self.assertNotIn("$0", keyword["textEdit"]["newText"])
+
     def test_syntax_diagnostics_and_close(self):
         diagnostics = self.open_document("let = 5;")
         self.assertTrue(diagnostics)

@@ -134,13 +134,19 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         return completions.Items
             .Select(item =>
             {
-                var insertedText = string.Concat(item.ApplyTexts.Select(part => part.Text));
+                // Text after the cursor, such as the closing parenthesis, makes the item a snippet so the
+                // cursor lands between the two parts instead of after all of the text.
+                var hasAfterText = !string.IsNullOrEmpty(item.AfterText);
+                var insertedText = hasAfterText
+                    ? EscapeSnippet(item.BeforeText) + "$0" + EscapeSnippet(item.AfterText)
+                    : string.Concat(item.ApplyTexts.Select(part => part.Text));
                 return (object)new
                 {
                     label = item.DisplayText,
                     kind = CompletionKind(item.Kind.ToString()),
                     sortText = item.OrderText,
                     filterText = item.MatchText,
+                    insertTextFormat = hasAfterText ? 2 : 1,
                     textEdit = new { range, newText = insertedText }
                 };
             })
@@ -239,6 +245,9 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
             @params = new { uri, diagnostics }
         });
     }
+
+    private static string EscapeSnippet(string text) =>
+        text.Replace("\\", "\\\\").Replace("$", "\\$").Replace("}", "\\}");
 
     private static int CompletionKind(string kind) => kind switch
     {
