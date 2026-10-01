@@ -80,6 +80,15 @@ Decided with the user: execution is native Rust over the Kusto v2 REST API (not 
 
 Not built yet: query parameters (`declare query_parameters`, profiles), choosing a cluster or database from a list (settings only for now), a per-document connection, history browsing, rerun from a saved result (RUN-8), the per-query inline actions (RUN-9), the minimum-500 ms indicator, a sign-in that does not need the Azure CLI, and charts. A long-running response is parsed whole; progressive frames are not requested.
 
+## Code lenses (RUN-9, first slice)
+
+Per-query lenses above each blank-line-separated query, from the language server: `▶ Run`, `Running…` with `Cancel`, `Last run: <time>, took <duration>, <rows>`, `Results`, `Copy CID`, and `Last run failed: <message>`. Enable with the Zed setting `"code_lens": "on"`.
+
+- **Fork change** (`crates/editor/src/code_lens.rs`): a lens command `zed.dispatchAction` (`DISPATCH_ACTION_COMMAND`) is handled in the editor instead of being sent to the server. Its arguments are an action name and optional JSON data; the editor builds the action with `cx.build_action`, focuses itself and dispatches it. The click handler already puts the cursor on the lens first. Test: `test_code_lens_dispatches_a_named_action_instead_of_asking_the_server`. Nothing else in Zed changed.
+- **How the server learns about runs:** it does not talk to the editor. Each run appends `started`, then `finished` (rows, duration, saved file) or `failed` or `cancelled` to `<data dir>/kusto/history/runs.jsonl` (`kusto_client::RunRecord`, written by `log_run` in `run_query.rs`, trimmed to the last 400 records). The server (`RunLog.cs`) reads the tail of the file when asked for lenses, matches by the query text without comments and layout, and watches the file to send `workspace/codeLens/refresh`. The data directory reaches the server as `KUSTO_ZED_DATA_DIR`, which the extension derives from its working directory (`<data dir>/extensions/work/kusto`).
+- **Actions** in `run_query.rs`: `kusto::CancelQuery` (cancels the newest running query at the cursor, else the newest run), `kusto::ShowResult { path }` (shows any saved result in the panel, or a tab), `kusto::CopyClientRequestId { id }`. Lenses that only show text name `kusto.noop`, which the server accepts, so that Zed makes them clickable.
+- Not built: Select, Copy and Format lenses (RUN-9), a lens for a query the server cannot tell apart from another with the same text, and two Zed windows writing the log at the same moment can lose a record.
+
 ## Known issue: large results are very slow to download in a debug build
 
 Judge speed in a release build (`cargo run --release -p zed`, or `--profile release-fast`). In a debug build (`cargo run -p zed`) a result of about 13 MB took 250 to 290 seconds to download; in a release build the same query matches VS Code (about 2 seconds).

@@ -19,6 +19,7 @@ encoding_rs.workspace = true
 gpui.workspace = true
 editor.workspace = true
 fs.workspace = true
+futures.workspace = true
 gpui_util.workspace = true
 uuid.workspace = true
 kusto_client.workspace = true
@@ -30,6 +31,8 @@ multi_buffer.workspace = true
 paths.workspace = true
 project.workspace = true
 rope.workspace = true
+schemars.workspace = true
+serde.workspace = true
 settings.workspace = true
 text.workspace = true
 theme.workspace = true
@@ -46,7 +49,6 @@ language = { workspace = true, features = ["test-support"] }
 project = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
-futures.workspace = true
 http_client = { workspace = true, features = ["test-support"] }
 fs = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
