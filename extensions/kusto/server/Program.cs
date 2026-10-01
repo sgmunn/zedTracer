@@ -68,7 +68,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                     capabilities = new
                     {
                         textDocumentSync = 1,
-                        completionProvider = new { triggerCharacters = new[] { "|", ".", "(" } },
+                        completionProvider = new { triggerCharacters = new[] { "|", ".", "(", ":" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
                         executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand } },
@@ -307,7 +307,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private GlobalState GlobalsAt(DocumentSnapshot document, int offset) =>
         schema.GlobalsFor(ConnectionDirectives.At(document.Text, offset, schema.Defaults));
 
-    /// <summary>On a `//:` line, the directives the editor knows, with the cursor placed inside the quotes.</summary>
+    /// <summary>On a `// :` line, the directives the editor knows, with the cursor placed inside the quotes.</summary>
     private object[]? CompleteDirective(DocumentSnapshot document, int offset)
     {
         var lineStart = offset == 0 ? 0 : document.Text.LastIndexOf('\n', offset - 1) + 1;
@@ -337,7 +337,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         .ToArray();
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"^\s*//:\s*([A-Za-z]*)$")]
+    [System.Text.RegularExpressions.GeneratedRegex(@"^\s*//\s*:\s*([A-Za-z]*)$")]
     private static partial System.Text.RegularExpressions.Regex DirectivePrefix();
 
     private bool TryGetDocumentAndPosition(
@@ -394,7 +394,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 severity = 2,
                 code = "directive",
                 source = "Kusto",
-                message = "Not a directive the editor knows. Use //:setDefaultCluster(\"…\") or //:setDefaultDb(\"…\")."
+                message = "Not a directive the editor knows. Use // :setDefaultCluster(\"…\") or // :setDefaultDb(\"…\")."
             }))
             .ToArray();
 

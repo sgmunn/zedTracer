@@ -8,10 +8,11 @@ internal readonly record struct Connection(string? Cluster, string? Database)
 
 /// <summary>
 /// Where a query runs, as the file says. A line that is a comment of the form
-/// `//:setDefaultCluster("https://…")` or `//:setDefaultDb("…")` sets the cluster or the database for
+/// `// :setDefaultCluster("https://…")` or `// :setDefaultDb("…")` sets the cluster or the database for
 /// every query below it, until a later line sets it again. Setting the cluster clears the
 /// database, because a database name from another cluster is more likely to fail confusingly than
-/// to be the right one. Before the first directive the defaults apply. The editor resolves the
+/// to be the right one. The space after the slashes is optional: Zed adds `// ` when a comment line is
+/// continued, so `// :` is what gets typed, and `//:` is what other Kusto extensions write. Before the first directive the defaults apply. The editor resolves the
 /// same way when it runs a query, and both are tested against fork-docs/samples/connection-directives.json.
 /// </summary>
 internal static partial class ConnectionDirectives
@@ -19,10 +20,10 @@ internal static partial class ConnectionDirectives
     public const string SetCluster = "setDefaultCluster";
     public const string SetDatabase = "setDefaultDb";
 
-    [GeneratedRegex(@"^\s*//:\s*([A-Za-z]+)\s*\(\s*(?:""([^""]*)""|'([^']*)')\s*\)\s*$")]
+    [GeneratedRegex(@"^\s*//\s*:\s*([A-Za-z]+)\s*\(\s*(?:""([^""]*)""|'([^']*)')\s*\)\s*$")]
     private static partial Regex DirectiveLine();
 
-    [GeneratedRegex(@"^\s*//:")]
+    [GeneratedRegex(@"^\s*//\s*:")]
     private static partial Regex DirectiveStart();
 
     /// <summary>The connection after every directive on a line that starts at or before `offset`.</summary>

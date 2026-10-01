@@ -34,7 +34,9 @@ class LanguageServerTest(unittest.TestCase):
         if initialization_options is not None:
             parameters["initializationOptions"] = initialization_options
         self.send(1, "initialize", parameters)
-        self.assertIn("capabilities", self.receive()["result"])
+        result = self.receive()["result"]
+        self.assertIn("capabilities", result)
+        self.capabilities = result["capabilities"]
 
     def tearDown(self):
         self.stop_server()
@@ -772,23 +774,45 @@ class DirectiveTest(unittest.TestCase):
                 case["name"],
             )
 
-    def test_the_directives_are_offered_with_the_cursor_inside_the_quotes(self):
-        self.start()
-        self.open_document("//:set")
+    def directive_items(self, text, character):
+        self.open_document(text)
         self.send(
             2,
             "textDocument/completion",
-            {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 6}},
+            {"textDocument": {"uri": URI}, "position": {"line": 0, "character": character}},
         )
-        items = {item["label"]: item for item in self.receive_result(2)}
+        return {item["label"]: item for item in self.receive_result(2)}
+
+    def test_the_directives_are_offered_with_the_cursor_inside_the_quotes(self):
+        self.start()
+        items = self.directive_items("// :set", 7)
         self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
         edit = items["setDefaultCluster"]["textEdit"]
         self.assertEqual(edit["newText"], 'setDefaultCluster("$0")')
         self.assertEqual(items["setDefaultCluster"]["insertTextFormat"], 2)
         self.assertEqual(
             edit["range"],
-            {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}},
+            {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 7}},
             "it replaces what was typed after the colon",
+        )
+
+    def test_the_directives_are_offered_as_soon_as_the_colon_is_typed(self):
+        self.start()
+        self.assertIn(":", self.capabilities["completionProvider"]["triggerCharacters"])
+        items = self.directive_items("// :", 4)
+        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        self.assertEqual(
+            items["setDefaultDb"]["textEdit"]["range"],
+            {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 4}},
+        )
+
+    def test_the_form_without_a_space_is_still_completed(self):
+        self.start()
+        items = self.directive_items("//:set", 6)
+        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        self.assertEqual(
+            items["setDefaultDb"]["textEdit"]["range"]["start"],
+            {"line": 0, "character": 3},
         )
 
     def test_an_ordinary_comment_gets_no_directive_completion(self):
@@ -799,15 +823,15 @@ class DirectiveTest(unittest.TestCase):
     def test_a_directive_the_editor_does_not_know_is_warned_about(self):
         self.start()
         diagnostics = self.open_document(
-            '//:setDefaultCluster(https://a)\n//:setDefaultDb("db")\n//:somethingElse("x")\n\nprint 1'
+            '// :setDefaultCluster(https://a)\n// :setDefaultDb("db")\n//:somethingElse("x")\n// :somethingElse("x")\n\nprint 1'
         )
         lines = [(d["range"]["start"]["line"], d["severity"], d["code"]) for d in diagnostics]
-        self.assertEqual(lines, [(0, 2, "directive"), (2, 2, "directive")])
+        self.assertEqual(lines, [(0, 2, "directive"), (2, 2, "directive"), (3, 2, "directive")])
 
     def test_valid_directives_and_comment_only_blocks_raise_no_diagnostics(self):
         self.start()
         diagnostics = self.open_document(
-            '//:setDefaultCluster("a")\n//:setDefaultDb("db")\n\n// a note\n\nprint 1'
+            '// :setDefaultCluster("a")\n//:setDefaultDb("db")\n\n// a note\n\nprint 1'
         )
         self.assertEqual(diagnostics, [])
 
