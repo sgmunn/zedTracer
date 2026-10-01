@@ -68,7 +68,8 @@ Turn code lenses on in Zed settings (they are off by default):
 ```
 
 Above each query (a run of non-blank lines) the server shows **▶ Run**, which runs that query. While the
-query is running it shows **Running…** and **Cancel** instead. Once the query has been run, the same
+query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second
+until nothing is running) and **Cancel** instead. Once the query has been run, the same
 lens row also shows what the last run did, for example `Last run: 10:42:11, took 1.8 s, 1,240 rows`,
 **Results** (shows that run's saved result in the Results panel) and **Copy CID** (copies the run's client
 request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
