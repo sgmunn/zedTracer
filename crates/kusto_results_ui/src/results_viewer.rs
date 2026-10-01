@@ -31,7 +31,8 @@ use crate::structured_view::StructuredView;
 
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
-    cx.observe_new(|workspace: &mut Workspace, _, _| {
+    cx.observe_new(|workspace: &mut Workspace, _, cx| {
+        crate::run_query::register(workspace, cx);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
@@ -400,6 +401,11 @@ impl WorkspaceProjectItem for ResultsViewer {
 }
 
 impl ResultsViewer {
+    #[cfg(test)]
+    pub(crate) fn result(&self, cx: &App) -> Arc<ResultSet> {
+        self.results_file.read(cx).result.clone()
+    }
+
     /// Shows what the file holds now: a grid, or the reason there is none.
     fn show(&mut self, item: &Entity<ResultsFile>, window: &mut Window, cx: &mut Context<Self>) {
         let result = item.read(cx).result.clone();
