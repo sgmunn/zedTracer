@@ -455,8 +455,19 @@ class CodeLensTest(unittest.TestCase):
         self.data = tempfile.TemporaryDirectory()
         self.log = Path(self.data.name) / "kusto" / "history" / "runs.jsonl"
         self.log.parent.mkdir(parents=True)
+        # The recorded runs are of help.kusto.windows.net / Samples, so these queries run there.
+        # Schema loading is pointed at a port nothing listens on, so it fails fast.
         LanguageServerTest.start_server(
-            self, None, {}, {"KUSTO_ZED_DATA_DIR": self.data.name}
+            self,
+            None,
+            {"cluster": "help", "database": "Samples"},
+            {
+                "KUSTO_ZED_DATA_DIR": self.data.name,
+                "KUSTO_LSP_TEST_TOKEN": "unused",
+                "KUSTO_LSP_TEST_ENDPOINTS": json.dumps(
+                    {"help.kusto.windows.net": "http://127.0.0.1:9"}
+                ),
+            },
         )
 
     def tearDown(self):
@@ -511,7 +522,20 @@ class CodeLensTest(unittest.TestCase):
         return self.request(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
 
     def titles(self, lenses, line):
-        return [lens["command"]["title"] for lens in lenses if lens["range"]["start"]["line"] == line]
+        """The lens titles on a line, without the one that says where the query runs."""
+        return [
+            lens["command"]["title"]
+            for lens in lenses
+            if lens["range"]["start"]["line"] == line
+            and lens["command"]["command"] != "kusto.connection"
+        ]
+
+    def connection_titles(self, lenses):
+        return [
+            lens["command"]["title"]
+            for lens in lenses
+            if lens["command"]["command"] == "kusto.connection"
+        ]
 
     def wait_for_refresh(self, timeout=10):
         """The server asks the client to ask again when the log changes."""
@@ -528,7 +552,10 @@ class CodeLensTest(unittest.TestCase):
         lenses = self.lenses()
         self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
         self.assertEqual(self.titles(lenses, 3), ["▶ Run"])
-        self.assertEqual(len(lenses), 2)
+        self.assertEqual(
+            self.connection_titles(lenses),
+            ["help.kusto.windows.net / Samples"] * 2,
+        )
         command = lenses[0]["command"]
         self.assertEqual(command["command"], "zed.dispatchAction")
         self.assertEqual(command["arguments"], ["kusto::RunQuery"])
@@ -557,6 +584,19 @@ class CodeLensTest(unittest.TestCase):
             by_title["Copy CID"]["arguments"],
             ["kusto::CopyClientRequestId", {"id": "id-1"}],
         )
+
+    def test_the_same_text_on_another_cluster_is_another_query(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")
+
+        here = self.titles(self.lenses(), 0)
+        self.assertTrue(here[1].startswith("Last run: "), here)
+
+        elsewhere = self.titles(
+            self.lenses('//:setDefaultCluster("other")\n//:setDefaultDb("Samples")\nT1\n| take 1\n'),
+            0,
+        )
+        self.assertEqual(elsewhere, ["▶ Run"], "no history on that cluster")
 
     def test_a_running_query_offers_cancel_instead_of_run(self):
         self.record("started", "id-1", "T1\n| take 1")
@@ -628,14 +668,188 @@ class CodeLensTest(unittest.TestCase):
         self.record("started", "id-1", "T1\n| take 1", minutes_ago=60)
         self.assertEqual(self.titles(self.lenses(), 0), ["▶ Run"])
 
-    def test_without_a_log_there_are_only_run_lenses(self):
+    def test_without_a_log_there_are_only_run_lenses_and_the_connection(self):
         self.assertFalse(self.log.exists())
-        self.assertEqual(len(self.lenses()), 2)
+        lenses = self.lenses()
+        self.assertEqual(len(lenses), 4)
+        self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
 
     def test_the_noop_command_is_accepted(self):
         self.assertIsNone(
             self.request(9, "workspace/executeCommand", {"command": "kusto.noop", "arguments": []})
         )
+
+
+CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "connection-directives.json"
+
+
+def expected_title(connection):
+    """What the connection lens says, which the editor and the server must agree on."""
+    cluster, database = connection.get("cluster"), connection.get("database")
+    if cluster is None:
+        return "no cluster"
+    host = cluster.split("://")[-1].rstrip("/").lower()
+    if ".kusto." not in host:
+        host += ".kusto.windows.net"
+    return f"{host} / {database or 'no database'}"
+
+
+class DirectiveTest(unittest.TestCase):
+    """Where a query runs, from `//:setDefaultCluster(...)` and `//:setDefaultDb(...)` lines."""
+
+    def setUp(self):
+        self.process = None
+
+    def tearDown(self):
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.communicate()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    open_document = LanguageServerTest.open_document
+    complete = LanguageServerTest.complete
+
+    def start(self, options=None):
+        # Nothing listens here, so loading schema for the defaults fails at once.
+        LanguageServerTest.start_server(
+            self,
+            None,
+            options or {},
+            {
+                "KUSTO_LSP_TEST_TOKEN": "unused",
+                "KUSTO_LSP_TEST_ENDPOINTS": json.dumps(
+                    {
+                        "a.kusto.windows.net": "http://127.0.0.1:9",
+                        "b.kusto.windows.net": "http://127.0.0.1:9",
+                    }
+                ),
+            },
+        )
+
+    def stop(self):
+        self.process.terminate()
+        self.process.communicate(timeout=5)
+        self.process = None
+
+    def connection_titles(self, text):
+        self.open_document(text)
+        self.send(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        lenses = self.receive_result(7)
+        return [
+            lens["command"]["title"]
+            for lens in lenses
+            if lens["command"]["command"] == "kusto.connection"
+        ]
+
+    def receive_result(self, request_id):
+        while True:
+            message = self.receive()
+            if message.get("id") == request_id and "result" in message:
+                return message["result"]
+
+    def test_the_shared_cases_give_the_same_connections_as_the_editor_computes(self):
+        cases = json.loads(CASES.read_text())
+        self.assertTrue(cases)
+        for case in cases:
+            defaults = {
+                key: value
+                for key, value in (case.get("defaults") or {}).items()
+                if value is not None
+            }
+            self.start(defaults)
+            try:
+                titles = self.connection_titles(case["text"])
+            finally:
+                self.stop()
+            self.assertEqual(
+                titles,
+                [expected_title(query) for query in case["queries"]],
+                case["name"],
+            )
+
+    def test_the_directives_are_offered_with_the_cursor_inside_the_quotes(self):
+        self.start()
+        self.open_document("//:set")
+        self.send(
+            2,
+            "textDocument/completion",
+            {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 6}},
+        )
+        items = {item["label"]: item for item in self.receive_result(2)}
+        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        edit = items["setDefaultCluster"]["textEdit"]
+        self.assertEqual(edit["newText"], 'setDefaultCluster("$0")')
+        self.assertEqual(items["setDefaultCluster"]["insertTextFormat"], 2)
+        self.assertEqual(
+            edit["range"],
+            {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}},
+            "it replaces what was typed after the colon",
+        )
+
+    def test_an_ordinary_comment_gets_no_directive_completion(self):
+        self.start()
+        self.open_document("// set")
+        self.assertNotIn("setDefaultDb", self.complete(0, 6))
+
+    def test_a_directive_the_editor_does_not_know_is_warned_about(self):
+        self.start()
+        diagnostics = self.open_document(
+            '//:setDefaultCluster(https://a)\n//:setDefaultDb("db")\n//:somethingElse("x")\n\nprint 1'
+        )
+        lines = [(d["range"]["start"]["line"], d["severity"], d["code"]) for d in diagnostics]
+        self.assertEqual(lines, [(0, 2, "directive"), (2, 2, "directive")])
+
+    def test_valid_directives_and_comment_only_blocks_raise_no_diagnostics(self):
+        self.start()
+        diagnostics = self.open_document(
+            '//:setDefaultCluster("a")\n//:setDefaultDb("db")\n\n// a note\n\nprint 1'
+        )
+        self.assertEqual(diagnostics, [])
+
+    def test_a_comment_only_block_has_no_run_lens(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.open_document('//:setDefaultDb("other")\n\n// note\n\nprint 1')
+        self.send(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        lenses = self.receive_result(7)
+        lines = sorted({lens["range"]["start"]["line"] for lens in lenses})
+        self.assertEqual(lines, [4], "only the query has lenses")
+
+
+class DirectiveSchemaTest(SchemaTest):
+    def test_each_query_gets_the_schema_of_the_cluster_its_directives_name(self):
+        first = self.fake(["Samples"], STORM_ENTITIES)
+        second = self.fake(
+            ["Logs"],
+            {"Logs": [("Table", "Requests", "", "", "", "RequestId:guid, DurationMs:real")]},
+        )
+        self.start({"first": first, "second": second})
+        text = (
+            '//:setDefaultCluster("first")\n//:setDefaultDb("Samples")\nStorm\n\n'
+            '//:setDefaultCluster("second")\n//:setDefaultDb("Logs")\nRequ'
+        )
+        self.open_document(text)
+
+        def labels_at(line, character, wanted):
+            deadline = time.time() + 10
+            while True:
+                self.change(text)
+                labels = [item["label"] for item in self.complete(line, character)]
+                if wanted in labels or time.time() > deadline:
+                    return labels
+                time.sleep(0.1)
+
+        self.assertIn("StormEvents", labels_at(2, 5, "StormEvents"))
+        in_second = labels_at(6, 4, "Requests")
+        self.assertIn("Requests", in_second)
+        self.assertNotIn("StormEvents", in_second, "the first query's cluster is not the second's")
+        # Nothing was fetched from a cluster no query names.
+        self.assertTrue(first.commands)
+        self.assertTrue(second.commands)
 
 
 if __name__ == "__main__":

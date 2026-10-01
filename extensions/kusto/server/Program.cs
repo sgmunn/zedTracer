@@ -6,7 +6,7 @@ using Kusto.Language.Symbols;
 
 await new KustoLanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput()).RunAsync();
 
-internal sealed class KustoLanguageServer(Stream input, Stream output)
+internal sealed partial class KustoLanguageServer(Stream input, Stream output)
 {
     private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writeLock = new(1, 1);
@@ -71,7 +71,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
-                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand } },
+                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand } },
                         hoverProvider = true
                     },
                     serverInfo = new { name = "kusto-lsp", version = "0.1.0" }
@@ -137,8 +137,11 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return [];
 
+        if (CompleteDirective(document, offset) is { } directives)
+            return directives;
+
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
-        var completions = new KustoCodeService(queryText, schema.GlobalsForDocument())
+        var completions = new KustoCodeService(queryText, GlobalsAt(document, offset))
             .GetCompletionItems(offset - queryStart);
         var start = Math.Clamp(queryStart + completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
@@ -172,7 +175,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
             return null;
 
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
-        var info = new KustoCodeService(queryText, schema.GlobalsForDocument())
+        var info = new KustoCodeService(queryText, GlobalsAt(document, offset))
             .GetQuickInfo(offset - queryStart);
         return string.IsNullOrWhiteSpace(info.Text)
             ? null
@@ -184,14 +187,14 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
         if (!TryGetDocumentAndPosition(parameters, out var document, out var offset))
             return null;
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
-        return SignatureHelp.Get(queryText, schema.GlobalsForDocument(), offset - queryStart);
+        return SignatureHelp.Get(queryText, GlobalsAt(document, offset), offset - queryStart);
     }
 
     private object[] GetCodeLenses(JsonElement parameters)
     {
         var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
         return uri is not null && documents.TryGetValue(uri, out var document)
-            ? CodeLenses.For(document, runLog.Read(), DateTimeOffset.UtcNow)
+            ? CodeLenses.For(document, runLog.Read(), DateTimeOffset.UtcNow, schema.Defaults)
             : [];
     }
 
@@ -285,15 +288,57 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
     /// <summary>Starts fetching the schema of every cluster and database the query mentions.</summary>
     private void LoadReferencedSchema(DocumentSnapshot document)
     {
-        foreach (var block in QueryBlocks.Find(document.Text))
+        foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
         {
-            var service = new KustoCodeService(block.Text, schema.GlobalsForDocument());
+            // Where the query runs, from the file or the defaults, and anything it names itself.
+            var connection = ConnectionDirectives.Before(document.Text, block.End, schema.Defaults);
+            if (connection.Cluster is not null)
+                schema.EnsureReference(connection.Cluster, connection.Database);
+
+            var service = new KustoCodeService(block.Text, schema.GlobalsFor(connection));
             foreach (var reference in service.GetClusterReferences())
-                schema.EnsureReference(reference.Cluster, null);
+                schema.EnsureReference(reference.Cluster ?? connection.Cluster, null);
             foreach (var reference in service.GetDatabaseReferences())
-                schema.EnsureReference(reference.Cluster, reference.Database);
+                schema.EnsureReference(reference.Cluster ?? connection.Cluster, reference.Database);
         }
     }
+
+    /// <summary>The symbols for the query at a position, with where that query runs applied.</summary>
+    private GlobalState GlobalsAt(DocumentSnapshot document, int offset) =>
+        schema.GlobalsFor(ConnectionDirectives.At(document.Text, offset, schema.Defaults));
+
+    /// <summary>On a `//:` line, the directives the editor knows, with the cursor placed inside the quotes.</summary>
+    private object[]? CompleteDirective(DocumentSnapshot document, int offset)
+    {
+        var lineStart = offset == 0 ? 0 : document.Text.LastIndexOf('\n', offset - 1) + 1;
+        var typed = DirectivePrefix().Match(document.Text[lineStart..offset]);
+        if (!typed.Success)
+            return null;
+
+        var range = new
+        {
+            start = document.PositionAt(offset - typed.Groups[1].Length),
+            end = document.PositionAt(offset)
+        };
+        return new (string Name, string Detail)[]
+        {
+            (ConnectionDirectives.SetCluster, "The cluster for the queries below"),
+            (ConnectionDirectives.SetDatabase, "The database for the queries below")
+        }
+        .Select(directive => (object)new
+        {
+            label = directive.Name,
+            kind = 3,
+            detail = directive.Detail,
+            filterText = directive.Name,
+            insertTextFormat = 2,
+            textEdit = new { range, newText = $"{directive.Name}(\"$0\")" }
+        })
+        .ToArray();
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^\s*//:\s*([A-Za-z]*)$")]
+    private static partial System.Text.RegularExpressions.Regex DirectivePrefix();
 
     private bool TryGetDocumentAndPosition(
         JsonElement parameters,
@@ -321,7 +366,7 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
             .SelectMany(block => KustoCode.Parse(block.Text)
                 .GetSyntaxDiagnostics()
                 .Where(diagnostic => diagnostic.HasLocation)
-                .Select(diagnostic => new
+                .Select(diagnostic => (object)new
                 {
                     range = new
                     {
@@ -339,6 +384,18 @@ internal sealed class KustoLanguageServer(Stream input, Stream output)
                     source = "Kusto",
                     message = diagnostic.Message
                 }))
+            .Concat(ConnectionDirectives.Problems(document.Text).Select(problem => (object)new
+            {
+                range = new
+                {
+                    start = new { line = problem.Line, character = 0 },
+                    end = new { line = problem.Line, character = problem.Length }
+                },
+                severity = 2,
+                code = "directive",
+                source = "Kusto",
+                message = "Not a directive the editor knows. Use //:setDefaultCluster(\"…\") or //:setDefaultDb(\"…\")."
+            }))
             .ToArray();
 
         await SendAsync(new
