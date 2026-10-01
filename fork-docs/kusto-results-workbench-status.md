@@ -1,10 +1,10 @@
 # Kusto Results Workbench: status and handoff
 
-Read this first in a new session. Last updated at the end of the phase A spikes. Nothing from this work has been committed except what the user committed themselves; `git status` shows the rest.
+Read this first in a new session. Last updated after the code lenses and per-query analysis. Everything is committed on `feature/kusto-syntax-spike`; `git log` shows it in logical commits.
 
 ## Goal
 
-Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projects/Kusto-Explorer-VsCode`, branch `dev/gregm`) into the user's Zed fork (this repo): typed results grid, sorting, filtering, search, Row Details inspector (JSON, exception call stacks, multipart messages), structured activity view, results panel. Charts and `render` are out of scope for now. Execution: the first slice is built (see "Running queries" below).
+Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projects/Kusto-Explorer-VsCode`, branch `dev/gregm`) into the user's Zed fork (this repo): typed results grid, sorting, filtering, search, Row Details inspector (JSON, exception call stacks, multipart messages), structured activity view, results panel. Charts and `render` are out of scope for now. Since then the work has grown to cover running queries (native Rust over REST), the Results panel, schema-aware editing in the .NET language server, and per-query code lenses. See "Running queries", "Code lenses" and "Known issue" below.
 
 ## Documents (all in `fork-docs/`)
 
@@ -19,9 +19,11 @@ Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projec
 
 ## Code
 
-- `crates/kusto_results` (built, tested, clippy clean): UI-free core. Modules `result` (model, `.ktt` read/write, lossless numbers), `typed`, `filter`, `view` (visible rows, sort, selection, column order, severity), `activity`, `inspector`, `export`. 76 unit tests plus `tests/sample_fixtures.rs` (12 tests, checks every expected-results file; 1 ignored scale test).
-- `crates/kusto_results_ui` (spike code, tests pass, clippy clean): `ResultGrid` on `ui::Table` (`grid.rs`), `FilterPopover`, `InspectorText` (read-only editor), `RowDetailsPanel` plus shared `ActiveSelection` (`row_details_panel.rs`). Registered in the `zed` binary (`results_viewer.rs`: `.ktt`/`.kqr` project item and `ResultsViewer` tab; `RowDetailsPanel::load` in `initialize_panels`). `cargo check -p zed` and a headless open-fixture test pass; nobody has seen it in a real window yet.
-- Workspace changes: `Cargo.toml` members and dependencies for both crates; `Cargo.lock`.
+- `crates/kusto_results` (built, tested, clippy clean): UI-free core. Modules `result` (model, `.ktt` read/write, lossless numbers, `Table::from_raw_rows`), `typed`, `filter`, `view` (visible rows, sort, selection, column order, severity), `activity`, `inspector`, `export`. About 95 unit tests plus `tests/sample_fixtures.rs` (12 tests, checks every expected-results file; 1 ignored scale test).
+- `crates/kusto_results_ui`: `ResultGrid` on `ui::Table`, `FilterPopover`, `InspectorText`, `RowDetailsPanel` with the shared `ActiveSelection`, `ActivityTree` and `StructuredView`, `ResultsViewer` (the `.ktt`/`.kqr` project item and tab), `ResultsPanel` (`results_panel.rs`, the bottom-dock panel), and `run_query.rs` (the `kusto::RunQuery`, `CancelQuery`, `ShowResult` and `CopyClientRequestId` actions, the run log, the settings `kusto.cluster`, `kusto.database`, `kusto.results_location`). Registered in the `zed` binary: `kusto_results_ui::init` and both panels in `initialize_panels`.
+- `crates/kusto_client` (UI-free): REST client (`KustoClient`), token providers (`AzureCliTokenProvider` behind `TokenProvider`), v2 response parsing, `query_range_at` (the query around a cursor), and the run log record format (`RunRecord`, `append_record`). Ignored live tests in `tests/live.rs` need a network and `az login`.
+- `extensions/kusto`: the dev extension. Tree-sitter grammar for highlighting, a small Rust glue (`src/kusto.rs`, which also tells the server where Zed's data folder is), and the .NET language server in `server/` (`Program.cs` is the LSP loop; `KustoRest.cs` and `SchemaManager.cs` load schema; `SignatureHelp.cs`; `QueryBlocks.cs` splits a file into queries; `CodeLenses.cs` and `RunLog.cs` build the lenses). Tests: `python3 server/test_server.py` (31 tests against a fake cluster, no network).
+- Changes outside the new crates: `crates/editor/src/code_lens.rs` (the `zed.dispatchAction` lens command and its test), `crates/settings_content` and `crates/settings/src/vscode_import.rs` (the `kusto` settings), `assets/settings/default.json` and the three `assets/keymaps/default-*.json` (settings defaults and F5/Shift+Enter in `.kql` editors), `crates/zed/src/zed.rs` (panel registration), workspace `Cargo.toml` and `Cargo.lock`. `crates/ui/src/components/data_table.rs` has one earlier bug fix (sideways wheel).
 - Samples: `sample1.ktt` and `sample2.ktt` are real telemetry, git-ignored, never commit. `generated/` (200,000-row file) is git-ignored; make it with `python3 fork-docs/samples/generate_samples.py --large`.
 
 ## Commands
@@ -31,7 +33,12 @@ cargo test -p kusto_results
 cargo test -p kusto_results --release --test sample_fixtures -- --ignored --nocapture   # core scale baseline
 cargo test -p kusto_results_ui --profile release-fast --lib
 cargo test -p kusto_results_ui --profile release-fast --lib -- --ignored --nocapture frame_time
-./script/clippy -p kusto_results -p kusto_results_ui
+./script/clippy -p kusto_results -p kusto_results_ui -p kusto_client
+cargo test -p kusto_client                       # fake service, no network
+cargo test -p editor --lib test_code_lens         # includes the dispatchAction test
+cargo test -p zed --bin zed keymap                # built-in keymaps name real actions
+dotnet build extensions/kusto/server/KustoLanguageServer.csproj --no-restore && python3 extensions/kusto/server/test_server.py
+./extensions/kusto/install-server.sh              # then restart the language server in Zed
 ```
 
 Notes: `--offline` fails on this workspace (missing index entry), so build online. First build of `kusto_results_ui` tests takes many minutes (editor, workspace, project); use `release-fast`. Bash `sleep` is blocked: run long jobs with `run_in_background` and wait for the notification.
@@ -40,6 +47,11 @@ Notes: `--offline` fails on this workspace (missing index entry), so build onlin
 
 - Grid on `ui::Table`; do not use `tabular_data_preview` (UI-1). Header: own right-edge resize handle, no change to `ui` (UI-2). Sort, filter, search run in a background task with a generation number (UI-3).
 - Row Details is a right-dock panel following one shared `ActiveSelection` (UI-4). The inspector is one read-only editor with a header line per field; keep borrowing existing editor highlight keys (UI-5). Filter popover is a `PopoverMenu` with its own view and its own outside-click handling (UI-6). Text copy is P0; rich HTML copy is P1 and needs clipboard platform work (UI-7).
+- Execution is native Rust over the Kusto v2 REST API, not a .NET process and not the language server; tokens come from `az account get-access-token` (decided with the user). The language server loads its own schema over REST, also signing in with `az`.
+- The editor and the language server share no channel: the editor appends run records to `kusto/history/runs.jsonl` and the server reads it (code lenses). A lens that must act in the editor names a Zed action in the `zed.dispatchAction` lens command.
+- Every run is saved to the history folder first and the Results panel opens that saved file, so a panel result keeps its layout and can be shown again from history (the user's decision).
+- A file is a set of queries separated by blank lines; the run command, the lenses and every language feature use the same rule (`QueryBlocks`, `query_range_at`).
+- Judge speed in a release build; see "Known issue" below.
 - Spec decisions: one call-stack frame per line (Q-13), natural string sort ignoring case but not punctuation (Q-12), whole-view column and table selection (Q-11), non-contiguous row selection added as SEL-11 (Q-4), filters not persisted (Q-6), keep `.ktt` (Q-10).
 
 ## Working rules for this repo
@@ -123,12 +135,24 @@ Also found at the same time, and fixed: every run built a new client and so aske
 
 ## Not proven yet
 
-Everything ran on GPUI's test platform: no GPU, no pixels. Looked at in a real window: the grid, Row Details, row picking, the wheel, the filter popover. Not looked at: severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.
+Most of this ran on GPUI's test platform and the language server's own tests: no GPU, no pixels. Looked at in a real window by the user: the grid, Row Details, row picking, the wheel, the filter popover, running a query with F5, and the speed of a release build (about the same as VS Code). Not confirmed in a real window: the Results panel, the code lenses and the spinner, schema and signature-help completion, the snippet cursor placement, per-query diagnostics, severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.
+
+## Known gaps
+
+- Large downloads are very slow in a debug build (see above); the cause is only partly understood.
+- The cluster and database are set twice: `kusto.*` for running and `lsp.kusto-lsp.initialization_options` for the language server. The extension cannot read `kusto`; the fork has to feed it to the server.
+- Schema is held in memory only and fetched again at every server start.
+- Diagnostics are syntax-only (table and column names are not checked). Signature help finds unqualified function names only, and a repeatable parameter such as `strcat`'s highlights the wrong argument.
+- The Results panel is fixed to the bottom dock and shows the first table of a result; there is no Query tab, no Save As and no history picker.
+- History files are never deleted (the user's was 75 MB after a day); only the run log is trimmed.
+- Two Zed windows writing the run log at the same moment can lose a record.
+- Shift+Enter in a `.kql` editor runs the query and no longer inserts a newline (the VS Code binding).
 
 ## Next steps
 
-1. Done in code (see Code above). Remaining: run `zed`, open `samples/synthetic-types.ktt` and `synthetic-trace-edge.ktt`, and review by eye. A failed parse currently surfaces only as Zed's generic open-error notification.
-2. Done in code: `kusto_results::inspector::build_document` makes the text and style spans; `RowDetailsPanel` shows it in one read-only editor (`InspectorText::set_document`) with a Find box, a Wrap toggle and a match count. Escape clears Find; Cmd/Ctrl+F focuses it (bindings in the three `default-*.json` keymaps, context `RowDetailsPanel > Editor`). Closing the grid that owns the subject empties the panel (RDT-11). Tested headlessly only. Field headers and nulls borrow `ConsoleAnsiHighlight(5)` and `(6)`. Still to do: look at it in a real window, and a theme change is only picked up on the next selection change.
-3. Finish phase A: the items under "Not built yet" above, after looking at the new grid behaviour in a real window.
-4. Then phases B to E in `kusto-results-workbench-design.md` section 10 (structured view, results panel, execution). Phase F: query parameters, agent handoff.
-5. Open checks: Q-3 (is VS Code multi-word search OR) in a running VS Code; Q-9 (other panels in the bottom dock).
+1. The user looks at the Results panel, the lenses and the spinner in a real window; fix what shows up. If the spinner flickers, refresh once a second instead.
+2. Configure the cluster once (feed the `kusto` settings to the server as initialization options, a change in the fork) and cache schema on disk so completion works at startup.
+3. Query parameters (`declare query_parameters`, profiles in `.kusto/parameters.yaml`), so a `raid` is a saved value rather than a `let` in every query.
+4. History: delete old result files, and a picker that shows any of them in the panel (`ResultsPanel::show_result` and `kusto::ShowResult` already do the showing).
+5. Schema-aware diagnostics, once schema is cached so they do not flag names while a load is in flight; a cluster and database per file; the missing lenses (Select, Copy, Format); a table tab for each table of a result.
+6. Open checks from the spec: Q-3 (is VS Code multi-word search OR) in a running VS Code; Q-9 (other panels in the bottom dock).
