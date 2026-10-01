@@ -11,8 +11,17 @@ use kusto_client::{AzureCliTokenProvider, Cluster, KustoClient, QueryRequest};
 use reqwest_client::ReqwestClient;
 
 fn client() -> KustoClient {
+    // The app builds its client with a user agent; `KUSTO_TIMING_APP_CLIENT=1` does the same here.
+    let http: Arc<dyn http_client::HttpClient> = if std::env::var("KUSTO_TIMING_APP_CLIENT").is_ok() {
+        Arc::new(
+            ReqwestClient::proxy_and_user_agent(None, "Zed/0.0.0 (macos; aarch64)")
+                .expect("client"),
+        )
+    } else {
+        Arc::new(ReqwestClient::new())
+    };
     KustoClient::new(
-        Arc::new(ReqwestClient::new()),
+        http,
         Arc::new(AzureCliTokenProvider::new(std::env::vars())),
     )
 }
@@ -126,6 +135,61 @@ fn time_a_query_from_a_file() -> Result<()> {
             json.len() as f64 / 1e6,
             parsed.as_secs_f64() * 1000.0,
         );
+    }
+    Ok(())
+}
+
+/// Which way of building the HTTP client makes a download slow? Uses a result of about 1 MB.
+#[test]
+#[ignore = "needs a network and an Azure CLI sign-in"]
+fn download_speed_by_client_construction() -> Result<()> {
+    use std::time::Instant;
+
+    let query = "range x from 1 to 2000 step 1 \
+        | extend Message = strcat('message-', tostring(x), ' some words to make a realistic line of text and a bit more text to pad it out'), \
+                 Payload = bag_pack('id', x, 'name', strcat('n', tostring(x)), 'nested', bag_pack('a', 1, 'b', dynamic([1,2,3])))";
+    const AGENT: &str = "Zed/0.0.0 (macos; aarch64)";
+    let variants: Vec<(&str, Arc<dyn http_client::HttpClient>)> = vec![
+        ("plain (ReqwestClient::new)", Arc::new(ReqwestClient::new())),
+        (
+            "user agent only (ReqwestClient::user_agent)",
+            Arc::new(ReqwestClient::user_agent(AGENT)?),
+        ),
+        (
+            "user agent + preconfigured TLS (what the app uses)",
+            Arc::new(ReqwestClient::proxy_and_user_agent(None, AGENT)?),
+        ),
+    ];
+    for (label, http) in variants {
+        let client = KustoClient::new(http, Arc::new(AzureCliTokenProvider::new(std::env::vars())));
+        block_on(client.execute(&request("print 1")?))?;
+        let started = Instant::now();
+        let result = block_on(client.execute(&request(query)?))?;
+        println!(
+            "{label:<55} {:>7.0} ms for {} rows",
+            started.elapsed().as_secs_f64() * 1000.0,
+            result.total_rows()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs a network"]
+fn http_version_by_client_construction() -> Result<()> {
+    const AGENT: &str = "Zed/0.0.0 (macos; aarch64)";
+    let variants: Vec<(&str, Arc<dyn http_client::HttpClient>)> = vec![
+        ("plain", Arc::new(ReqwestClient::new())),
+        ("user agent only", Arc::new(ReqwestClient::user_agent(AGENT)?)),
+        ("app (agent + preconfigured TLS)", Arc::new(ReqwestClient::proxy_and_user_agent(None, AGENT)?)),
+    ];
+    for (label, http) in variants {
+        let response = block_on(http.get(
+            "https://trd-8uhsupt16c3grpr2jy.z9.kusto.fabric.microsoft.com/v1/rest/auth/metadata",
+            http_client::AsyncBody::empty(),
+            true,
+        ))?;
+        println!("{label:<35} {:?}", response.version());
     }
     Ok(())
 }
