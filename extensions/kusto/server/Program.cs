@@ -10,7 +10,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
 {
     private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writeLock = new(1, 1);
-    private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default);
+    private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default, new SchemaCache(null));
     private RunLog runLog = new(null);
     private int nextRequestId;
     private Timer? spinner;
@@ -60,9 +60,10 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         switch (method)
         {
             case "initialize":
-                schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters));
+                var dataDirectory = ResolveDataDirectory(parameters);
+                schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters), new SchemaCache(dataDirectory));
                 ApplyInitializationOptions(parameters);
-                StartRunLog(parameters);
+                StartRunLog(dataDirectory);
                 return new
                 {
                     capabilities = new
@@ -199,10 +200,10 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     }
 
     /// <summary>
-    /// Follows what the editor records about its runs. Where Zed keeps its data comes from
+    /// Where Zed keeps its data, which holds the run log and the schema cache. It comes from
     /// `KUSTO_ZED_DATA_DIR`, which the extension sets, or from the `dataDir` initialization option.
     /// </summary>
-    private void StartRunLog(JsonElement parameters)
+    private static string? ResolveDataDirectory(JsonElement parameters)
     {
         string? directory = Environment.GetEnvironmentVariable("KUSTO_ZED_DATA_DIR");
         if (parameters.TryGetProperty("initializationOptions", out var options)
@@ -210,7 +211,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             && options.TryGetProperty("dataDir", out var configured)
             && configured.ValueKind == JsonValueKind.String)
             directory = configured.GetString();
+        return directory;
+    }
 
+    /// <summary>Follows what the editor records about its runs.</summary>
+    private void StartRunLog(string? directory)
+    {
         runLog.Dispose();
         runLog = new RunLog(directory);
         runLog.Changed += OnRunLogChanged;
@@ -282,6 +288,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             options.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
+        if (options.TryGetProperty("schemaCacheMinutes", out var minutes) && minutes.TryGetInt32(out var value))
+            schema.CacheMinutes = Math.Max(0, value);
         schema.SetDefaults(Text("cluster"), Text("database"));
     }
 

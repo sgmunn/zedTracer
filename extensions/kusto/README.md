@@ -81,8 +81,21 @@ materialized views and functions are loaded, including each function's
 parameters and doc string. A query that names another cluster, such as
 `cluster('other').database('Logs').Requests`, loads that cluster and database
 the same way. A short name such as `help` means `help.kusto.windows.net`; other
-clouds need the full host name. Schema is kept in memory only, so each server
-start fetches it again, and a failed fetch is retried after a minute.
+clouds need the full host name.
+
+### Schema cache
+
+Each cluster's database list and each database's schema is also kept on disk, in `kusto/schema/<cluster>/` in
+Zed's data folder (the folder that holds the run log), so completion works as soon as the server starts and
+without the network. A cached schema is used at once, however old it is. If it is more than an hour old the
+cluster is asked too, in the background, and the cluster's copy replaces it when it arrives; if the cluster cannot
+be reached the cached copy stays, and the fetch is tried again after a minute. A schema with no cached copy is
+fetched as before. Set the `schemaCacheMinutes` initialization option to change the hour (`0` asks the cluster
+every time the server starts). Delete the `kusto/schema` folder to throw the cache away; an entry that cannot be
+read, or was written by another version, is ignored and replaced. Names in file paths are escaped, so no
+cluster or database name can write outside the folder. Files are written whole and then moved into place, so
+several Zed windows can share the cache. The token's audience is also asked for once per cluster instead of on
+every request.
 
 Signature help appears inside the parentheses of a function call, including
 database functions with their parameter names and types. It finds unqualified
