@@ -33,6 +33,7 @@ pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         crate::run_query::register(workspace, cx);
+        crate::results_panel::register(workspace);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
@@ -383,6 +384,17 @@ impl WorkspaceProjectItem for ResultsViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new(item, window, cx)
+    }
+}
+
+impl ResultsViewer {
+    /// A viewer of a result file, which shows it again when the file changes.
+    pub(crate) fn new(
+        item: Entity<ResultsFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let reload = cx.subscribe_in(
             &item,
             window,
@@ -406,10 +418,7 @@ impl WorkspaceProjectItem for ResultsViewer {
         viewer.show(&item, window, cx);
         viewer
     }
-}
 
-impl ResultsViewer {
-    #[cfg(test)]
     pub(crate) fn result(&self, cx: &App) -> Arc<ResultSet> {
         self.results_file.read(cx).result.clone()
     }
