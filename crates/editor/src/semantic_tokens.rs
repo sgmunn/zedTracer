@@ -543,6 +543,119 @@ mod tests {
 
     use super::*;
 
+    /// A language server can colour a language on its own, with tree-sitter off. A block between
+    /// the lines, such as a code lens, makes the editor seek its chunks, which used to lose the
+    /// diagnostics of the lines below it, and with them their underlines.
+    #[gpui::test]
+    async fn semantic_tokens_without_tree_sitter_keep_diagnostic_underlines_below_a_block(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::display_map::{BlockPlacement, BlockProperties, BlockStyle};
+        use gpui::IntoElement as _;
+
+        init_test(cx, |_| {});
+        update_test_language_settings(cx, &|language_settings| {
+            language_settings.languages.0.insert(
+                "Query".into(),
+                LanguageSettingsContent {
+                    semantic_tokens: Some(SemanticTokens::Full),
+                    ..LanguageSettingsContent::default()
+                },
+            );
+        });
+        // No grammar, so nothing but the language server colours the text.
+        let language = Language::new(
+            LanguageConfig {
+                name: "Query".into(),
+                matcher: LanguageMatcher {
+                    path_suffixes: vec!["qry".to_string()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        );
+        let mut cx = EditorLspTestContext::new(
+            language,
+            lsp::ServerCapabilities {
+                semantic_tokens_provider: Some(
+                    lsp::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        lsp::SemanticTokensOptions {
+                            legend: lsp::SemanticTokensLegend {
+                                token_types: vec!["keyword".into()],
+                                token_modifiers: Vec::new(),
+                            },
+                            full: Some(lsp::SemanticTokensFullOptions::Bool(true)),
+                            ..lsp::SemanticTokensOptions::default()
+                        },
+                    ),
+                ),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+        let mut full_request = cx
+            .set_request_handler::<lsp::request::SemanticTokensFullRequest, _, _>(
+                move |_, _, _| async move {
+                    Ok(Some(lsp::SemanticTokensResult::Tokens(
+                        lsp::SemanticTokens {
+                            data: vec![0, 0, 5, 0, 0],
+                            result_id: None,
+                        },
+                    )))
+                },
+            );
+        cx.set_state("ˇprint one\nprint two\nprint three");
+        assert!(full_request.next().await.is_some());
+        let task = cx.update_editor(|editor, _, _| editor.semantic_token_state.take_update_task());
+        task.await;
+
+        cx.update_editor(|editor, _, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            editor.insert_blocks(
+                [BlockProperties {
+                    style: BlockStyle::Fixed,
+                    placement: BlockPlacement::Above(snapshot.anchor_before(Point::new(2, 0))),
+                    height: Some(1),
+                    render: Arc::new(|_| gpui::div().into_any_element()),
+                    priority: 0,
+                }],
+                None,
+                cx,
+            );
+        });
+        cx.update_buffer(|buffer, cx| {
+            buffer.update_diagnostics(
+                LanguageServerId(0),
+                DiagnosticSet::new(
+                    [DiagnosticEntry::new(
+                        PointUtf16::new(2, 6)..PointUtf16::new(2, 11),
+                        Diagnostic {
+                            severity: lsp::DiagnosticSeverity::ERROR,
+                            group_id: 1,
+                            message: "no such name".into(),
+                            ..Default::default()
+                        },
+                    )],
+                    buffer,
+                ),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        let underlines = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_underlines().len()
+        });
+        assert_eq!(
+            underlines, 1,
+            "the diagnostic below the block is underlined"
+        );
+    }
+
     #[gpui::test]
     async fn lsp_semantic_tokens_full_capability(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
