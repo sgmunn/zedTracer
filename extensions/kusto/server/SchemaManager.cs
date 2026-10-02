@@ -53,6 +53,24 @@ internal sealed class SchemaManager
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Whether a cluster's or a database's schema has arrived, so that a name it does not have is
+    /// known to be missing rather than not loaded yet. A null cluster is the default one; a null
+    /// database asks about the cluster's list of databases.
+    /// </summary>
+    public bool IsLoaded(string? cluster, string? database)
+    {
+        lock (gate)
+        {
+            var host = string.IsNullOrWhiteSpace(cluster) ? defaultHost : KustoRestClient.ClusterHost(cluster);
+            if (host is null)
+                return false;
+            if (string.IsNullOrWhiteSpace(database))
+                return globals.GetCluster(host) is not null;
+            return statuses.TryGetValue(StatusKey(host, database.Trim()), out var status) && status.LoadedAt is not null;
+        }
+    }
+
     /// <summary>What is known about the schema of the database a connection names.</summary>
     public SchemaStatus? StatusOf(Connection connection)
     {

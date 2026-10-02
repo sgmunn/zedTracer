@@ -20,7 +20,7 @@ after rebuilding it.
 
 Completion includes Kusto keywords, built-in functions, and names declared in
 the current query. Hover shows Kusto's quick information for supported symbols.
-Diagnostics cover syntax only.
+Without a cluster's schema, diagnostics cover syntax only (see Diagnostics below).
 
 ## Where a query runs
 
@@ -217,8 +217,28 @@ database functions with their parameter names and types. It finds unqualified
 function names only.
 
 A file holds several queries separated by blank lines, and each is analysed on its own: a query
-never continues into the next one, and a `let` in one is not visible in the next. Diagnostics are still syntax-only: table and column references are not
-validated.
+never continues into the next one, and a `let` in one is not visible in the next.
+
+#### Diagnostics
+
+Syntax errors are always shown. Once the schema of the database a query runs on has arrived (from the cache or
+the cluster), **names that are not in it are errors too**: an unknown table, column, function or variable
+(`The name 'Nope' does not refer to any known table, tabular variable or function.`), and the other mistakes
+Kusto's own analysis finds, such as a wrong argument type. Some rules keep this honest:
+
+- A query is checked only when the schema of everything it refers to has loaded: the database it runs on, and
+  any other cluster or database it names with `cluster(...)` or `database(...)`. While a schema is still arriving,
+  or when the cluster cannot be reached and nothing is cached, a query gets syntax errors only, so a name is never
+  called wrong just because its schema is late. A cached schema counts, so a stale one can flag a table that
+  is new: click the `↻ Schema` lens to fetch it again, and the file is checked again when it arrives.
+- Each query is checked against the cluster and database its own directives name, so queries on different
+  clusters in one file are each checked against their own.
+- Control commands (`.show ...`) are only checked for syntax.
+- The files are checked again whenever a schema arrives or is refreshed, with no keystroke needed.
+- If a name the service accepts is reported wrong, for example a function newer than the analysis library
+  the server uses, set the `schemaDiagnostics` initialization option to `false` in `lsp.kusto-lsp` to go back to
+  syntax errors only.
+
 
 ## Code lenses
 

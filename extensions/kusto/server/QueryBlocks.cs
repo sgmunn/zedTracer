@@ -40,6 +40,16 @@ internal static class QueryBlocks
         return blocks;
     }
 
+    /// <summary>
+    /// Whether a query is a control command such as `.show tables`: its first line that is not blank
+    /// or a comment starts with a dot. The editor decides this the same way before it runs one.
+    /// </summary>
+    public static bool IsControlCommand(string query) =>
+        query.Split('\n')
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.Length > 0 && !line.StartsWith("//", StringComparison.Ordinal))
+            ?.StartsWith('.') == true;
+
     /// <summary>The query the offset is in, or at the end of; null on a blank line between queries.</summary>
     public static QueryBlock? At(IReadOnlyList<QueryBlock> blocks, int offset) =>
         blocks.FirstOrDefault(block => offset >= block.Start && offset <= block.End);
