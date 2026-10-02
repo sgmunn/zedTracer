@@ -9597,6 +9597,7 @@ dependencies = [
  "reqwest_client",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "util",
  "which",
 ]
@@ -9633,6 +9634,7 @@ dependencies = [
  "menu",
  "multi_buffer",
  "paths",
+ "picker",
  "project",
  "rope",
  "schemars 1.0.4",

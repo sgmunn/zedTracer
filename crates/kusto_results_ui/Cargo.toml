@@ -29,6 +29,7 @@ log.workspace = true
 menu.workspace = true
 multi_buffer.workspace = true
 paths.workspace = true
+picker.workspace = true
 project.workspace = true
 rope.workspace = true
 schemars.workspace = true
