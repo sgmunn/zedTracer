@@ -8,12 +8,14 @@ use std::time::Duration;
 use anyhow::Context as _;
 use encoding_rs::Encoding;
 use gpui::{
-    Action as _, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Action as _, App, AppContext as _, AsyncApp, ClipboardItem, Context, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::activity::build_projection_with;
+use kusto_results::sequence::{SequenceOptions, build_sequence};
+use kusto_results::trace_schema::TraceRole;
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
@@ -31,6 +33,7 @@ use crate::query_view::{QueryView, parameter_values};
 use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
+use crate::sequence_view::SequenceView;
 use crate::structured_view::StructuredView;
 
 pub fn init(cx: &mut App) {
@@ -332,6 +335,8 @@ impl project::ProjectItem for ResultsFile {
 pub enum ViewMode {
     Data,
     Structured,
+    /// The calls between the actors of a trace, as a sequence diagram.
+    Sequence,
     /// The query the result came from, to read.
     Query,
 }
@@ -343,6 +348,12 @@ enum Structured {
     Ready(Entity<StructuredView>),
 }
 
+/// The sequence diagram is built when it is first asked for, away from the window.
+enum Sequence {
+    Building { _task: Task<()> },
+    Ready(Entity<SequenceView>),
+}
+
 pub struct ResultsViewer {
     focus_handle: FocusHandle,
     results_file: Entity<ResultsFile>,
@@ -352,6 +363,11 @@ pub struct ResultsViewer {
     /// Whether the table has the columns the structured view needs.
     can_show_structured: bool,
     structured: Option<Structured>,
+    /// Whether the table has the columns the sequence view needs.
+    can_show_sequence: bool,
+    /// For a trace the sequence view cannot draw: the parts of a trace it could not find.
+    sequence_missing: Option<SharedString>,
+    sequence: Option<Sequence>,
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
@@ -435,6 +451,9 @@ impl ResultsViewer {
             mode: ViewMode::Data,
             can_show_structured: false,
             structured: None,
+            can_show_sequence: false,
+            sequence_missing: None,
+            sequence: None,
             can_show_query: false,
             query_view: None,
             _grid_subscription: None,
@@ -460,14 +479,27 @@ impl ResultsViewer {
             .as_ref()
             .map(|grid| Self::save_layouts_of(grid, cx));
         let settings = ResultsSettings::get_global(cx);
-        self.can_show_structured = self.grid.is_some()
-            && result
-                .tables
-                .first()
-                .is_some_and(|table| settings.trace_columns(table).supports_activity());
-        // What the structured view was built from has changed.
+        let columns = result
+            .tables
+            .first()
+            .filter(|_| self.grid.is_some())
+            .map(|table| settings.trace_columns(table));
+        self.can_show_structured = columns.is_some_and(|columns| columns.supports_activity());
+        self.can_show_sequence = columns.is_some_and(|columns| columns.supports_sequence());
+        self.sequence_missing = columns
+            .filter(|columns| columns.supports_activity() && !columns.supports_sequence())
+            .map(|columns| {
+                let roles: Vec<&str> = columns
+                    .missing_for_sequence()
+                    .into_iter()
+                    .map(TraceRole::label)
+                    .collect();
+                SharedString::from(format!("Sequence needs: {}", roles.join(", ")))
+            });
+        // What the structured and sequence views were built from has changed.
         self.structured = None;
         self._structured_subscription = None;
+        self.sequence = None;
         self.can_show_query = self.grid.is_some()
             && result
                 .query
@@ -475,11 +507,14 @@ impl ResultsViewer {
                 .is_some_and(|query| !query.trim().is_empty());
         self.query_view = None;
         if self.mode == ViewMode::Structured && !self.can_show_structured
+            || self.mode == ViewMode::Sequence && !self.can_show_sequence
             || self.mode == ViewMode::Query && !self.can_show_query
         {
             self.mode = ViewMode::Data;
         } else if self.mode == ViewMode::Structured {
             self.build_structured(window, cx);
+        } else if self.mode == ViewMode::Sequence {
+            self.build_sequence(window, cx);
         } else if self.mode == ViewMode::Query {
             self.build_query_view(window, cx);
         }
@@ -552,8 +587,16 @@ impl ResultsViewer {
         }
     }
 
+    pub(crate) fn sequence_view(&self) -> Option<&Entity<SequenceView>> {
+        match &self.sequence {
+            Some(Sequence::Ready(view)) => Some(view),
+            _ => None,
+        }
+    }
+
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         if mode == ViewMode::Structured && !self.can_show_structured
+            || mode == ViewMode::Sequence && !self.can_show_sequence
             || mode == ViewMode::Query && !self.can_show_query
         {
             return;
@@ -562,10 +605,49 @@ impl ResultsViewer {
         if mode == ViewMode::Structured && self.structured.is_none() {
             self.build_structured(window, cx);
         }
+        if mode == ViewMode::Sequence && self.sequence.is_none() {
+            self.build_sequence(window, cx);
+        }
         if mode == ViewMode::Query && self.query_view.is_none() {
             self.build_query_view(window, cx);
         }
         cx.notify();
+    }
+
+    /// Builds the sequence diagram away from the window, then the view.
+    fn build_sequence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let settings = ResultsSettings::get_global(cx);
+        let columns = result
+            .tables
+            .first()
+            .map(|table| settings.trace_columns(table));
+        self.sequence = Some(Sequence::Building {
+            _task: cx.spawn_in(window, async move |this, cx| {
+                let mermaid = cx
+                    .background_spawn(async move {
+                        let table = result.tables.first()?;
+                        let columns = columns?;
+                        let projection = build_projection_with(table, &columns)?;
+                        build_sequence(table, &projection, &columns, &SequenceOptions::default())
+                            .map(|diagram| diagram.to_mermaid())
+                    })
+                    .await;
+                this.update_in(cx, |this, _, cx| {
+                    let Some(mermaid) = mermaid else {
+                        this.sequence = None;
+                        this.can_show_sequence = false;
+                        this.mode = ViewMode::Data;
+                        cx.notify();
+                        return;
+                    };
+                    let view = cx.new(|cx| SequenceView::new(mermaid, cx));
+                    this.sequence = Some(Sequence::Ready(view));
+                    cx.notify();
+                })
+                .log_err();
+            }),
+        });
     }
 
     /// Builds the activity projection away from the window, then the view.
@@ -608,19 +690,32 @@ impl ResultsViewer {
 
 impl Render for ResultsViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match (self.mode, &self.structured, &self.grid, &self.query_view) {
-            (ViewMode::Query, _, _, Some(view)) => div().size_full().child(view.clone()),
-            (ViewMode::Structured, Some(Structured::Ready(view)), _, _) => {
+        let body = match (
+            self.mode,
+            &self.structured,
+            &self.sequence,
+            &self.grid,
+            &self.query_view,
+        ) {
+            (ViewMode::Query, _, _, _, Some(view)) => div().size_full().child(view.clone()),
+            (ViewMode::Structured, Some(Structured::Ready(view)), _, _, _) => {
                 div().size_full().child(view.clone())
             }
-            (ViewMode::Structured, _, _, _) => div()
+            (ViewMode::Structured, _, _, _, _) => div()
                 .p_4()
                 .child(ui::Label::new("Building the activity tree…")),
-            (_, _, Some(grid), _) => div().size_full().child(grid.clone()),
-            (_, _, None, _) => div()
+            (ViewMode::Sequence, _, Some(Sequence::Ready(view)), _, _) => {
+                div().size_full().child(view.clone())
+            }
+            (ViewMode::Sequence, _, _, _, _) => div()
+                .p_4()
+                .child(ui::Label::new("Drawing the sequence diagram…")),
+            (_, _, _, Some(grid), _) => div().size_full().child(grid.clone()),
+            (_, _, _, None, _) => div()
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
+        let mermaid = self.sequence_view().map(|view| view.read(cx).mermaid().clone());
         let mode = self.mode;
         let rerun = self.rerun_action(cx);
         let save = self.save_action(cx);
@@ -655,6 +750,24 @@ impl Render for ResultsViewer {
                                 ),
                             )
                         })
+                        .when(self.can_show_sequence, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "sequence-tab".to_string()).child(
+                                    Button::new("results-sequence-tab", "Sequence")
+                                        .toggle_state(mode == ViewMode::Sequence)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_mode(ViewMode::Sequence, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .when_some(self.sequence_missing.clone(), |bar, missing| {
+                            bar.child(
+                                Label::new(missing)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                        })
                         .when(self.can_show_query, |bar| {
                             bar.child(
                                 div().debug_selector(|| "query-tab".to_string()).child(
@@ -667,6 +780,24 @@ impl Render for ResultsViewer {
                             )
                         })
                         .child(div().flex_1())
+                        .when_some(
+                            mermaid.filter(|_| mode == ViewMode::Sequence),
+                            |bar, mermaid| {
+                                bar.child(
+                                    div().debug_selector(|| "copy-mermaid".to_string()).child(
+                                        Button::new("results-copy-mermaid", "Copy as Mermaid")
+                                            .tooltip(ui::Tooltip::text(
+                                                "Copy the diagram as Mermaid text, for a wiki, a pull request or a ticket",
+                                            ))
+                                            .on_click(move |_, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    mermaid.to_string(),
+                                                ))
+                                            }),
+                                    ),
+                                )
+                            },
+                        )
                         .when_some(save, |bar, action| {
                             bar.child(
                                 div().debug_selector(|| "save-button".to_string()).child(
@@ -1318,5 +1449,120 @@ mod tests {
             .read_with(cx, |viewer, _| viewer.structured_view().cloned())
             .expect("the structured view is built from the schema");
         assert!(view.read_with(cx, |view, cx| view.grid().read(cx).visible_row_count()) > 0);
+    }
+
+    /// SEQ-1, SEQ-15, SEQ-16: a trace with an actor and a timestamp offers a Sequence tab, drawn
+    /// when first asked for, whose text can be copied; a trace without them says what is missing.
+    #[gpui::test]
+    async fn a_trace_offers_a_sequence_tab_and_copies_its_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let without_actor = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                ],
+                "rows": [["a", ""], ["b", "a"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/root",
+            json!({
+                "trace.ktt": sample("synthetic-trace-edge.ktt").expect("fixture"),
+                "types.ktt": sample("synthetic-types.ktt").expect("fixture"),
+                "no-actor.ktt": without_actor,
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let plain = open("types.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(!plain.read_with(cx, |viewer, _| viewer.can_show_sequence));
+        assert!(plain.read_with(cx, |viewer, _| viewer.sequence_missing.is_none()));
+
+        let partial = open("no-actor.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(!partial.read_with(cx, |viewer, _| viewer.can_show_sequence));
+        assert_eq!(
+            partial.read_with(cx, |viewer, _| viewer.sequence_missing.clone()),
+            Some("Sequence needs: actor, timestamp".into())
+        );
+
+        let trace = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(trace.read_with(cx, |viewer, _| viewer.can_show_sequence));
+        assert!(trace.read_with(cx, |viewer, _| viewer.sequence_view().is_none()));
+
+        let tab = cx
+            .debug_bounds("sequence-tab")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            trace.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Sequence
+        );
+        let view = trace
+            .read_with(cx, |viewer, _| viewer.sequence_view().cloned())
+            .expect("the sequence view is built");
+        let mermaid = view.read_with(cx, |view, _| view.mermaid().clone());
+        assert!(mermaid.starts_with("sequenceDiagram"), "{mermaid}");
+
+        let copy = cx
+            .debug_bounds("copy-mermaid")
+            .map(|bounds| bounds.center())
+            .expect("the copy button shows");
+        cx.simulate_click(copy, gpui::Modifiers::default());
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(mermaid.to_string())
+        );
     }
 }
