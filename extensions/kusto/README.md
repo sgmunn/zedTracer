@@ -60,6 +60,19 @@ Each query shows where it will run in a lens, for example `help.kusto.windows.ne
 that lens row remembers is of that query on that cluster and database. Both the editor and the language server read
 the directives with the same rule, and both are tested against `fork-docs/samples/connection-directives.json`.
 
+## Control commands
+
+A query whose first line of code starts with a dot is a control command, such as `.show tables`,
+`.show function MyFunction` or `.show database schema`, and runs with F5 like any other query: the same lenses,
+the result in the Results panel, the history, Run again, and Save a copy… all work, and a command can be run
+again from the history in the same way. Nothing here treats a command differently from a query except what is sent.
+
+Commands go to Kusto's management endpoint, which answers in another format, so the result is read from that
+format: the table the command returns is the result, and the properties and status tables the service adds are
+left out. **Kusto rejects a command with a comment before the dot**, so the comment lines you start a command with
+(`// what the functions are`) are not sent. They are kept with the command everywhere else, in the history, in the
+saved result and in the Query tab, and still label the row in the history.
+
 ## Query parameters
 
 A query takes values from a parameter profile when it declares what it needs with
