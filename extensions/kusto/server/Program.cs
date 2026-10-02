@@ -17,6 +17,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private DefaultsFile defaultsFile = new(null);
     private IReadOnlyList<string> workspaceFolders = [];
     private volatile bool clientReady;
+
+    /// <summary>Whether names are checked against the schema, which the `schemaDiagnostics` option can turn off.</summary>
+    private bool schemaDiagnostics = true;
     private readonly Dictionary<string, FileChangeWatcher> parameterWatchers = new(StringComparer.Ordinal);
     private int nextRequestId;
     private Timer? spinner;
@@ -71,8 +74,11 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 schema.Changed += () =>
                 {
                     // Nothing may be asked of the client before it has said it is ready.
-                    if (clientReady)
-                        _ = RequestCodeLensRefreshAsync();
+                    if (!clientReady)
+                        return;
+                    _ = RequestCodeLensRefreshAsync();
+                    // A schema that has arrived, or changed, decides what is a wrong name.
+                    _ = RepublishDiagnosticsAsync();
                 };
                 ApplyInitializationOptions(parameters);
                 workspaceFolders = WorkspaceFolders(parameters);
@@ -469,6 +475,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 : null;
         if (options.TryGetProperty("schemaCacheMinutes", out var minutes) && minutes.TryGetInt32(out var value))
             schema.CacheMinutes = Math.Max(0, value);
+        if (options.TryGetProperty("schemaDiagnostics", out var checkNames)
+            && checkNames.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            schemaDiagnostics = checkNames.GetBoolean();
         schema.SetDefaults(Text("cluster"), Text("database"));
     }
 
@@ -547,30 +556,25 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         return true;
     }
 
+    private async Task RepublishDiagnosticsAsync()
+    {
+        foreach (var (uri, document) in documents.ToArray())
+        {
+            try
+            {
+                await PublishDiagnosticsAsync(uri, document);
+            }
+            catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+            {
+                Console.Error.WriteLine($"Could not publish diagnostics for {uri}: {exception.Message}");
+            }
+        }
+    }
+
     private async Task PublishDiagnosticsAsync(string uri, DocumentSnapshot document)
     {
         var diagnostics = QueryBlocks.Find(document.Text)
-            .SelectMany(block => KustoCode.Parse(block.Text)
-                .GetSyntaxDiagnostics()
-                .Where(diagnostic => diagnostic.HasLocation)
-                .Select(diagnostic => (object)new
-                {
-                    range = new
-                    {
-                        start = document.PositionAt(block.Start + diagnostic.Start),
-                        end = document.PositionAt(block.Start + diagnostic.Start + diagnostic.Length)
-                    },
-                    severity = diagnostic.Severity.ToString() switch
-                    {
-                        "Warning" => 2,
-                        "Information" => 3,
-                        "Suggestion" => 4,
-                        _ => 1
-                    },
-                    code = diagnostic.Code,
-                    source = "Kusto",
-                    message = diagnostic.Message
-                }))
+            .SelectMany(block => DiagnosticsOf(document, block))
             .Concat(ConnectionDirectives.Problems(document.Text).Select(problem => (object)new
             {
                 range = new
@@ -591,6 +595,55 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             method = "textDocument/publishDiagnostics",
             @params = new { uri, diagnostics }
         });
+    }
+
+    /// <summary>
+    /// What is wrong with one query: its syntax, and, when the schema of everything it refers to
+    /// has arrived, the names that are not in it. A name is never called wrong while the schema
+    /// that would have it may still be on its way.
+    /// </summary>
+    private IEnumerable<object> DiagnosticsOf(DocumentSnapshot document, QueryBlock block)
+    {
+        if (!block.IsQuery)
+            return [];
+        var connection = ConnectionDirectives.Before(document.Text, block.End, schema.Defaults);
+        var globals = schema.GlobalsFor(connection);
+        var checkNames = schemaDiagnostics && !QueryBlocks.IsControlCommand(block.Text) && SchemaIsLoaded(block, connection, globals);
+        var code = checkNames ? KustoCode.ParseAndAnalyze(block.Text, globals) : KustoCode.Parse(block.Text);
+        var found = checkNames ? code.GetDiagnostics() : code.GetSyntaxDiagnostics();
+        return found
+            .Where(diagnostic => diagnostic.HasLocation)
+            .Select(diagnostic => (object)new
+            {
+                range = new
+                {
+                    start = document.PositionAt(block.Start + diagnostic.Start),
+                    end = document.PositionAt(block.Start + diagnostic.Start + diagnostic.Length)
+                },
+                severity = diagnostic.Severity.ToString() switch
+                {
+                    "Warning" => 2,
+                    "Information" => 3,
+                    "Suggestion" => 4,
+                    _ => 1
+                },
+                code = diagnostic.Code,
+                source = "Kusto",
+                message = diagnostic.Message
+            })
+            .ToList();
+    }
+
+    /// <summary>Whether the schema of the query's own database and of every cluster and database it names has arrived.</summary>
+    private bool SchemaIsLoaded(QueryBlock block, Connection connection, GlobalState globals)
+    {
+        if (connection.Cluster is null || connection.Database is null
+            || !schema.IsLoaded(connection.Cluster, connection.Database))
+            return false;
+        var service = new KustoCodeService(block.Text, globals);
+        return service.GetClusterReferences().All(reference => schema.IsLoaded(reference.Cluster ?? connection.Cluster, null))
+            && service.GetDatabaseReferences().All(reference =>
+                schema.IsLoaded(reference.Cluster ?? connection.Cluster, reference.Database));
     }
 
     private static string EscapeSnippet(string text) =>

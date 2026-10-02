@@ -1501,6 +1501,196 @@ class SchemaRefreshTest(SchemaTest):
         self.assertIn("no cluster", message["message"])
 
 
+class SchemaDiagnosticsTest(unittest.TestCase):
+    """Names that are not in the schema are errors, once the schema has arrived."""
+
+    HOST = "help.kusto.windows.net"
+
+    def setUp(self):
+        self.clusters = []
+        self.process = None
+        self.data = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data.cleanup)
+        self.cache = Path(self.data.name) / "kusto" / "schema" / self.HOST
+        self.next_request = 20
+
+    def tearDown(self):
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.communicate()
+        for cluster in self.clusters:
+            cluster.stop()
+
+    fake = SchemaTest.fake
+    start = SchemaTest.start
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+    refresh = SchemaRefreshTest.refresh
+    message = SchemaRefreshTest.message
+    labels_include = SchemaRefreshTest.labels_include
+    labels = SchemaRefreshTest.labels
+
+    def begin_with(self, cluster, text="print 1", options=None):
+        self.start(
+            {"help": cluster, "other": self.unreachable_cluster()},
+            {"cluster": "help", "database": "Samples", **(options or {})},
+            data_dir=self.data.name,
+        )
+        self.send(None, "initialized", {})
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": URI, "languageId": "kusto", "version": 1, "text": text}},
+        )
+        return self.receive_where(
+            lambda message: message.get("method") == "textDocument/publishDiagnostics"
+        )["params"]["diagnostics"]
+
+    def unreachable_cluster(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        return cluster
+
+    def change(self, text):
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": text}]},
+        )
+
+    def diagnostics(self, text):
+        self.change(text)
+        return self.receive_where(
+            lambda message: message.get("method") == "textDocument/publishDiagnostics"
+        )["params"]["diagnostics"]
+
+    def diagnostics_become(self, text, wanted, timeout=10):
+        deadline = time.time() + timeout
+        while True:
+            found = self.diagnostics(text)
+            if wanted(found) or time.time() > deadline:
+                return found
+            time.sleep(0.1)
+
+    def wait_for_diagnostics(self, wanted, timeout=10):
+        """Diagnostics the server sends by itself, such as when a schema arrives."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([self.process.stdout], [], [], 0.2)
+            if ready:
+                message = self.receive()
+                if message.get("method") == "textDocument/publishDiagnostics":
+                    if wanted(message["params"]["diagnostics"]):
+                        return message["params"]["diagnostics"]
+        return None
+
+    def messages(self, found):
+        return [item["message"] for item in found]
+
+    def test_an_unknown_table_and_an_unknown_column_are_errors_once_the_schema_has_loaded(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        text = "Nope\n| take 1\n\nStormEvents\n| where Statex == 'a'\n| project State"
+        found = self.diagnostics_become(text, lambda found: len(found) >= 2)
+
+        self.assertEqual(len(found), 2, self.messages(found))
+        table, column = found
+        self.assertIn("Nope", table["message"])
+        self.assertEqual(table["severity"], 1)
+        self.assertEqual(table["range"]["start"], {"line": 0, "character": 0})
+        self.assertEqual(table["range"]["end"], {"line": 0, "character": 4})
+        self.assertIn("Statex", column["message"])
+        self.assertEqual(column["range"]["start"], {"line": 4, "character": 8})
+
+    def test_names_that_are_in_the_schema_are_not_errors(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        text = (
+            "StormEvents\n| where State == 'a' and DamageProperty > 5\n| summarize n = count() by bin(StartTime, 1d)"
+            "\n\nStatesOver(3, 'x')"
+        )
+        self.assertTrue(self.diagnostics_become("Nope", lambda found: len(found) == 1), "the schema loaded")
+        self.assertEqual(self.diagnostics(text), [])
+
+    def test_nothing_is_called_wrong_while_the_schema_is_still_on_its_way(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES, delay=1.5)
+        first = self.begin_with(cluster, "Nope\n| take 1")
+        self.assertEqual(first, [], "the cluster has not answered yet")
+
+        arrived = self.wait_for_diagnostics(lambda found: len(found) == 1, timeout=10)
+        self.assertIsNotNone(arrived, "the server publishes again when the schema arrives")
+        self.assertIn("Nope", arrived[0]["message"])
+
+    def test_without_a_reachable_cluster_there_are_only_syntax_errors(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        found = self.begin_with(cluster, "Nope\n| take 1")
+        self.assertEqual(found, [])
+        time.sleep(0.5)
+        syntax = self.diagnostics("Nope | where | take 1")
+        self.assertTrue(syntax, "a syntax error still shows")
+        self.assertNotIn("does not refer", syntax[0]["message"])
+        self.assertEqual(
+            [item for item in self.diagnostics("Nope | take 1")], [], "an unknown table does not"
+        )
+
+    def test_an_old_cached_schema_is_used_to_check_names_until_the_cluster_answers(self):
+        self.write_old_database(hours_ago=3)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        self.begin_with(cluster, "print 1")
+        found = self.diagnostics_become("StormEvents | take 1", lambda found: len(found) == 1)
+        self.assertIn("StormEvents", found[0]["message"], "only the cached OldTable is known")
+        self.assertEqual(self.diagnostics("OldTable | take 1"), [])
+
+    write_old_database = SchemaRefreshTest.write_old_database
+
+    def test_the_option_can_turn_checking_names_off(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES), options={"schemaDiagnostics": False})
+        self.assertEqual(self.labels_include("Sto", "StormEvents").count("StormEvents"), 1, "the schema loaded")
+        self.assertEqual(self.diagnostics("Nope | take 1"), [])
+
+    def test_a_control_command_is_only_checked_for_syntax(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        self.assertTrue(self.diagnostics_become("Nope", lambda found: len(found) == 1))
+        self.assertEqual(self.diagnostics(".show function Nope"), [])
+        self.assertEqual(self.diagnostics("// the tables\n.show tables"), [])
+
+    def test_a_query_that_runs_elsewhere_is_not_checked_until_that_schema_has_arrived(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        text = (
+            'Nope\n| take 1\n\n//:setDefaultCluster("other")\n//:setDefaultDb("Samples")\nAlsoNope\n| take 1'
+        )
+        found = self.diagnostics_become(text, lambda found: len(found) >= 1)
+        self.assertEqual(len(found), 1, self.messages(found))
+        self.assertIn("Nope", found[0]["message"])
+        self.assertEqual(found[0]["range"]["start"]["line"], 0, "only the query on the loaded cluster")
+
+    def test_a_database_a_query_names_is_not_checked_until_it_has_loaded(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        text = "cluster('other').database('Logs').Requests\n| take 1"
+        self.assertEqual(self.diagnostics_become(text, lambda found: True), [])
+        time.sleep(0.5)
+        self.assertEqual(self.diagnostics(text), [], "the other cluster cannot be reached")
+
+    def test_a_refresh_that_brings_a_new_table_clears_the_error_without_a_keystroke(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.begin_with(cluster, "Alerts | take 1")
+        found = self.diagnostics_become("Alerts | take 1", lambda found: len(found) == 1)
+        self.assertIn("Alerts", found[0]["message"])
+
+        cluster.entities = {
+            "Samples": STORM_ENTITIES["Samples"] + [("Table", "Alerts", "", "", "", "Id:long")]
+        }
+        self.refresh()
+        cleared = self.wait_for_diagnostics(lambda found: found == [], timeout=10)
+        self.assertEqual(cleared, [], "the open file was checked again against the new schema")
+
+
 class SchemaCacheTest(SchemaTest):
     """Schema kept on disk: used at once, replaced from the cluster when old."""
 
