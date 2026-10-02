@@ -697,6 +697,7 @@ class CodeLensTest(unittest.TestCase):
 
 
 CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "connection-directives.json"
+PARAMETER_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "query-parameters.json"
 
 
 def expected_title(connection):
@@ -966,6 +967,165 @@ class DefaultsFileTest(unittest.TestCase):
         self.file.write_text("{ not json")
         time.sleep(0.5)
         self.assertEqual(self.connection_title(), "a.kusto.windows.net / one")
+
+
+class ParameterLensTest(unittest.TestCase):
+    """The lens that says which parameter profile a query runs with."""
+
+    PROFILES = (
+        "# who is on call\nactive: A\nprofiles:\n  A:\n    raid: from-a\n    count: 5\n  B:\n    raid: from-b\n"
+    )
+
+    def setUp(self):
+        self.project = tempfile.TemporaryDirectory()
+        self.root = Path(self.project.name).resolve()
+        self.uri = (self.root / "queries.kql").as_uri()
+        self.shared = self.root / ".kusto" / "parameters.yaml"
+        self.beside = self.root / "queries.parameters.yaml"
+        self.process = None
+        self.next_request = 10
+        LanguageServerTest.start_server(
+            self,
+            self.root.as_uri(),
+            {"cluster": "a", "database": "db"},
+            {
+                "KUSTO_LSP_TEST_TOKEN": "unused",
+                "KUSTO_LSP_TEST_ENDPOINTS": json.dumps({"a.kusto.windows.net": "http://127.0.0.1:9"}),
+            },
+        )
+
+    def tearDown(self):
+        self.process.terminate()
+        try:
+            self.process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.communicate()
+        self.project.cleanup()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+
+    def write(self, path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(text)
+        temporary.replace(path)
+
+    def open_document(self, text):
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": self.uri, "languageId": "kusto", "version": 1, "text": text}},
+        )
+        self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+
+    def lenses(self):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(request_id, "textDocument/codeLens", {"textDocument": {"uri": self.uri}})
+        return self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]
+
+    def parameter_lens(self):
+        found = [
+            lens["command"]
+            for lens in self.lenses()
+            if (lens["command"].get("arguments") or [None])[0] == "kusto::SelectParameterProfile"
+        ]
+        self.assertLessEqual(len(found), 1)
+        return found[0] if found else None
+
+    def title(self):
+        lens = self.parameter_lens()
+        return lens["title"] if lens else None
+
+    def title_becomes(self, wanted):
+        deadline = time.time() + 10
+        while True:
+            title = self.title()
+            if title == wanted or time.time() > deadline:
+                return title
+            time.sleep(0.1)
+
+    DECLARING = "declare query_parameters(raid:string);\nT | where Id == raid"
+
+    def test_a_query_that_declares_nothing_has_no_parameter_lens(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document("T | take 1")
+        self.assertIsNone(self.title())
+
+    def test_the_lens_names_the_active_profile_and_opens_the_selector(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document(self.DECLARING)
+        lens = self.parameter_lens()
+        self.assertEqual(lens["title"], "Params: A")
+        self.assertEqual(lens["command"], "zed.dispatchAction")
+        self.assertEqual(lens["arguments"], ["kusto::SelectParameterProfile"])
+
+    def test_without_a_profiles_file_or_an_active_profile_the_lens_says_none(self):
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: none")
+        self.write(self.shared, "active: null\nprofiles:\n  A:\n    raid: x\n")
+        self.assertEqual(self.title_becomes("Params: none"), "Params: none")
+
+    def test_a_declared_parameter_the_profile_has_no_value_for_is_named(self):
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: B"))
+        self.open_document("declare query_parameters(raid:string, count:long, since:datetime = datetime(2024-01-01, 5));\nT")
+        self.assertEqual(self.title(), "Params: B (no value for count)", "a parameter with a default is not missing")
+
+    def test_a_file_beside_the_query_takes_the_place_of_the_projects(self):
+        self.write(self.shared, self.PROFILES)
+        self.write(self.beside, "active: Mine\nprofiles:\n  Mine:\n    raid: x\n")
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: Mine")
+
+    def test_a_file_that_cannot_be_read_is_named(self):
+        self.write(self.shared, "active: [")
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: cannot read parameters.yaml")
+
+    def test_an_active_profile_that_does_not_exist_is_no_active_profile(self):
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: Gone"))
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: none")
+
+    def test_choosing_another_profile_changes_the_lens_and_asks_for_new_ones(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: A")
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: B"))
+        refresh = self.receive_where(lambda message: message.get("method") == "workspace/codeLens/refresh")
+        self.assertIsNotNone(refresh)
+        self.assertEqual(self.title_becomes("Params: B"), "Params: B")
+
+    def test_a_project_folder_made_after_the_file_was_opened_is_followed(self):
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: none")
+        self.write(self.shared, self.PROFILES)
+        self.assertEqual(self.title_becomes("Params: A"), "Params: A")
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: B"))
+        self.assertEqual(self.title_becomes("Params: B"), "Params: B")
+
+    def test_no_kusto_folder_is_made_in_the_project(self):
+        self.open_document(self.DECLARING)
+        self.title()
+        self.assertFalse((self.root / ".kusto").exists())
+
+    def test_the_shared_cases_declare_the_same_parameters_as_the_editor_finds(self):
+        cases = json.loads(PARAMETER_CASES.read_text())
+        self.assertTrue(cases)
+        self.write(self.shared, "active: P\nprofiles:\n  P:\n    unrelated: x\n")
+        for case in cases:
+            self.process.stdin.flush()
+            self.send(None, "textDocument/didClose", {"textDocument": {"uri": self.uri}})
+            self.open_document(case["query"])
+            expected = (
+                f"Params: P (no value for {', '.join(case['names'])})" if case["names"] else None
+            )
+            self.assertEqual(self.title(), expected, case["name"])
 
 
 class DirectiveSchemaTest(SchemaTest):

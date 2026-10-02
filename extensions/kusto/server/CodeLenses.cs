@@ -20,7 +20,8 @@ internal static class CodeLenses
         DocumentSnapshot document,
         Dictionary<string, QueryRuns> runs,
         DateTimeOffset now,
-        Connection defaults)
+        Connection defaults,
+        Func<string, string?> parameters)
     {
         var lenses = new List<object>();
         foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
@@ -45,6 +46,8 @@ internal static class CodeLenses
                 Add("▶ Run", DispatchActionCommand, "kusto::RunQuery");
             }
             Add(Describe(connection), ConnectionCommand);
+            if (parameters(block.Text) is { } parametersTitle)
+                Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
 
             if (state?.Last is { } last)
             {

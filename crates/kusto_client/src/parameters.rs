@@ -362,6 +362,27 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_cases_declare_the_same_parameters_as_the_language_server_finds() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            query: String,
+            names: Vec<String>,
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fork-docs/samples/query-parameters.json"
+        );
+        let cases: Vec<Case> =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("the cases file reads"))
+                .expect("the cases file parses");
+        assert!(!cases.is_empty());
+        for case in cases {
+            assert_eq!(declared_parameters(&case.query), case.names, "{}", case.name);
+        }
+    }
+
+    #[test]
     fn a_quoted_double_slash_is_not_a_comment() {
         let query = "declare query_parameters(url:string = \"http://x\", other:string);\nT";
         assert_eq!(declared_parameters(query), ["url", "other"]);

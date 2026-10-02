@@ -1,0 +1,72 @@
+[
+  {
+    "name": "a plain declaration",
+    "query": "declare query_parameters(raid:string);\nT | where Id == raid",
+    "names": [
+      "raid"
+    ]
+  },
+  {
+    "name": "several parameters with spaces and other types",
+    "query": "declare query_parameters( raid : string , count:long,since:datetime );\nT",
+    "names": [
+      "raid",
+      "count",
+      "since"
+    ]
+  },
+  {
+    "name": "the keywords in any case",
+    "query": "DECLARE  Query_Parameters ( one : long );\nT",
+    "names": [
+      "one"
+    ]
+  },
+  {
+    "name": "a declaration in a comment is not one",
+    "query": "// declare query_parameters(old:string);\nT",
+    "names": []
+  },
+  {
+    "name": "a query that declares nothing",
+    "query": "T | take 1",
+    "names": []
+  },
+  {
+    "name": "a declaration that is never closed",
+    "query": "declare query_parameters(",
+    "names": []
+  },
+  {
+    "name": "two declarations share a name",
+    "query": "declare query_parameters(one:long);\ndeclare query_parameters(two:long, one:long);\nT",
+    "names": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "name": "parentheses in a type are not the end",
+    "query": "declare query_parameters(a:decimal, b:string);\nT",
+    "names": [
+      "a",
+      "b"
+    ]
+  },
+  {
+    "name": "a line break inside the declaration",
+    "query": "declare query_parameters(\n    first:string,\n    second:long\n);\nT",
+    "names": [
+      "first",
+      "second"
+    ]
+  },
+  {
+    "name": "a comment after a parameter",
+    "query": "declare query_parameters(\n    first:string, // the activity\n    second:long\n);\nT",
+    "names": [
+      "first",
+      "second"
+    ]
+  }
+]
