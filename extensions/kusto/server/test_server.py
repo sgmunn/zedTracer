@@ -1859,6 +1859,57 @@ class SchemaDiagnosticsTest(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(self.diagnostics(text), [], "the other cluster cannot be reached")
 
+    def loaded(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        self.assertTrue(self.diagnostics_become("Nope", lambda found: len(found) == 1), "the schema loaded")
+
+    def codes(self, text):
+        return [item["code"] for item in self.diagnostics(text)]
+
+    def test_an_unknown_source_is_the_only_error_of_its_query(self):
+        self.loaded()
+        text = (
+            "Nope\n| where Foo > 1\n| where Bar between (datetime(2026-01-01) .. 1d)\n"
+            "| project Baz, Qux = strcat(Baz, 'x')\n| order by Baz"
+        )
+        self.assertEqual(self.codes(text), ["KS204"])
+
+    def test_an_unknown_function_is_the_only_error_of_a_query_that_starts_with_it(self):
+        self.loaded()
+        found = self.diagnostics(
+            "let raid = 'abc';\nNoSuchFunction().Trace\n| where TIMESTAMP between (datetime(2026-09-03) .. 1d)"
+            "\n| where RootActivityId == raid\n| order by TIMESTAMP asc"
+        )
+        self.assertEqual([item["code"] for item in found], ["KS211"], self.messages(found))
+        self.assertIn("NoSuchFunction", found[0]["message"])
+
+    def test_a_known_source_with_a_wrong_column_still_reports_it(self):
+        self.loaded()
+        self.assertEqual(self.codes("StormEvents\n| where Missing > 1\n| project Gone"), ["KS142", "KS142"])
+
+    def test_a_wrong_name_in_a_later_statement_is_still_reported(self):
+        self.loaded()
+        text = "let a = Nope | where Foo > 1;\nStormEvents\n| where Missing > 1"
+        self.assertEqual(self.codes(text), ["KS204", "KS142"])
+
+    def test_an_unknown_name_that_is_not_the_source_does_not_hide_other_errors(self):
+        self.loaded()
+        text = "StormEvents\n| where Missing > 1\n| join kind=inner (Nope) on State"
+        found = self.codes(text)
+        self.assertIn("KS204", found, "the unknown table")
+        self.assertIn("KS142", found, "the column that really is missing")
+
+    def test_a_wrong_function_name_in_the_middle_of_a_query_is_not_a_missing_source(self):
+        self.loaded()
+        found = self.codes("StormEvents\n| where agoo(1h) > StartTime\n| where Missing > 1")
+        self.assertIn("KS211", found)
+        self.assertIn("KS142", found, "the source is known, so the missing column is real")
+
+    def test_two_unknown_sources_in_a_file_each_get_their_own_error(self):
+        self.loaded()
+        text = "Nope\n| where Foo > 1\n\nAlsoNope\n| where Bar > 1"
+        self.assertEqual(self.codes(text), ["KS204", "KS204"])
+
     def test_a_refresh_that_brings_a_new_table_clears_the_error_without_a_keystroke(self):
         cluster = self.fake(["Samples"], STORM_ENTITIES)
         self.begin_with(cluster, "Alerts | take 1")
