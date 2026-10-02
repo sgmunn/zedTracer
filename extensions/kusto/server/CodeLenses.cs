@@ -87,6 +87,37 @@ internal static class CodeLenses
         return $"{SpinnerFrames[frame]} Running… {time}";
     }
 
+    /// <summary>
+    /// The lenses of a profiles file: `✓ Active` above the active profile and `Make Active` above
+    /// each of the others, which asks the editor to change the file's `active:` line.
+    /// </summary>
+    public static object[] ForProfilesFile(string text)
+    {
+        var active = QueryParameters.Parse(text)?.Active;
+        var lenses = new List<object>();
+        foreach (var (name, line, column, length) in QueryParameters.ProfileKeys(text))
+        {
+            var range = new
+            {
+                start = new { line, character = column },
+                end = new { line, character = column + length }
+            };
+            lenses.Add(name == active
+                ? new { range, command = new { title = "✓ Active", command = NoopCommand, arguments = Array.Empty<object>() } }
+                : new
+                {
+                    range,
+                    command = new
+                    {
+                        title = "Make Active",
+                        command = DispatchActionCommand,
+                        arguments = new object[] { "kusto::MakeParameterProfileActive", new { name } }
+                    }
+                });
+        }
+        return lenses.ToArray();
+    }
+
     /// <summary>`↻ Schema: 3 h ago`: when the schema the query is checked against was fetched. Clicking fetches it again.</summary>
     public static string SchemaTitle(SchemaStatus schema, DateTimeOffset now)
     {
