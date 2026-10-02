@@ -20,11 +20,22 @@ static DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the directive pattern is valid")
 });
 
+/// The file, in Zed's Kusto folder, where the editor tells the language server which cluster and
+/// database queries run on when a file does not say.
+pub const DEFAULTS_FILE: &str = "defaults.json";
+
 /// The cluster and database a query runs on, as written: not yet checked or normalized.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Connection {
     pub cluster: Option<String>,
     pub database: Option<String>,
+}
+
+impl Connection {
+    /// What goes in [DEFAULTS_FILE].
+    pub fn to_defaults_file(&self) -> String {
+        serde_json::json!({ "cluster": self.cluster, "database": self.database }).to_string()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +118,18 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
+
+    #[test]
+    fn the_defaults_file_names_both_settings_even_when_one_is_missing() {
+        let connection = Connection {
+            cluster: Some("https://help.kusto.windows.net".into()),
+            database: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&connection.to_defaults_file()).ok(),
+            Some(serde_json::json!({ "cluster": "https://help.kusto.windows.net", "database": null }))
+        );
+    }
 
     #[derive(Deserialize)]
     struct Case {

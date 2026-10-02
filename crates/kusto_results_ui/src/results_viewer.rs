@@ -31,6 +31,7 @@ use crate::structured_view::StructuredView;
 
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
+    crate::run_query::share_defaults_with_language_server(cx);
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         crate::run_query::register(workspace, cx);
         crate::results_panel::register(workspace);
