@@ -16,6 +16,7 @@ internal sealed class SchemaManager
     private readonly SchemaCache cache;
     private readonly object gate = new();
     private readonly Dictionary<string, Attempt> attempts = new();
+    private readonly Dictionary<string, DatabaseStatus> statuses = new();
     private GlobalState globals;
     private string? defaultCluster;
     private string? defaultHost;
@@ -34,6 +35,65 @@ internal sealed class SchemaManager
     /// Zero asks every time the server starts.
     /// </summary>
     public int CacheMinutes { get; set; } = 60;
+
+    /// <summary>Raised when a load of a database starts or ends, so that what shows its state can be redrawn.</summary>
+    public event Action? Changed;
+
+    private static string StatusKey(string host, string database) => $"{host}/{database}";
+
+    private void UpdateStatus(string host, string database, Action<DatabaseStatus> change)
+    {
+        lock (gate)
+        {
+            var key = StatusKey(host, database);
+            if (!statuses.TryGetValue(key, out var status))
+                statuses[key] = status = new DatabaseStatus();
+            change(status);
+        }
+        Changed?.Invoke();
+    }
+
+    /// <summary>What is known about the schema of the database a connection names.</summary>
+    public SchemaStatus? StatusOf(Connection connection)
+    {
+        if (connection.Host is not { } host || string.IsNullOrWhiteSpace(connection.Database))
+            return null;
+        lock (gate)
+        {
+            return statuses.TryGetValue(StatusKey(host, connection.Database), out var status)
+                ? new SchemaStatus(status.LoadedAt, status.InFlight > 0, status.Failed)
+                : new SchemaStatus(null, false, false);
+        }
+    }
+
+    /// <summary>
+    /// Fetches the schema of a connection's cluster and database from the cluster now, whatever is
+    /// cached, and returns how much of it there is. Nulls mean the default cluster and database.
+    /// A failure leaves the schema that was there.
+    /// </summary>
+    public async Task<(string Host, string? Database, int Tables, int Functions)> RefreshAsync(
+        string? cluster, string? database)
+    {
+        string? host;
+        string? name;
+        lock (gate)
+        {
+            host = string.IsNullOrWhiteSpace(cluster) ? defaultHost : KustoRestClient.ClusterHost(cluster);
+            name = string.IsNullOrWhiteSpace(database) ? defaultDatabase : database.Trim();
+        }
+        if (host is null)
+            throw new InvalidOperationException("This query has no cluster.");
+
+        await LoadClusterAsync(host, CancellationToken.None, force: true);
+        if (name is null)
+            return (host, null, 0, 0);
+        await LoadDatabaseAsync(host, name, CancellationToken.None, force: true);
+        lock (gate)
+        {
+            var loaded = globals.GetCluster(host)?.GetDatabase(name);
+            return (host, name, loaded?.Tables.Count ?? 0, loaded?.Functions.Count ?? 0);
+        }
+    }
 
     private bool IsFresh(DateTimeOffset fetchedAt) =>
         CacheMinutes > 0 && DateTimeOffset.UtcNow - fetchedAt < TimeSpan.FromMinutes(CacheMinutes);
@@ -130,9 +190,9 @@ internal sealed class SchemaManager
     /// The databases of a cluster. A cached list is used at once; the cluster is asked too when the
     /// list is old, and a failure to reach it leaves the cached list in place.
     /// </summary>
-    private async Task LoadClusterAsync(string host, CancellationToken cancellationToken)
+    private async Task LoadClusterAsync(string host, CancellationToken cancellationToken, bool force = false)
     {
-        if (cache.ReadCluster(host) is { } cached)
+        if (!force && cache.ReadCluster(host) is { } cached)
         {
             ApplyDatabaseNames(host, cached.Databases);
             Console.Error.WriteLine($"Using the cached database list of {host}");
@@ -173,32 +233,48 @@ internal sealed class SchemaManager
     /// works before the network answers and without it; the cluster is asked too when the cached
     /// schema is old, and a failure to reach it leaves the cached schema in place.
     /// </summary>
-    private async Task LoadDatabaseAsync(string host, string database, CancellationToken cancellationToken)
+    private async Task LoadDatabaseAsync(
+        string host, string database, CancellationToken cancellationToken, bool force = false)
     {
-        if (cache.ReadDatabase(host, database) is { } cached)
+        UpdateStatus(host, database, status => status.InFlight++);
+        try
         {
-            ApplyDatabase(host, database, BuildMembers(cached.Entities));
-            Console.Error.WriteLine($"Using the cached schema of {host}/{database}");
-            if (IsFresh(cached.FetchedAt))
-                return;
+            if (!force && cache.ReadDatabase(host, database) is { } cached)
+            {
+                ApplyDatabase(host, database, BuildMembers(cached.Entities));
+                UpdateStatus(host, database, status => { status.LoadedAt = cached.FetchedAt; status.Failed = false; });
+                Console.Error.WriteLine($"Using the cached schema of {host}/{database}");
+                if (IsFresh(cached.FetchedAt))
+                    return;
+            }
+
+            var command = ".show databases entities with (showObfuscatedStrings=false)"
+                + $" | where DatabaseName == {KustoFacts.GetStringLiteral(database)}"
+                + " | where EntityType in ('Table', 'ExternalTable', 'MaterializedView', 'Function')";
+            var rows = await client.ExecuteManagementAsync(host, database, command, cancellationToken);
+
+            var entities = rows
+                .Select(row => new CachedEntity(
+                    Text(row, "EntityType"),
+                    Text(row, "EntityName"),
+                    Text(row, "CslOutputSchema"),
+                    Text(row, "CslInputSchema"),
+                    Text(row, "Content"),
+                    NullIfEmpty(Text(row, "DocString"))))
+                .ToList();
+            ApplyDatabase(host, database, BuildMembers(entities));
+            cache.WriteDatabase(host, database, entities);
+            UpdateStatus(host, database, status => { status.LoadedAt = DateTimeOffset.UtcNow; status.Failed = false; });
         }
-
-        var command = ".show databases entities with (showObfuscatedStrings=false)"
-            + $" | where DatabaseName == {KustoFacts.GetStringLiteral(database)}"
-            + " | where EntityType in ('Table', 'ExternalTable', 'MaterializedView', 'Function')";
-        var rows = await client.ExecuteManagementAsync(host, database, command, cancellationToken);
-
-        var entities = rows
-            .Select(row => new CachedEntity(
-                Text(row, "EntityType"),
-                Text(row, "EntityName"),
-                Text(row, "CslOutputSchema"),
-                Text(row, "CslInputSchema"),
-                Text(row, "Content"),
-                NullIfEmpty(Text(row, "DocString"))))
-            .ToList();
-        ApplyDatabase(host, database, BuildMembers(entities));
-        cache.WriteDatabase(host, database, entities);
+        catch
+        {
+            UpdateStatus(host, database, status => status.Failed = true);
+            throw;
+        }
+        finally
+        {
+            UpdateStatus(host, database, status => status.InFlight--);
+        }
     }
 
     private static List<Symbol> BuildMembers(IEnumerable<CachedEntity> entities)
@@ -245,4 +321,14 @@ internal sealed class SchemaManager
     private static string? NullIfEmpty(string text) => text.Length == 0 ? null : text;
 
     private readonly record struct Attempt(bool Failed, DateTime When);
+
+    private sealed class DatabaseStatus
+    {
+        public DateTimeOffset? LoadedAt;
+        public int InFlight;
+        public bool Failed;
+    }
 }
+
+/// <summary>What is known about one database's schema: when it was fetched, if it was, and what is happening.</summary>
+internal readonly record struct SchemaStatus(DateTimeOffset? LoadedAt, bool InFlight, bool Failed);

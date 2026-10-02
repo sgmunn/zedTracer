@@ -10,6 +10,7 @@ internal static class CodeLenses
     public const string DispatchActionCommand = "zed.dispatchAction";
     public const string NoopCommand = "kusto.noop";
     public const string ConnectionCommand = "kusto.connection";
+    public const string RefreshSchemaCommand = "kusto.refreshSchema";
 
     /// <summary>Braille spinner frames, one per refresh while a query runs.</summary>
     private const string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -21,7 +22,8 @@ internal static class CodeLenses
         Dictionary<string, QueryRuns> runs,
         DateTimeOffset now,
         Connection defaults,
-        Func<string, string?> parameters)
+        Func<string, string?> parameters,
+        Func<Connection, SchemaStatus?> schemaOf)
     {
         var lenses = new List<object>();
         foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
@@ -46,6 +48,11 @@ internal static class CodeLenses
                 Add("▶ Run", DispatchActionCommand, "kusto::RunQuery");
             }
             Add(Describe(connection), ConnectionCommand);
+            if (schemaOf(connection) is { } schema)
+            {
+                // Zed asks the server to run this one, since it is not an action of the editor.
+                Add(SchemaTitle(schema, now), RefreshSchemaCommand, connection.Cluster ?? "", connection.Database ?? "");
+            }
             if (parameters(block.Text) is { } parametersTitle)
                 Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
 
@@ -78,6 +85,21 @@ internal static class CodeLenses
             ? $"{elapsed} s"
             : $"{elapsed / 60} m {elapsed % 60:00} s";
         return $"{SpinnerFrames[frame]} Running… {time}";
+    }
+
+    /// <summary>`↻ Schema: 3 h ago`: when the schema the query is checked against was fetched. Clicking fetches it again.</summary>
+    public static string SchemaTitle(SchemaStatus schema, DateTimeOffset now)
+    {
+        if (schema.InFlight)
+            return schema.LoadedAt is null ? "↻ Schema: loading…" : "↻ Schema: refreshing…";
+        if (schema.LoadedAt is not { } loaded)
+            return "↻ Schema: not loaded";
+        var age = now - loaded;
+        var text = age < TimeSpan.FromMinutes(1) ? "just now"
+            : age < TimeSpan.FromHours(1) ? $"{(int)age.TotalMinutes} min ago"
+            : age < TimeSpan.FromHours(48) ? $"{(int)age.TotalHours} h ago"
+            : $"{(int)age.TotalDays} d ago";
+        return $"↻ Schema: {text}";
     }
 
     /// <summary>Where the query runs: `help.kusto.windows.net / Samples`.</summary>
