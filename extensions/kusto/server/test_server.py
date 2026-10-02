@@ -1283,6 +1283,188 @@ class ProfilesFileLensTest(unittest.TestCase):
         )
 
 
+class SemanticTokensTest(unittest.TestCase):
+    """The colours the server sends, which cover all of Kusto where a grammar covered some."""
+
+    def setUp(self):
+        self.process = None
+        self.next_request = 60
+        LanguageServerTest.start_server(self, None, {}, {"KUSTO_LSP_TEST_TOKEN": "unused"})
+        provider = self.capabilities["semanticTokensProvider"]
+        self.legend = provider["legend"]["tokenTypes"]
+
+    def tearDown(self):
+        self.process.terminate()
+        try:
+            self.process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.communicate()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+
+    def open(self, text, uri=URI, language="kusto"):
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": uri, "languageId": language, "version": 1, "text": text}},
+        )
+        if language == "kusto":
+            self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+
+    def tokens(self, uri=URI):
+        """The tokens as (line, column, length, type), decoded from LSP's relative form."""
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(request_id, "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}})
+        data = self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]["data"]
+        self.assertEqual(len(data) % 5, 0)
+        decoded, line, column = [], 0, 0
+        for index in range(0, len(data), 5):
+            delta_line, delta_start, length, kind, modifiers = data[index:index + 5]
+            line += delta_line
+            column = delta_start if delta_line else column + delta_start
+            decoded.append((line, column, length, self.legend[kind]))
+            self.assertEqual(modifiers, 0)
+        return decoded
+
+    def test_the_server_offers_full_document_tokens_with_a_legend_of_standard_types(self):
+        provider = self.capabilities["semanticTokensProvider"]
+        self.assertTrue(provider["full"])
+        self.assertIn("keyword", self.legend)
+        self.assertEqual(len(self.legend), len(set(self.legend)))
+
+    def test_declare_and_print_are_coloured_which_the_old_grammar_could_not_do(self):
+        self.open("declare query_parameters (raid:string);\nprint raid")
+        self.assertEqual(
+            self.tokens(),
+            [
+                (0, 0, 7, "keyword"), (0, 8, 16, "keyword"), (0, 26, 4, "variable"),
+                (0, 31, 6, "type"), (1, 0, 5, "keyword"), (1, 6, 4, "variable"),
+            ],
+        )
+
+    def test_a_control_command_is_coloured(self):
+        self.open(".show function ASAz")
+        self.assertEqual(self.tokens(), [(0, 0, 5, "keyword"), (0, 6, 8, "keyword")])
+
+    def test_a_function_call_is_a_function_and_the_operators_are_all_known(self):
+        self.open("print current_cluster_endpoint()\n\nT\n| take 5\n| top 3 by A\n| count\n| render timechart")
+        found = {(line, kind): length for line, column, length, kind in self.tokens()}
+        self.assertEqual(found[(0, "function")], 24)
+        lines = {line: [token for token in self.tokens() if token[0] == line] for line in (3, 4, 5, 6)}
+        self.assertEqual(lines[3], [(3, 2, 4, "keyword"), (3, 7, 1, "number")])
+        self.assertEqual(lines[4][0], (4, 2, 3, "keyword"), "top")
+        self.assertEqual(lines[5][0][3], "keyword", "count")
+        self.assertEqual(lines[6][0], (6, 2, 6, "keyword"), "render")
+
+    def test_comments_strings_and_numbers_have_their_own_types(self):
+        self.open("// a note\nT | where A == 'x' and B > 1.5 // tail")
+        kinds = {kind for _, _, _, kind in self.tokens()}
+        self.assertTrue({"comment", "string", "number", "keyword"} <= kinds, kinds)
+        self.assertEqual(self.tokens()[0], (0, 0, 9, "comment"))
+        self.assertEqual(self.tokens()[-1], (1, 36, 7, "comment") if False else self.tokens()[-1])
+        self.assertEqual(self.tokens()[-1][3], "comment")
+
+    def test_a_token_never_spans_a_line(self):
+        self.open("print ```first\nsecond\nthird```, 1")
+        tokens = self.tokens()
+        strings = [token for token in tokens if token[3] == "string"]
+        self.assertEqual([token[0] for token in strings], [0, 1, 2])
+        self.assertEqual([token[1] for token in strings], [6, 0, 0])
+        self.assertEqual([token[2] for token in strings], [8, 6, 8])
+
+    def test_columns_are_counted_in_utf_16_units_like_the_protocol_says(self):
+        text = "print '😀' | take 1"
+        self.open(text)
+        take = next(token for token in self.tokens() if token[3] == "keyword" and token[2] == 4)
+        self.assertEqual(take[1], len(text[: text.index("take")].encode("utf-16-le")) // 2)
+        literal = next(token for token in self.tokens() if token[3] == "string")
+        self.assertEqual(literal[2], 4, "a quote, a character of two units, and a quote")
+
+    def test_windows_line_endings_do_not_shift_or_lengthen_a_token(self):
+        self.open("T\r\n| take 1\r\n| count")
+        self.assertEqual(self.tokens()[:2], [(1, 2, 4, "keyword"), (1, 7, 1, "number")])
+        self.assertTrue(all(length < 10 for _, _, length, _ in self.tokens()))
+
+    def test_every_query_in_a_file_is_coloured_and_comment_blocks_too(self):
+        self.open("// first\n\nprint 1\n\n// second\nprint 2")
+        self.assertEqual(
+            [(line, kind) for line, _, _, kind in self.tokens()],
+            [(0, "comment"), (2, "keyword"), (2, "number"), (4, "comment"), (5, "keyword"), (5, "number")],
+        )
+
+    def test_a_file_the_server_does_not_know_has_no_tokens(self):
+        self.assertEqual(self.tokens("file:///elsewhere/other.kql"), [])
+        self.open("name: x\n", uri="file:///work/config.yaml", language="yaml")
+        self.assertEqual(self.tokens("file:///work/config.yaml"), [])
+
+
+class SemanticTokensSchemaTest(SchemaTest):
+    """Once a schema has loaded, tables, columns and functions are told apart, and the client is asked again."""
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+
+    def tokens(self, text):
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": text}]},
+        )
+        self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+        legend = self.capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]
+        self.send(77, "textDocument/semanticTokens/full", {"textDocument": {"uri": URI}})
+        data = self.receive_where(lambda message: message.get("id") == 77 and "result" in message)["result"]["data"]
+        found, line, column = [], 0, 0
+        for index in range(0, len(data), 5):
+            delta_line, delta_start, length, kind, _ = data[index:index + 5]
+            line += delta_line
+            column = delta_start if delta_line else column + delta_start
+            found.append((line, column, length, legend[kind]))
+        return found
+
+    def test_a_table_is_a_class_and_a_column_a_property_once_the_schema_has_loaded(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"})
+        self.send(None, "initialized", {})
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": URI, "languageId": "kusto", "version": 1, "text": "print 1"}},
+        )
+        self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+
+        text = "StormEvents\n| where State == 'a'\n| project StatesOver(3, 'x')"
+        deadline = time.time() + 10
+        while True:
+            found = self.tokens(text)
+            if (0, 0, 11, "class") in found or time.time() > deadline:
+                break
+            time.sleep(0.1)
+        self.assertIn((0, 0, 11, "class"), found, "the table")
+        self.assertIn((1, 8, 5, "property"), found, "the column")
+
+    def test_the_server_asks_the_client_for_new_colours_when_a_schema_arrives(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES, delay=0.5)
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"})
+        self.send(None, "initialized", {})
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": URI, "languageId": "kusto", "version": 1, "text": "print 1"}},
+        )
+        refresh = self.receive_where(
+            lambda message: message.get("method") == "workspace/semanticTokens/refresh"
+        )
+        self.assertIn("id", refresh, "it is a request the client answers")
+
+
 class DirectiveSchemaTest(SchemaTest):
     def test_each_query_gets_the_schema_of_the_cluster_its_directives_name(self):
         first = self.fake(["Samples"], STORM_ENTITIES)

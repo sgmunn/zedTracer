@@ -77,7 +77,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                     if (!clientReady)
                         return;
                     _ = RequestCodeLensRefreshAsync();
-                    // A schema that has arrived, or changed, decides what is a wrong name.
+                    // A schema that has arrived, or changed, decides what a name is and what is a wrong one.
+                    _ = RequestSemanticTokensRefreshAsync();
                     _ = RepublishDiagnosticsAsync();
                 };
                 ApplyInitializationOptions(parameters);
@@ -93,7 +94,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
                         executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand } },
-                        hoverProvider = true
+                        hoverProvider = true,
+                        semanticTokensProvider = new
+                        {
+                            legend = new { tokenTypes = SemanticTokens.Legend, tokenModifiers = Array.Empty<string>() },
+                            full = true
+                        }
                     },
                     serverInfo = new { name = "kusto-lsp", version = "0.1.0" }
                 };
@@ -166,6 +172,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 return GetSignatureHelp(parameters);
             case "textDocument/codeLens":
                 return GetCodeLenses(parameters);
+            case "textDocument/semanticTokens/full":
+                return GetSemanticTokens(parameters);
             case "workspace/executeCommand":
                 // The lenses that only show text name a command so that Zed treats them as clickable.
                 if (parameters.TryGetProperty("command", out var command)
@@ -242,6 +250,15 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             return null;
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
         return SignatureHelp.Get(queryText, GlobalsAt(document, offset), offset - queryStart);
+    }
+
+    private object GetSemanticTokens(JsonElement parameters)
+    {
+        var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
+        var tokens = uri is not null && documents.TryGetValue(uri, out var document)
+            ? SemanticTokens.Build(document, schema.GlobalsFor, schema.Defaults)
+            : [];
+        return new { data = tokens };
     }
 
     private object[] GetCodeLenses(JsonElement parameters)
@@ -406,6 +423,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             }
         }
         await RequestCodeLensRefreshAsync();
+        await RequestSemanticTokensRefreshAsync();
     }
 
     private void OnRunLogChanged()
@@ -445,7 +463,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             UpdateSpinner();
     }
 
-    private async Task RequestCodeLensRefreshAsync()
+    private Task RequestCodeLensRefreshAsync() => RequestRefreshAsync("workspace/codeLens/refresh");
+
+    /// <summary>What a name is, and so its colour, depends on the schema, so the colours are asked for again when it changes.</summary>
+    private Task RequestSemanticTokensRefreshAsync() => RequestRefreshAsync("workspace/semanticTokens/refresh");
+
+    private async Task RequestRefreshAsync(string method)
     {
         try
         {
@@ -453,12 +476,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             {
                 jsonrpc = "2.0",
                 id = Interlocked.Increment(ref nextRequestId),
-                method = "workspace/codeLens/refresh"
+                method
             });
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {
-            Console.Error.WriteLine($"Could not ask for a code lens refresh: {exception.Message}");
+            Console.Error.WriteLine($"Could not ask for {method}: {exception.Message}");
         }
     }
 
@@ -796,10 +819,17 @@ internal sealed class DocumentSnapshot
 
     public object PositionAt(int offset)
     {
+        var (line, character) = LineAndColumn(offset);
+        return new { line, character };
+    }
+
+    /// <summary>The line and the UTF-16 column of an offset, as LSP counts them.</summary>
+    public (int Line, int Character) LineAndColumn(int offset)
+    {
         offset = Math.Clamp(offset, 0, Text.Length);
         var line = lineStarts.BinarySearch(offset);
         if (line < 0)
             line = ~line - 1;
-        return new { line, character = offset - lineStarts[line] };
+        return (line, offset - lineStarts[line]);
     }
 }
