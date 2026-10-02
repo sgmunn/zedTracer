@@ -35,6 +35,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         crate::run_query::register(workspace, cx);
         crate::results_panel::register(workspace);
+        crate::query_parameters::register(workspace);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);

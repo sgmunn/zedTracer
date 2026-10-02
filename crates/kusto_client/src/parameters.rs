@@ -105,14 +105,20 @@ fn scalar_text(value: &Value) -> Option<String> {
     }
 }
 
-/// The text of a profiles file with another profile active, or `None` when the file has no such
-/// profile. Only the `active` line changes, so comments and layout stay.
-pub fn with_active_profile(text: &str, name: &str) -> Option<String> {
+/// The text of a profiles file with another profile active, or with none for `None`. The result
+/// is `None` when the file has no such profile. Only the `active` line changes, so comments and
+/// layout stay.
+pub fn with_active_profile(text: &str, name: Option<&str>) -> Option<String> {
     let profiles = ParameterProfiles::parse(text).ok()?;
-    if !profiles.profiles.iter().any(|profile| profile.name == name) {
+    if let Some(name) = name
+        && !profiles.profiles.iter().any(|profile| profile.name == name)
+    {
         return None;
     }
-    let line = format!("active: {}", serde_json::to_string(name).ok()?);
+    let line = match name {
+        Some(name) => format!("active: {}", serde_json::to_string(name).ok()?),
+        None => "active: null".to_string(),
+    };
     Some(if ACTIVE_LINE.is_match(text) {
         ACTIVE_LINE.replace(text, regex::NoExpand(&line)).into_owned()
     } else {
@@ -288,7 +294,7 @@ mod tests {
 
     #[test]
     fn making_a_profile_active_changes_only_the_active_line() {
-        let changed = with_active_profile(FILE, "Incident A").expect("the profile exists");
+        let changed = with_active_profile(FILE, Some("Incident A")).expect("the profile exists");
         assert_eq!(changed, FILE.replace("active: Incident B", "active: \"Incident A\""));
         assert_eq!(
             ParameterProfiles::parse(&changed).expect("still valid").active.as_deref(),
@@ -300,15 +306,22 @@ mod tests {
     fn a_file_with_no_active_line_gets_one_first() {
         let text = "profiles:\n  One:\n    a: b\n";
         assert_eq!(
-            with_active_profile(text, "One").as_deref(),
+            with_active_profile(text, Some("One")).as_deref(),
             Some("active: \"One\"\nprofiles:\n  One:\n    a: b\n")
         );
     }
 
     #[test]
+    fn no_profile_can_be_made_active() {
+        let changed = with_active_profile(FILE, None).expect("a valid file");
+        assert_eq!(changed, FILE.replace("active: Incident B", "active: null"));
+        assert_eq!(ParameterProfiles::parse(&changed).expect("still valid").active, None);
+    }
+
+    #[test]
     fn an_unknown_profile_cannot_be_made_active() {
-        assert_eq!(with_active_profile(FILE, "Incident C"), None);
-        assert_eq!(with_active_profile("active: [", "x"), None);
+        assert_eq!(with_active_profile(FILE, Some("Incident C")), None);
+        assert_eq!(with_active_profile("active: [", Some("x")), None);
     }
 
     #[test]

@@ -691,7 +691,7 @@ async fn log_run(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
 
     use fs::FakeFs;
@@ -770,7 +770,7 @@ mod tests {
     }
 
     /// Like [`setup_with`], with more files in the project, as a directory tree.
-    async fn setup_in<'a>(
+    pub(crate) async fn setup_in<'a>(
         cx: &'a mut TestAppContext,
         status: u16,
         answer: &'static str,
