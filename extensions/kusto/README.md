@@ -111,7 +111,7 @@ long it took, where it ran and the query's first line of code, after any comment
 (`// incident 123 — second try`), which makes a good label. Directive comments (`// :setDefaultDb(...)`) are not shown. Type to search the query text, the cluster, the
 database or an error message. Enter shows that result in the Results panel, and Cmd-Enter on macOS (Ctrl-Enter elsewhere)
 opens it in a tab. A failed run shows its error. The trash button that appears when you hover a row
-deletes that result's file; the row stays in the list, marked `result deleted`.
+deletes that result's file; the row stays in the list, marked `result moved or deleted`.
 
 The play button that appears when you hover a row runs that query again: the same text, on the same cluster
 and database, with the same values for its parameters as the original run. It does not use today's active
@@ -131,6 +131,22 @@ settings are deleted (a limit of 0 means no limit):
 
 Only files named like a run's result (`20261001-203917-<uuid>.ktt`) are ever deleted, so a result you saved into
 that folder yourself is safe, and so is any result open in a tab or in the panel of the window that ran the query.
+
+### Keeping a result
+
+A result is a normal `.ktt` file. To keep one, move or copy its file out of the history folder (the
+`kusto/history` folder in Zed's data folder) into your work folder: pruning only looks at that folder, so the file
+is yours to keep. A kept file opens in a tab like any other result, and the file carries what it needs to be
+understood and repeated, so it needs nothing from the history:
+
+- The **Query** tab (next to Data) shows the query the result came from, read-only and selectable, coloured
+  as Kusto, with where and when it ran and the values its parameters had.
+- **Run again** (at the right of the tabs) runs that query again on the cluster and database the file names, with
+  the parameter values the file holds, and shows the new result in the Results panel. The file itself does not
+  change.
+
+Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
+database. Files written before parameters were kept in them simply run without values.
 
 ## Schema from your clusters
 
