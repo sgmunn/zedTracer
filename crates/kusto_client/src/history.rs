@@ -1,7 +1,7 @@
 //! The runs kept in the history folder: what the picker lists, and which result files to delete
 //! when there are too many.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::run_log::RunRecord;
@@ -14,6 +14,8 @@ pub struct HistoryEntry {
     pub database: String,
     /// When the run started, as an RFC 3339 time.
     pub at: String,
+    /// The values the declared query parameters had in the run.
+    pub parameters: BTreeMap<String, String>,
     pub outcome: HistoryOutcome,
 }
 
@@ -40,14 +42,23 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
         .lines()
         .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
     {
-        let (cid, query, cluster, database, at, outcome) = match record {
+        let (cid, query, cluster, database, at, parameters, outcome) = match record {
             RunRecord::Started {
                 cid,
                 query,
                 cluster,
                 database,
                 at,
-            } => (cid, query, cluster, database, at, HistoryOutcome::NoResult),
+                parameters,
+            } => (
+                cid,
+                query,
+                cluster,
+                database,
+                at,
+                parameters,
+                HistoryOutcome::NoResult,
+            ),
             RunRecord::Finished {
                 cid,
                 query,
@@ -57,12 +68,14 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 duration_ms,
                 rows,
                 path,
+                parameters,
             } => (
                 cid,
                 query,
                 cluster,
                 database,
                 at,
+                parameters,
                 HistoryOutcome::Finished {
                     duration_ms,
                     rows,
@@ -76,12 +89,14 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 message,
+                parameters,
             } => (
                 cid,
                 query,
                 cluster,
                 database,
                 at,
+                parameters,
                 HistoryOutcome::Failed { message },
             ),
             RunRecord::Cancelled {
@@ -90,18 +105,32 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 cluster,
                 database,
                 at,
-            } => (cid, query, cluster, database, at, HistoryOutcome::NoResult),
+            } => (
+                cid,
+                query,
+                cluster,
+                database,
+                at,
+                BTreeMap::new(),
+                HistoryOutcome::NoResult,
+            ),
         };
-        let entry = HistoryEntry {
+        let mut entry = HistoryEntry {
             cid: cid.clone(),
             query,
             cluster,
             database,
             at,
+            parameters,
             outcome,
         };
         match positions.get(&cid) {
-            Some(&position) => entries[position] = entry,
+            Some(&position) => {
+                if entry.parameters.is_empty() {
+                    entry.parameters = std::mem::take(&mut entries[position].parameters);
+                }
+                entries[position] = entry;
+            }
             None => {
                 positions.insert(cid, entries.len());
                 entries.push(entry);
@@ -198,6 +227,7 @@ mod tests {
             cluster: "help.kusto.windows.net".into(),
             database: "Samples".into(),
             at: at.into(),
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -211,6 +241,7 @@ mod tests {
             duration_ms: 1840,
             rows: 7,
             path: path.into(),
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -227,6 +258,7 @@ mod tests {
                 database: "Samples".into(),
                 at: "2026-10-01T11:00:00Z".into(),
                 message: "Semantic error".into(),
+                parameters: BTreeMap::new(),
             },
             started("c", "2026-10-01T12:00:00Z"),
         ]);
@@ -257,6 +289,24 @@ mod tests {
         );
         assert_eq!(entries[2].query, "query a");
         assert_eq!(entries[2].at, "2026-10-01T10:00:00Z");
+    }
+
+    #[test]
+    fn a_runs_parameters_survive_the_records_that_follow_its_start() {
+        let mut start = started("a", "2026-10-01T10:00:00Z");
+        if let RunRecord::Started { parameters, .. } = &mut start {
+            parameters.insert("raid".into(), "abc".into());
+        }
+        let text = log(&[start, finished("a", "2026-10-01T10:00:00Z", "/h/a.ktt")]);
+        let entries = history_entries(&text);
+        assert_eq!(
+            entries[0].parameters,
+            BTreeMap::from([("raid".to_string(), "abc".to_string())])
+        );
+        assert!(matches!(
+            entries[0].outcome,
+            HistoryOutcome::Finished { .. }
+        ));
     }
 
     #[test]
