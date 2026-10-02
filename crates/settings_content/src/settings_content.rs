@@ -1401,6 +1401,40 @@ pub struct KustoResultsSettingsContent {
     /// A colour is a hex string such as "#f14c4c40", and an empty string leaves that level
     /// without a tint.
     pub severity_colors: Option<KustoSeverityColorsContent>,
+
+    /// Which columns of a trace table play which part, for traces that do not use the built-in
+    /// column names. The first schema that applies to a table is used; roles a schema leaves
+    /// out keep their built-in names.
+    ///
+    /// Default: []
+    pub trace_schemas: Option<Vec<KustoTraceSchemaContent>>,
+}
+
+/// The column names one kind of trace uses for the parts the activity and sequence views read.
+/// A schema applies to a table only when every column it names, and every column in
+/// `requires`, is in the table.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoTraceSchemaContent {
+    /// A name for the schema.
+    pub name: Option<String>,
+    /// Columns that must all be present for the schema to apply.
+    pub requires: Option<Vec<String>>,
+    /// The column holding an activity's id. Built-in: `CurrentActivityId`.
+    pub activity_id: Option<String>,
+    /// The column holding the id of an activity's parent. Built-in: `ParentActivityId`.
+    pub parent_activity_id: Option<String>,
+    /// The column naming what an event marks. Built-in: `MarkerName`.
+    pub marker: Option<String>,
+    /// The column naming who logged the event, usually a process. Built-in: `ProcessName`.
+    pub actor: Option<String>,
+    /// The column holding when the event happened. Built-in: `TIMESTAMP`.
+    pub timestamp: Option<String>,
+    /// The column holding severity from 1 (critical) to 5 (verbose). Built-in: `level`, then
+    /// `severity`.
+    pub severity: Option<String>,
+    /// The column holding the event's message. Built-in: `MessageText`.
+    pub message: Option<String>,
 }
 
 /// One row tint for each severity level of a Kusto result.

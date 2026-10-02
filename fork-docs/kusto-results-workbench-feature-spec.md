@@ -530,7 +530,7 @@ The activity view and the severity colours look for fixed column names (`Current
 | TRC-5 | P2 | A schema can be set for a single query or file, for example in a connection-style comment like `// :setDefaultCluster(...)`. Not decided. |
 | TRC-6 | P1 | When a tab is not offered because a role is missing, the tab bar says which role could not be resolved, so the user knows what to configure. |
 
-**Status.** TRC-1, TRC-2 and TRC-4 for the activity view and severity colours, and SEQ-2 to SEQ-12, SEQ-15 (text) and the nesting limit are built in `crates/kusto_results` (`trace_schema.rs`, `sequence.rs`), with tests. Not built yet: the settings for TRC-3, the tab and the Copy action (SEQ-1, SEQ-15, SEQ-16), SEQ-13, SEQ-14, SEQ-18 to SEQ-22, TRC-5 and TRC-6. The existing UI still uses the built-in column names.
+**Status.** TRC-1 to TRC-4 are built for the activity view and the severity colours: `trace_schema.rs` in `crates/kusto_results`, and the `kusto_results.trace_schemas` setting, read by the grid and the viewer in `crates/kusto_results_ui`. SEQ-2 to SEQ-12, SEQ-15 (text) and the nesting limit are built in `sequence.rs`, with tests. A change to the setting applies to results opened afterwards, not to ones already open. Not built yet: the tab and the Copy action (SEQ-1, SEQ-15, SEQ-16), SEQ-13, SEQ-14, SEQ-18 to SEQ-22, TRC-5 and TRC-6.
 
 ## 6. Acceptance vectors
 

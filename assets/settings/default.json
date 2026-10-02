@@ -139,6 +139,11 @@
       "normal": "#89d1851f",
       "verbose": "#75beff17",
     },
+    // Which columns of a trace table play which part, for traces that do not use the built-in
+    // names. Each entry names any of: "activity_id", "parent_activity_id", "marker", "actor",
+    // "timestamp", "severity", "message" and may list "requires" columns. The first entry whose
+    // columns are all in the table is used.
+    "trace_schemas": [],
   },
   // Markdown preview settings
   "markdown_preview": {

@@ -31,7 +31,7 @@ Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projec
 ```sh
 cargo test -p kusto_results
 cargo test -p kusto_results --release --test sample_fixtures -- --ignored --nocapture   # core scale baseline
-cargo test -p kusto_results_ui --profile release-fast --lib
+cargo test -p kusto_results_ui --lib   # the dev profile: the UI tests find elements by debug selectors, which release-fast compiles out (29 of them fail there)
 cargo test -p kusto_results_ui --profile release-fast --lib -- --ignored --nocapture frame_time
 ./script/clippy -p kusto_results -p kusto_results_ui -p kusto_client
 cargo test -p kusto_client                       # fake service, no network
@@ -41,7 +41,7 @@ dotnet build extensions/kusto/server/KustoLanguageServer.csproj --no-restore && 
 ./extensions/kusto/install-server.sh              # then restart the language server in Zed
 ```
 
-Notes: `--offline` fails on this workspace (missing index entry), so build online. First build of `kusto_results_ui` tests takes many minutes (editor, workspace, project); use `release-fast`. Bash `sleep` is blocked: run long jobs with `run_in_background` and wait for the notification.
+Notes: `--offline` fails on this workspace (missing index entry), so build online. First build of `kusto_results_ui` tests takes many minutes (editor, workspace, project); use the dev profile for the tests, which need debug assertions, and `release-fast` only for the timing tests. Bash `sleep` is blocked: run long jobs with `run_in_background` and wait for the notification.
 
 ## Decisions taken
 

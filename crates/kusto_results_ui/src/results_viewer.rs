@@ -13,10 +13,11 @@ use gpui::{
     SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::activity::{build_projection, has_activity_columns};
+use kusto_results::activity::build_projection_with;
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
+use settings::Settings as _;
 use text::LineEnding;
 use ui::{Button, Icon, IconName, prelude::*};
 use util::rel_path::RelPath;
@@ -27,6 +28,7 @@ use worktree::Worktree;
 
 use crate::grid::{ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
+use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
 use crate::structured_view::StructuredView;
@@ -457,8 +459,12 @@ impl ResultsViewer {
             .grid
             .as_ref()
             .map(|grid| Self::save_layouts_of(grid, cx));
-        self.can_show_structured =
-            self.grid.is_some() && result.tables.first().is_some_and(has_activity_columns);
+        let settings = ResultsSettings::get_global(cx);
+        self.can_show_structured = self.grid.is_some()
+            && result
+                .tables
+                .first()
+                .is_some_and(|table| settings.trace_columns(table).supports_activity());
         // What the structured view was built from has changed.
         self.structured = None;
         self._structured_subscription = None;
@@ -565,12 +571,18 @@ impl ResultsViewer {
     /// Builds the activity projection away from the window, then the view.
     fn build_structured(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
+        let settings = ResultsSettings::get_global(cx);
+        let columns = result
+            .tables
+            .first()
+            .map(|table| settings.trace_columns(table));
         self.structured = Some(Structured::Building {
             _task: cx.spawn_in(window, async move |this, cx| {
                 let for_projection = result.clone();
                 let projection = cx
                     .background_spawn(async move {
-                        for_projection.tables.first().and_then(build_projection)
+                        let table = for_projection.tables.first()?;
+                        build_projection_with(table, &columns?)
                     })
                     .await;
                 this.update_in(cx, |this, window, cx| {
@@ -1218,5 +1230,93 @@ mod tests {
             trace.read_with(cx, |viewer, _| viewer.structured_view().is_some()),
             "switching back keeps the structured view"
         );
+    }
+
+    /// TRC-3, TRC-4: a trace whose columns are not named like the built-in ones offers the
+    /// Structured tab once a schema in the settings names them.
+    #[gpui::test]
+    async fn a_trace_schema_in_the_settings_offers_the_structured_tab(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let spans = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "SpanId", "type": "string" },
+                    { "name": "ParentSpanId", "type": "string" },
+                    { "name": "Message", "type": "string" },
+                ],
+                "rows": [["a", "", "start"], ["b", "a", "child"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "spans.ktt": spans, "again.ktt": spans }))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let without = open("spans.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(!without.read_with(cx, |viewer, _| viewer.can_show_structured));
+
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "trace_schemas": [
+                            { "name": "spans", "activity_id": "SpanId",
+                              "parent_activity_id": "ParentSpanId" }
+                        ] } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+        });
+        let with = open("again.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(with.read_with(cx, |viewer, _| viewer.can_show_structured));
+
+        with.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Structured, window, cx)
+        });
+        cx.run_until_parked();
+        let view = with
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built from the schema");
+        assert!(view.read_with(cx, |view, cx| view.grid().read(cx).visible_row_count()) > 0);
     }
 }
