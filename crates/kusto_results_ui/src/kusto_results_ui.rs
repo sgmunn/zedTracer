@@ -12,6 +12,7 @@ mod results_settings;
 mod results_viewer;
 mod row_details_panel;
 mod run_query;
+mod save_result;
 mod structured_view;
 
 pub use activity_tree::{ActivityTree, ActivityTreeEvent};

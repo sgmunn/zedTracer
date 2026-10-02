@@ -29,6 +29,7 @@ use workspace::{ModalView, OpenOptions, OpenVisible, Workspace};
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsViewer;
 use crate::run_query::{KustoSettings, RerunQuery, display};
+use crate::save_result::{SaveResult, suggested_local_file_name};
 
 actions!(
     kusto,
@@ -163,10 +164,13 @@ async fn load_rows(fs: &dyn Fs) -> Vec<Row> {
     rows
 }
 
+/// What a query with nothing in it is called.
+pub(crate) const NO_QUERY_TEXT: &str = "(no query text)";
+
 /// What tells a query apart in the list: the comments it starts with, which people write for that
 /// purpose, then its first line of code. Directives that say where it runs are not comments to
 /// read.
-fn title(query: &str) -> String {
+pub(crate) fn title(query: &str) -> String {
     let mut comments = Vec::new();
     let mut code = None;
     for line in query.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -185,7 +189,7 @@ fn title(query: &str) -> String {
     }
     match (comments.is_empty(), code) {
         (true, Some(code)) => code.to_string(),
-        (true, None) => "(no query text)".to_string(),
+        (true, None) => NO_QUERY_TEXT.to_string(),
         (false, Some(code)) => format!("{} — {code}", comments.join(" · ")),
         (false, None) => comments.join(" · "),
     }
@@ -347,6 +351,25 @@ impl HistoryDelegate {
         window.dispatch_action(action.boxed_clone(), cx);
     }
 
+    /// Closes the picker and asks where to save a copy of a row's result.
+    fn save(&mut self, row_index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        let Some(row) = self.rows.get(row_index) else {
+            return;
+        };
+        let HistoryOutcome::Finished { path, .. } = &row.entry.outcome else {
+            return;
+        };
+        let action = SaveResult {
+            path: Some(path.to_string_lossy().into_owned()),
+            suggested_name: Some(suggested_local_file_name(
+                &row.entry.query,
+                Some(&row.entry.at),
+            )),
+        };
+        self.dismissed(window, cx);
+        window.dispatch_action(action.boxed_clone(), cx);
+    }
+
     fn delete(&mut self, row_index: usize, cx: &mut Context<Picker<Self>>) {
         let Some(row) = self.rows.get_mut(row_index) else {
             return;
@@ -470,15 +493,25 @@ impl PickerDelegate for HistoryDelegate {
                         })),
                 )
                 .when(can_delete, |buttons| {
-                    buttons.child(
-                        IconButton::new(("delete-result", ix), IconName::Trash)
-                            .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Delete this result"))
-                            .on_click(cx.listener(move |picker, _, _, cx| {
-                                cx.stop_propagation();
-                                picker.delegate.delete(row_index, cx);
-                            })),
-                    )
+                    buttons
+                        .child(
+                            IconButton::new(("save-result", ix), IconName::Download)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Save a copy in your project"))
+                                .on_click(cx.listener(move |picker, _, window, cx| {
+                                    cx.stop_propagation();
+                                    picker.delegate.save(row_index, window, cx);
+                                })),
+                        )
+                        .child(
+                            IconButton::new(("delete-result", ix), IconName::Trash)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Delete this result"))
+                                .on_click(cx.listener(move |picker, _, _, cx| {
+                                    cx.stop_propagation();
+                                    picker.delegate.delete(row_index, cx);
+                                })),
+                        )
                 }),
         );
         Some(item)

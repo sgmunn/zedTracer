@@ -41,6 +41,7 @@ pub fn init(cx: &mut App) {
         crate::results_panel::register(workspace);
         crate::query_parameters::register(workspace);
         crate::history::register(workspace);
+        crate::save_result::register(workspace);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
@@ -489,6 +490,25 @@ impl ResultsViewer {
         self.query_view = Some(cx.new(|cx| QueryView::new(&result, languages, window, cx)));
     }
 
+    /// Saves a copy of this result's file into the project, under a name made from its query.
+    pub(crate) fn save_action(&self, cx: &App) -> Option<crate::save_result::SaveResult> {
+        let file = self.results_file.read(cx);
+        let path = file
+            ._worktree
+            .read(cx)
+            .absolutize(&file.project_path.path)
+            .to_string_lossy()
+            .into_owned();
+        let query = file.result.query.as_deref().unwrap_or_default();
+        Some(crate::save_result::SaveResult {
+            path: Some(path),
+            suggested_name: Some(crate::save_result::suggested_local_file_name(
+                query,
+                file.result.execution_started_at.as_deref(),
+            )),
+        })
+    }
+
     /// Runs the query of this result again, if the file says where it ran, with the values its
     /// parameters had.
     pub(crate) fn rerun_action(&self, cx: &App) -> Option<RerunQuery> {
@@ -597,6 +617,7 @@ impl Render for ResultsViewer {
         };
         let mode = self.mode;
         let rerun = self.rerun_action(cx);
+        let save = self.save_action(cx);
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
@@ -640,6 +661,19 @@ impl Render for ResultsViewer {
                             )
                         })
                         .child(div().flex_1())
+                        .when_some(save, |bar, action| {
+                            bar.child(
+                                div().debug_selector(|| "save-button".to_string()).child(
+                                    Button::new("results-save", "Save a copy…")
+                                        .tooltip(ui::Tooltip::text(
+                                            "Save a copy of this result in your project to keep it",
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(action.boxed_clone(), cx)
+                                        }),
+                                ),
+                            )
+                        })
                         .when_some(rerun, |bar, action| {
                             bar.child(
                                 div().debug_selector(|| "rerun-button".to_string()).child(
