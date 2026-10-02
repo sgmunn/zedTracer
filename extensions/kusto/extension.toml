@@ -12,7 +12,10 @@ commit = "8353a1296607d6ba33db7c7e312226e5fc83e8ce"
 
 [language_servers.kusto-lsp]
 name = "Kusto Language Server"
-languages = ["Kusto"]
+# YAML is listed for the parameter profile files, which get a `Make Active` lens. The server leaves
+# every other YAML file alone.
+languages = ["Kusto", "YAML"]
 
 [language_servers.kusto-lsp.language_ids]
 Kusto = "kusto"
+YAML = "yaml"

@@ -100,6 +100,14 @@ active profile lacks a declared parameter. These actions are also in the command
 - `kusto: open parameters` (the project's file, started from an example when it does not exist)
 - `kusto: open query parameters` (the file beside the query, started from the profiles that apply)
 
+Open a profiles file and each profile in it has a lens: **✓ Active** above the profile that is active and
+**Make Active** above each of the others. Clicking Make Active changes the `active:` line in the open file
+(only that line, so your cursor, comments and other unsaved edits stay) and saves it. The lens follows what is in
+the editor, not what is on disk. To do this the language server is also attached to YAML files; it ignores every
+YAML file except `.kusto/parameters.yaml` and `<name>.parameters.yaml`, for which it gives nothing but these
+lenses, but it does mean opening any YAML file starts the language server. Zed's own YAML support is
+unaffected.
+
 The editor and the language server read the declarations and the files with the same rules, and agree on the declared names
 through `fork-docs/samples/query-parameters.json`.
 

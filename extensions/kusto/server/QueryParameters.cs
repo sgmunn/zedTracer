@@ -29,6 +29,21 @@ internal static partial class QueryParameters
     [GeneratedRegex(@"\bdeclare\s+query_parameters\s*\(", RegexOptions.IgnoreCase)]
     private static partial Regex Declaration();
 
+    /// <summary>Whether a document is a profiles file: `.kusto/parameters.yaml`, or `<name>.parameters.yaml`.</summary>
+    public static bool IsProfilesFile(string documentUri)
+    {
+        if (!Uri.TryCreate(documentUri, UriKind.Absolute, out var uri) || !uri.IsFile)
+            return false;
+        var path = uri.LocalPath.Replace('\\', '/');
+        return path.EndsWith("/.kusto/parameters.yaml", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".parameters.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether a document is YAML, of any kind, which is never a query.</summary>
+    public static bool IsYaml(string documentUri) =>
+        documentUri.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
+        || documentUri.EndsWith(".yml", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The files to look in for a document, nearest first.</summary>
     public static IReadOnlyList<string> FilesFor(string documentUri, IReadOnlyList<string> workspaceFolders)
     {
@@ -145,6 +160,31 @@ internal static partial class QueryParameters
         return new ParameterProfiles(
             profiles.Any(profile => profile.Name == active) ? active : null,
             profiles);
+    }
+
+    /// <summary>The profiles a file names, where each name is written (0-based line and column) and how long it is.</summary>
+    public static List<(string Name, int Line, int Column, int Length)> ProfileKeys(string text)
+    {
+        var keys = new List<(string, int, int, int)>();
+        var stream = new YamlStream();
+        try
+        {
+            stream.Load(new StringReader(text));
+        }
+        catch (YamlException)
+        {
+            return keys;
+        }
+        if (stream.Documents.Count == 0
+            || stream.Documents[0].RootNode is not YamlMappingNode root
+            || Find(root, "profiles") is not YamlMappingNode profiles)
+            return keys;
+        foreach (var (key, _) in profiles.Children)
+        {
+            if (key is YamlScalarNode { Value: { } name } && key.Start.Line > 0)
+                keys.Add((name, (int)key.Start.Line - 1, (int)key.Start.Column - 1, (int)(key.End.Index - key.Start.Index)));
+        }
+        return keys;
     }
 
     private static YamlNode? Find(YamlMappingNode mapping, string key) =>

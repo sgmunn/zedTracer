@@ -1138,6 +1138,151 @@ class ParameterLensTest(unittest.TestCase):
             self.assertEqual(self.title(), expected, case["name"])
 
 
+class ProfilesFileLensTest(unittest.TestCase):
+    """The `Make Active` lens in a profiles file, and the YAML files the server leaves alone."""
+
+    PROFILES = (
+        "# who is on call\nactive: A\nprofiles:\n  A:\n    raid: from-a\n"
+        "  \"Incident B\":\n    raid: from-b\n  C:\n    raid: from-c\n"
+    )
+    SHARED = "file:///work/project/.kusto/parameters.yaml"
+
+    def setUp(self):
+        self.process = None
+        self.next_request = 40
+        LanguageServerTest.start_server(
+            self, None, {}, {"KUSTO_LSP_TEST_TOKEN": "unused"}
+        )
+
+    def tearDown(self):
+        self.process.terminate()
+        try:
+            self.process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.communicate()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+
+    def open(self, uri, text, language="yaml"):
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": uri, "languageId": language, "version": 1, "text": text}},
+        )
+
+    def change(self, uri, text):
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": text}]},
+        )
+
+    def ask(self, method, parameters):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(request_id, method, parameters)
+        while True:
+            message = self.receive()
+            if message.get("id") == request_id and "result" in message:
+                return message["result"]
+            self.assertNotEqual(
+                message.get("method"),
+                "textDocument/publishDiagnostics",
+                f"a YAML file got diagnostics: {message}",
+            )
+
+    def lenses(self, uri):
+        return self.ask("textDocument/codeLens", {"textDocument": {"uri": uri}})
+
+    def test_the_active_profile_is_marked_and_the_others_can_be_made_active(self):
+        self.open(self.SHARED, self.PROFILES)
+        lenses = self.lenses(self.SHARED)
+
+        by_line = {lens["range"]["start"]["line"]: lens for lens in lenses}
+        self.assertEqual(sorted(by_line), [3, 5, 7])
+        active = by_line[3]["command"]
+        self.assertEqual(active["title"], "✓ Active")
+        self.assertEqual(active["command"], "kusto.noop")
+
+        other = by_line[5]["command"]
+        self.assertEqual(other["title"], "Make Active")
+        self.assertEqual(other["command"], "zed.dispatchAction")
+        self.assertEqual(other["arguments"], ["kusto::MakeParameterProfileActive", {"name": "Incident B"}])
+        self.assertEqual(by_line[7]["command"]["arguments"][1], {"name": "C"})
+
+    def test_a_lens_sits_on_the_name_of_its_profile(self):
+        self.open(self.SHARED, self.PROFILES)
+        lenses = {lens["range"]["start"]["line"]: lens for lens in self.lenses(self.SHARED)}
+        self.assertEqual(lenses[3]["range"], {"start": {"line": 3, "character": 2}, "end": {"line": 3, "character": 3}})
+        self.assertEqual(lenses[5]["range"]["start"], {"line": 5, "character": 2})
+        self.assertEqual(lenses[5]["range"]["end"], {"line": 5, "character": 14}, "the quotes are part of the name")
+
+    def test_the_text_of_the_editor_decides_not_the_text_on_disk(self):
+        self.open(self.SHARED, self.PROFILES)
+        self.change(self.SHARED, self.PROFILES.replace("active: A", 'active: "Incident B"'))
+        titles = {
+            lens["range"]["start"]["line"]: lens["command"]["title"] for lens in self.lenses(self.SHARED)
+        }
+        self.assertEqual(titles, {3: "Make Active", 5: "✓ Active", 7: "Make Active"})
+
+    def test_a_file_beside_a_query_is_a_profiles_file_too(self):
+        uri = "file:///work/project/incident.parameters.yaml"
+        self.open(uri, "profiles:\n  Mine:\n    raid: x\n")
+        lenses = self.lenses(uri)
+        self.assertEqual([lens["command"]["title"] for lens in lenses], ["Make Active"])
+
+    def test_no_profile_is_active_when_the_active_one_does_not_exist(self):
+        self.open(self.SHARED, self.PROFILES.replace("active: A", "active: Gone"))
+        titles = {lens["command"]["title"] for lens in self.lenses(self.SHARED)}
+        self.assertEqual(titles, {"Make Active"})
+
+    def test_a_file_that_is_not_yaml_or_has_no_profiles_has_no_lenses(self):
+        self.open(self.SHARED, "active: [")
+        self.assertEqual(self.lenses(self.SHARED), [])
+        self.change(self.SHARED, "# nothing yet\n")
+        self.assertEqual(self.lenses(self.SHARED), [])
+        self.change(self.SHARED, "profiles: [a, b]\n")
+        self.assertEqual(self.lenses(self.SHARED), [])
+
+    def test_other_yaml_files_get_no_lenses_diagnostics_or_completion(self):
+        uri = "file:///work/project/.github/workflows/build.yaml"
+        self.open(uri, "name: build\non: push\njobs:\n  build:\n    runs-on: ubuntu\n")
+        self.assertEqual(self.lenses(uri), [])
+        self.change(uri, "name: build\nprofiles:\n  A:\n    x: y\n")
+        self.assertEqual(self.lenses(uri), [])
+        completions = self.ask(
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 3}},
+        )
+        self.assertEqual(completions, [])
+        self.send(None, "textDocument/didClose", {"textDocument": {"uri": uri}})
+
+    def test_a_profiles_file_gets_no_query_completion_or_diagnostics(self):
+        self.open(self.SHARED, self.PROFILES)
+        completions = self.ask(
+            "textDocument/completion",
+            {"textDocument": {"uri": self.SHARED}, "position": {"line": 0, "character": 2}},
+        )
+        self.assertEqual(completions, [])
+        self.change(self.SHARED, self.PROFILES + "this is : not a query\n")
+        self.lenses(self.SHARED)
+
+    def test_a_closed_profiles_file_has_no_lenses_and_queries_are_unaffected(self):
+        self.open(self.SHARED, self.PROFILES)
+        self.send(None, "textDocument/didClose", {"textDocument": {"uri": self.SHARED}})
+        self.assertEqual(self.lenses(self.SHARED), [])
+
+        self.open(URI, "T | take 1", language="kusto")
+        message = self.receive()
+        self.assertEqual(message["method"], "textDocument/publishDiagnostics")
+        self.assertEqual(message["params"]["uri"], URI)
+        self.assertTrue(
+            [lens for lens in self.lenses(URI) if lens["command"]["title"] == "▶ Run"]
+        )
+
+
 class DirectiveSchemaTest(SchemaTest):
     def test_each_query_gets_the_schema_of_the_cluster_its_directives_name(self):
         first = self.fake(["Samples"], STORM_ENTITIES)

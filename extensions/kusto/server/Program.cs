@@ -8,6 +8,8 @@ await new KustoLanguageServer(Console.OpenStandardInput(), Console.OpenStandardO
 
 internal sealed partial class KustoLanguageServer(Stream input, Stream output)
 {
+    /// <summary>The text of the open profiles files, which are YAML and not queries.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> profilesFiles = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writeLock = new(1, 1);
     private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default, new SchemaCache(null));
@@ -98,6 +100,13 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             {
                 var textDocument = parameters.GetProperty("textDocument");
                 var uri = textDocument.GetProperty("uri").GetString()!;
+                // Zed offers this server every YAML file, and only the profiles files are its business.
+                if (QueryParameters.IsYaml(uri))
+                {
+                    if (QueryParameters.IsProfilesFile(uri))
+                        profilesFiles[uri] = textDocument.GetProperty("text").GetString() ?? "";
+                    return null;
+                }
                 var document = new DocumentSnapshot(textDocument.GetProperty("text").GetString() ?? "");
                 documents[uri] = document;
                 WatchParameterFiles();
@@ -109,6 +118,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             {
                 var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString()!;
                 var changes = parameters.GetProperty("contentChanges");
+                if (QueryParameters.IsYaml(uri))
+                {
+                    if (profilesFiles.ContainsKey(uri) && changes.GetArrayLength() > 0)
+                        profilesFiles[uri] = changes[changes.GetArrayLength() - 1].GetProperty("text").GetString() ?? "";
+                    return null;
+                }
                 if (changes.GetArrayLength() > 0)
                 {
                     var document = new DocumentSnapshot(changes[changes.GetArrayLength() - 1]
@@ -122,6 +137,11 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "textDocument/didClose":
             {
                 var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString()!;
+                if (QueryParameters.IsYaml(uri))
+                {
+                    profilesFiles.TryRemove(uri, out _);
+                    return null;
+                }
                 documents.TryRemove(uri, out _);
                 WatchParameterFiles();
                 await SendAsync(new
@@ -221,6 +241,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private object[] GetCodeLenses(JsonElement parameters)
     {
         var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
+        if (uri is not null && profilesFiles.TryGetValue(uri, out var profilesText))
+            return CodeLenses.ForProfilesFile(profilesText);
         if (uri is null || !documents.TryGetValue(uri, out var document))
             return [];
         // A project's .kusto folder may have appeared since the file was opened.
