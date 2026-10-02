@@ -86,7 +86,6 @@ impl ResultsPanel {
         cx.notify();
     }
 
-    #[cfg(test)]
     pub(crate) fn shown_viewer(&self) -> Option<&Entity<ResultsViewer>> {
         match &self.content {
             Content::Result(shown) => Some(&shown.viewer),

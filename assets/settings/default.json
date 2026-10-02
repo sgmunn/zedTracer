@@ -121,6 +121,10 @@
     // Where a run's result is shown: "panel" (the Results panel, each run replaces the last) or
     // "editor" (a tab for every run)
     "results_location": "panel",
+    // How many saved results the history keeps, and how many megabytes they may use together.
+    // The oldest are deleted past either limit. Zero is no limit.
+    "history_max_results": 50,
+    "history_max_megabytes": 1024,
   },
   // Kusto results grid settings
   "kusto_results": {
