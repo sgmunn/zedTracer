@@ -5961,3 +5961,69 @@ fn keyword_and_function_theme() -> SyntaxTheme {
 fn theme_highlight_id(theme: &SyntaxTheme, capture_name: &str) -> HighlightId {
     HighlightId::new(theme.highlight_id(capture_name).unwrap())
 }
+
+#[gpui::test]
+fn test_chunks_keep_their_diagnostics_after_a_seek_without_tree_sitter(cx: &mut TestAppContext) {
+    // A language server can colour a language's text on its own, with tree-sitter off. The editor
+    // seeks the chunks of a buffer whenever it crosses a block, such as a code lens, and the
+    // diagnostics of the text it seeks to must still be there.
+    let buffer = cx.new(|cx| {
+        let mut buffer = Buffer::local("print foo bar", cx);
+        let diagnostics = DiagnosticSet::new(
+            [DiagnosticEntry::new(
+                text::PointUtf16::new(0, 6)..text::PointUtf16::new(0, 9),
+                Diagnostic {
+                    severity: lsp::DiagnosticSeverity::ERROR,
+                    ..Default::default()
+                },
+            )],
+            &buffer,
+        );
+        buffer.update_diagnostics(lsp::LanguageServerId(0), diagnostics, cx);
+        buffer
+    });
+    let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+
+    let severities = |chunks: &mut BufferChunks<'_>| {
+        chunks
+            .map(|chunk| (chunk.text.to_string(), chunk.diagnostic_severity))
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![
+        ("print ".to_string(), None),
+        ("foo".to_string(), Some(lsp::DiagnosticSeverity::ERROR)),
+        (" bar".to_string(), None),
+    ];
+
+    for tree_sitter in [false, true] {
+        let mut chunks = snapshot.chunks(
+            0..snapshot.len(),
+            LanguageAwareStyling {
+                tree_sitter,
+                diagnostics: true,
+            },
+        );
+        assert_eq!(
+            severities(&mut chunks),
+            expected,
+            "tree_sitter: {tree_sitter}"
+        );
+
+        chunks.seek(0..snapshot.len());
+        assert_eq!(
+            severities(&mut chunks),
+            expected,
+            "after seeking to the same range, tree_sitter: {tree_sitter}"
+        );
+
+        chunks.seek(6..snapshot.len());
+        assert_eq!(
+            severities(&mut chunks),
+            vec![
+                ("foo".to_string(), Some(lsp::DiagnosticSeverity::ERROR)),
+                (" bar".to_string(), None),
+            ],
+            "after seeking into the diagnostic, tree_sitter: {tree_sitter}"
+        );
+    }
+}
