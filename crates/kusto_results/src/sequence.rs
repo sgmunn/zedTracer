@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::activity::ActivityProjection;
+use crate::activity::{ActivityProjection, Strength};
 use crate::result::Table;
 use crate::trace_schema::TraceColumns;
 use crate::typed::{TICKS_PER_SECOND, parse_datetime_ticks};
@@ -33,8 +33,17 @@ pub struct SequenceOptions {
     pub wrapper_markers: Vec<String>,
     /// Trailing name segments that tell actors apart badly, such as `Service`.
     pub generic_actor_suffixes: Vec<String>,
-    pub note_characters: usize,
+    /// Warning messages that are routine, such as a request-completed line logged at warning
+    /// level. A loop's warning summary skips them. A `*` at either end matches any text.
+    pub routine_warnings: Vec<String>,
+    /// An arrow or step label is cut to this many characters.
+    pub label_characters: usize,
+    /// A note wraps at this many characters, for at most `note_lines` lines.
+    pub note_width: usize,
+    pub note_lines: usize,
     pub notes_per_call: usize,
+    /// Calls drawn before the rest are left out; a loop counts as one.
+    pub max_arrows: usize,
 }
 
 impl Default for SequenceOptions {
@@ -44,8 +53,12 @@ impl Default for SequenceOptions {
             collapse_repeats: true,
             wrapper_markers: vec!["*IncomingRequest".into()],
             generic_actor_suffixes: vec!["EntryPoint".into(), "Service".into()],
-            note_characters: 110,
+            routine_warnings: vec!["*request completed*".into()],
+            label_characters: 64,
+            note_width: 60,
+            note_lines: 3,
             notes_per_call: 3,
+            max_arrows: 300,
         }
     }
 }
@@ -54,6 +67,9 @@ impl Default for SequenceOptions {
 pub struct Actor {
     pub name: String,
     pub display: String,
+    /// Activities of this actor that logged an error and then finished normally. They are not
+    /// drawn as failures, but a count says they happened.
+    pub handled_errors: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,10 +106,20 @@ pub struct Call {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RepeatWarning {
+    pub actor: usize,
+    pub marker: String,
+    pub text: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Repeat {
     pub caller: usize,
     pub callee: usize,
     pub label: String,
+    /// The most frequent warning inside the repeated calls that is not routine.
+    pub warning: Option<RepeatWarning>,
     pub first_offset_seconds: Option<f64>,
     pub last_offset_seconds: Option<f64>,
     pub shortest_ms: Option<f64>,
@@ -164,6 +190,8 @@ struct Builder<'a> {
     /// the same failure passing through, not where it started.
     descendant_error: Vec<bool>,
     error_row: Vec<Option<usize>>,
+    handled_errors: Vec<usize>,
+    children: Vec<Vec<usize>>,
     /// Activities with an error of their own, by the call they run in.
     call_errors: Vec<Vec<usize>>,
     /// The same for activities that run in no call, by the root they belong to.
@@ -204,16 +232,28 @@ pub fn build_sequence(
         actor_of.push(id);
     }
 
-    let mut builder = Builder::new(table, projection, columns, options, actor_of);
-    let frames = builder.frames();
-    let omitted_calls = builder.omitted_calls;
+    let actor_count = actor_names.len();
+    let mut builder = Builder::new(table, projection, columns, options, actor_of, actor_count);
+    let mut frames = builder.frames();
+    let mut remaining = options.max_arrows;
+    let omitted_by_limit: usize = frames
+        .iter_mut()
+        .map(|frame| limit_items(&mut frame.items, &mut remaining))
+        .sum();
+    let omitted_calls = builder.omitted_calls + omitted_by_limit;
+    let handled_errors = std::mem::take(&mut builder.handled_errors);
     let (omitted_roots, omitted_activities) = builder.unframed(&frames);
     let order = actor_order(&frames, actor_names.len());
     let displays = display_names(&actor_names, &options.generic_actor_suffixes);
     let actors = actor_names
         .into_iter()
         .zip(displays)
-        .map(|(name, display)| Actor { name, display })
+        .zip(handled_errors)
+        .map(|((name, display), handled_errors)| Actor {
+            name,
+            display,
+            handled_errors,
+        })
         .collect();
     Some(SequenceDiagram {
         actors,
@@ -232,6 +272,7 @@ impl<'a> Builder<'a> {
         columns: &'a TraceColumns,
         options: &'a SequenceOptions,
         actor_of: Vec<usize>,
+        actor_count: usize,
     ) -> Self {
         let count = projection.activities.len();
         let mut builder = Self {
@@ -247,6 +288,8 @@ impl<'a> Builder<'a> {
             subtree_error: vec![false; count],
             descendant_error: vec![false; count],
             error_row: vec![None; count],
+            handled_errors: vec![0; actor_count],
+            children: Vec::new(),
             call_errors: Vec::new(),
             root_errors: HashMap::new(),
             calls: Vec::new(),
@@ -276,7 +319,15 @@ impl<'a> Builder<'a> {
                 self.start[index] = earliest;
                 self.end[index] = latest;
             }
-            self.error_row[index] = self.first_error_row(&activity.event_rows);
+            let error = self.first_error_row(&activity.event_rows);
+            let handled = activity
+                .severity
+                .is_some_and(|severity| severity.strength == Strength::Muted);
+            if error.is_some() && handled {
+                self.handled_errors[self.actor_of[index]] += 1;
+            } else {
+                self.error_row[index] = error;
+            }
         }
         self.trace_start = self.start.iter().flatten().min().copied();
     }
@@ -394,6 +445,7 @@ impl<'a> Builder<'a> {
             }
         }
 
+        self.children = children.clone();
         let mut preorder = Vec::with_capacity(activities.len());
         let mut stack: Vec<(usize, Option<usize>, usize)> =
             roots.iter().rev().map(|root| (*root, None, *root)).collect();
@@ -493,7 +545,7 @@ impl<'a> Builder<'a> {
             actor: self.actor_of[root],
             label: self
                 .marker_of(root)
-                .map(short_marker)
+                .map(|marker| shorten(&short_marker(marker), self.options.label_characters))
                 .unwrap_or_else(|| "(root)".to_string()),
             activity: root,
             duration_ms: self.duration_ms(self.start[root], self.end[root]),
@@ -551,7 +603,7 @@ impl<'a> Builder<'a> {
             .rev()
             .filter_map(|activity| self.marker_of(*activity))
             .find(|marker| !self.is_wrapper(marker))
-            .map(short_marker)
+            .map(|marker| shorten(&short_marker(marker), self.options.label_characters))
     }
 
     fn is_wrapper(&self, marker: &str) -> bool {
@@ -602,6 +654,7 @@ impl<'a> Builder<'a> {
             (None, Some(callee)) => callee.clone(),
             (None, None) => "call".to_string(),
         };
+        let label = shorten(&label, self.options.label_characters);
         Call {
             caller: data.caller_actor,
             callee: data.callee_actor,
@@ -655,10 +708,12 @@ impl<'a> Builder<'a> {
                 let shortest = durations.clone().reduce(f64::min);
                 let longest = durations.reduce(f64::max);
                 let first = &calls[0];
+                let warning = self.repeat_warning(&calls);
                 items.push(Item::Repeat(Repeat {
                     caller: first.caller,
                     callee: first.callee,
                     label: first.label.clone(),
+                    warning,
                     first_offset_seconds: first.offset_seconds,
                     last_offset_seconds: calls.last().and_then(|call| call.offset_seconds),
                     shortest_ms: shortest,
@@ -667,6 +722,63 @@ impl<'a> Builder<'a> {
                 }));
             }
         }
+    }
+
+    /// The warning logged most often inside the repeated calls, leaving out the routine ones.
+    fn repeat_warning(&self, calls: &[Call]) -> Option<RepeatWarning> {
+        let severity = self.columns.severity?;
+        let message = self.columns.message?;
+        let mut counts: Vec<RepeatWarning> = Vec::new();
+        for call in calls {
+            for kid in &call.activities {
+                let mut pending = vec![*kid];
+                while let Some(activity) = pending.pop() {
+                    pending.extend(self.children[activity].iter().copied());
+                    for row in &self.projection.activities[activity].event_rows {
+                        if severity_level(self.table.cell(*row, severity)) != Some(3) {
+                            continue;
+                        }
+                        let Some(cell) = self.table.cell(*row, message) else {
+                            continue;
+                        };
+                        let raw = cell.display_text();
+                        if raw.trim().is_empty() || self.is_routine_warning(&raw) {
+                            continue;
+                        }
+                        let text = note_text(&raw, self.options.note_width, self.options.note_lines);
+                        let marker = self
+                            .columns
+                            .marker
+                            .and_then(|column| self.table.cell(*row, column))
+                            .map(|cell| cell.display_text().trim().to_string())
+                            .filter(|marker| !marker.is_empty())
+                            .or_else(|| self.marker_of(activity).map(str::to_string))
+                            .map(|marker| short_marker(&marker))
+                            .unwrap_or_default();
+                        match counts
+                            .iter_mut()
+                            .find(|found| found.marker == marker && found.text == text)
+                        {
+                            Some(found) => found.count += 1,
+                            None => counts.push(RepeatWarning {
+                                actor: call.callee,
+                                marker,
+                                text,
+                                count: 1,
+                            }),
+                        }
+                    }
+                }
+            }
+        }
+        counts.into_iter().reduce(|best, next| if next.count > best.count { next } else { best })
+    }
+
+    fn is_routine_warning(&self, message: &str) -> bool {
+        self.options
+            .routine_warnings
+            .iter()
+            .any(|pattern| matches_pattern(pattern, message.trim()))
     }
 
     /// One note per distinct error, for the errors that started in this scope, so an error that
@@ -689,7 +801,9 @@ impl<'a> Builder<'a> {
                 .unwrap_or_default();
             let text = self
                 .message_of(row)
-                .map(|message| note_text(&message, self.options.note_characters))
+                .map(|message| {
+                    note_text(&message, self.options.note_width, self.options.note_lines)
+                })
                 .unwrap_or_default();
             let actor = self.actor_of[activity];
             match groups
@@ -736,6 +850,53 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Keeps the first `remaining` arrows in drawing order, a loop counting as one, and returns how
+/// many calls it left out.
+fn limit_items(items: &mut Vec<Item>, remaining: &mut usize) -> usize {
+    let mut omitted = 0;
+    let mut kept = Vec::with_capacity(items.len());
+    for item in std::mem::take(items) {
+        match item {
+            Item::Call(mut call) => {
+                if *remaining == 0 {
+                    omitted += 1 + count_calls(&call.items);
+                    continue;
+                }
+                *remaining -= 1;
+                omitted += limit_items(&mut call.items, remaining);
+                kept.push(Item::Call(call));
+            }
+            Item::Repeat(repeat) => {
+                if *remaining == 0 {
+                    omitted += repeat.calls.len();
+                    continue;
+                }
+                *remaining -= 1;
+                kept.push(Item::Repeat(repeat));
+            }
+            Item::Step(mut step) => {
+                omitted += limit_items(&mut step.items, remaining);
+                if !step.items.is_empty() {
+                    kept.push(Item::Step(step));
+                }
+            }
+        }
+    }
+    *items = kept;
+    omitted
+}
+
+fn count_calls(items: &[Item]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Call(call) => 1 + count_calls(&call.items),
+            Item::Repeat(repeat) => repeat.calls.len(),
+            Item::Step(step) => count_calls(&step.items),
+        })
+        .sum()
+}
+
 /// A row whose text says nothing about what went wrong: a later part of a split message, or a
 /// notice that a message was split.
 fn is_filler(text: &str) -> bool {
@@ -761,20 +922,64 @@ fn split_part_prefix(text: &str) -> Option<(usize, &str)> {
 }
 
 /// What a note says: the `message` of a JSON error when there is one, else the text itself,
-/// on one line and cut to `limit` characters.
-fn note_text(message: &str, limit: usize) -> String {
+/// wrapped at word boundaries to `width` characters and cut after `lines` lines. The lines are
+/// separated by `\n`.
+fn note_text(message: &str, width: usize, lines: usize) -> String {
     let text = match split_part_prefix(message.trim_start()) {
         Some((_, rest)) => rest,
         None => message.trim_start(),
     };
     let text = json_message(text).unwrap_or_else(|| text.to_string());
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() > limit {
-        let cut: String = one_line.chars().take(limit).collect();
-        format!("{}…", cut.trim_end())
-    } else {
-        one_line
+    wrap(&text, width, lines)
+}
+
+fn wrap(text: &str, width: usize, max_lines: usize) -> String {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cut = false;
+    'words: for word in text.split_whitespace() {
+        let mut word = word;
+        loop {
+            let current = lines.last().map_or(0, |line| line.chars().count());
+            let word_length = word.chars().count();
+            if !lines.is_empty() && current + 1 + word_length <= width {
+                if let Some(line) = lines.last_mut() {
+                    line.push(' ');
+                    line.push_str(word);
+                }
+                continue 'words;
+            }
+            if lines.len() == max_lines {
+                cut = true;
+                break 'words;
+            }
+            if word_length <= width {
+                lines.push(word.to_string());
+                continue 'words;
+            }
+            let split = word
+                .char_indices()
+                .nth(width)
+                .map_or(word.len(), |(index, _)| index);
+            lines.push(word[..split].to_string());
+            word = &word[split..];
+        }
     }
+    if cut {
+        if let Some(line) = lines.last_mut() {
+            *line = format!("{}…", line.trim_end());
+        }
+    }
+    lines.join("\n")
+}
+
+/// Cuts text to `limit` characters, ending in an ellipsis when it was cut.
+fn shorten(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// The value of the first `"message"` key, read without parsing the document, because a split
@@ -915,8 +1120,12 @@ impl SequenceDiagram {
             lines.push("    participant caller as (caller not in result)".to_string());
         }
         for actor in &self.order {
+            let handled = match self.actors[*actor].handled_errors {
+                0 => String::new(),
+                count => format!(" ⚠ {count}"),
+            };
             lines.push(format!(
-                "    participant {} as {}",
+                "    participant {} as {}{handled}",
                 alias(*actor),
                 clean(&self.actors[*actor].display)
             ));
@@ -945,7 +1154,7 @@ impl SequenceDiagram {
                 }
                 if self.omitted_calls > 0 {
                     parts.push(format!(
-                        "{} calls nested too deeply are not shown",
+                        "{} calls are not shown",
                         self.omitted_calls
                     ));
                 }
@@ -985,6 +1194,15 @@ impl SequenceDiagram {
                     ));
                     lines.push(format!("{indent}    {caller}->>{callee}: call"));
                     lines.push(format!("{indent}    {callee}-->>{caller}: done"));
+                    if let Some(warning) = &repeat.warning {
+                        lines.push(format!(
+                            "{indent}    Note over {}: ⚠ {}: {} ×{}",
+                            alias(warning.actor),
+                            clean(&warning.marker),
+                            clean_lines(&warning.text),
+                            warning.count
+                        ));
+                    }
                     lines.push(format!("{indent}end"));
                 }
                 Item::Step(step) => {
@@ -1013,7 +1231,7 @@ impl SequenceDiagram {
                 "{indent}Note over {}: ✗ {}: {}{count}",
                 alias(note.actor),
                 clean(&note.marker),
-                clean(&note.text)
+                clean_lines(&note.text)
             ));
         }
         if notes.omitted > 0 {
@@ -1054,6 +1272,11 @@ fn repeat_detail(repeat: &Repeat) -> String {
     } else {
         format!(" ({})", parts.join(", "))
     }
+}
+
+/// Like [`clean`] for text that holds line breaks, which become `<br/>`.
+fn clean_lines(text: &str) -> String {
+    text.split('\n').map(clean).collect::<Vec<_>>().join("<br/>")
 }
 
 /// Text that is safe inside a Mermaid line: `;` ends a statement and `#` and `%` start an
@@ -1335,7 +1558,6 @@ mod tests {
                 event("k2", "c2", "C", "Db", 14),
                 "1/3: {\"code\":\"InternalError\",\"message\":\"Row not found!\",\"timeStamp\":\"x\"",
             ),
-            event("k2", "c2", "C", "Db", 15),
         ]);
         let options = SequenceOptions {
             step_depth: None,
@@ -1372,6 +1594,132 @@ mod tests {
     }
 
     #[test]
+    fn an_error_the_activity_recovered_from_is_counted_not_drawn_as_a_failure() {
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "Ask", 10),
+            failing(event("k", "c", "B", "Entry", 11), "retrying after a timeout"),
+            event("k", "c", "B", "Entry", 12),
+        ]);
+        let result = diagram(&table);
+        let found = result.to_mermaid();
+        assert!(!result.frames[0].failed, "{found}");
+        assert!(!found.contains("retrying"), "{found}");
+        assert!(!found.contains("✗"), "{found}");
+        let b = result.actors.iter().find(|actor| actor.name == "B").expect("actor B");
+        assert_eq!(b.handled_errors, 1);
+        assert!(found.contains("as B ⚠ 1"), "{found}");
+    }
+
+    #[test]
+    fn long_text_wraps_at_words_and_is_cut_after_the_last_line() {
+        assert_eq!(wrap("one two three four", 9, 3), "one two\nthree\nfour");
+        assert_eq!(wrap("one two three four five six", 9, 2), "one two\nthree…");
+        assert_eq!(wrap("abcdefghij", 4, 3), "abcd\nefgh\nij");
+        assert_eq!(wrap("   ", 10, 3), "");
+        assert_eq!(shorten("short", 10), "short");
+        assert_eq!(shorten("a very long label", 8), "a very…");
+    }
+
+    #[test]
+    fn a_long_note_is_wrapped_with_line_breaks_that_mermaid_reads() {
+        let message = "the connection to the storage account was refused after several attempts";
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "Ask", 10),
+            failing(event("k", "c", "B", "Entry", 11), message),
+        ]);
+        let options = SequenceOptions {
+            note_width: 30,
+            ..SequenceOptions::default()
+        };
+        let text = diagram_with(&table, &options).expect("a sequence").to_mermaid();
+        let line = text.lines().find(|line| line.contains("Note over a1")).expect("a note");
+        assert!(line.contains("<br/>"), "{line}");
+        assert!(line.contains("storage<br/>account"), "{line}");
+    }
+
+    #[test]
+    fn a_long_label_is_cut() {
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "AVeryLongMarkerNameThatKeepsGoingAndGoingAndGoing", 10),
+            event("k", "c", "B", "Entry", 11),
+        ]);
+        let options = SequenceOptions {
+            label_characters: 20,
+            step_depth: None,
+            ..SequenceOptions::default()
+        };
+        let result = diagram_with(&table, &options).expect("a sequence");
+        let label = &calls(&result.frames[0].items)[0].label;
+        assert_eq!(label.chars().count(), 20);
+        assert!(label.ends_with('…'));
+    }
+
+    #[test]
+    fn arrows_beyond_the_limit_are_counted_not_drawn() {
+        let markers = ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"];
+        let ids: Vec<&'static str> = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"].to_vec();
+        let kids: Vec<&'static str> = ["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9"].to_vec();
+        let mut events = vec![event("r", "", "A", "Run", 0)];
+        for index in 0..10 {
+            let start = 10 + index as i64 * 10;
+            events.push(event(ids[index], "r", "A", markers[index], start));
+            events.push(event(kids[index], ids[index], "B", "Entry", start + 1));
+        }
+        let options = SequenceOptions {
+            max_arrows: 3,
+            step_depth: None,
+            ..SequenceOptions::default()
+        };
+        let result = diagram_with(&trace(events), &options).expect("a sequence");
+        assert_eq!(calls(&result.frames[0].items).len(), 3);
+        assert_eq!(result.omitted_calls, 7);
+        assert!(result.to_mermaid().contains("7 calls are not shown"));
+    }
+
+    fn warning_at(mut event: Event, message: &str) -> Event {
+        event.level = 3;
+        event.message = message.into();
+        event
+    }
+
+    #[test]
+    fn a_loop_says_which_warning_its_calls_logged_most_often() {
+        let mut events = vec![event("r", "", "A", "Run", 0)];
+        let callers = ["p0", "p1", "p2"];
+        let kids = ["k0", "k1", "k2"];
+        for index in 0..3 {
+            let start = 10 + index as i64 * 20;
+            events.push(event(callers[index], "r", "A", "Poll", start));
+            events.push(event(kids[index], callers[index], "B", "Entry", start + 1));
+            events.push(warning_at(
+                event(kids[index], callers[index], "B", "Entry", start + 2),
+                "Request completed in 5 ms",
+            ));
+            events.push(warning_at(
+                event(kids[index], callers[index], "B", "Entry", start + 3),
+                "token is empty",
+            ));
+            events.push(event(kids[index], callers[index], "B", "Entry", start + 4));
+        }
+        let options = SequenceOptions {
+            step_depth: None,
+            ..SequenceOptions::default()
+        };
+        let result = diagram_with(&trace(events), &options).expect("a sequence");
+        let Item::Repeat(repeat) = &result.frames[0].items[0] else {
+            panic!("expected a loop");
+        };
+        let warning = repeat.warning.as_ref().expect("a warning");
+        assert_eq!((warning.text.as_str(), warning.count), ("token is empty", 3));
+        let text = result.to_mermaid();
+        assert!(text.contains("⚠ Entry: token is empty ×3"), "{text}");
+        assert!(!text.contains("Request completed"), "{text}");
+    }
+
+    #[test]
     fn rows_that_say_nothing_are_never_the_note() {
         let table = trace(vec![
             event("r", "", "A", "Run", 0),
@@ -1394,8 +1742,8 @@ mod tests {
             event("c", "r", "A", "Ask", 10),
         ];
         for (index, id) in ["k1", "k2", "k3", "k4", "k5"].into_iter().enumerate() {
-            events.push(failing(event(id, "c", "B", "Entry", 11), if index < 2 { "same" } else { ["x", "y", "z"][index - 2] }));
-            events.push(event(id, "c", "B", "Entry", 12));
+            events.push(event(id, "c", "B", "Entry", 11));
+            events.push(failing(event(id, "c", "B", "Entry", 12), if index < 2 { "same" } else { ["x", "y", "z"][index - 2] }));
         }
         let result = diagram(&trace(events));
         let call = match &result.frames[0].items[0] {
@@ -1552,7 +1900,7 @@ mod tests {
         };
         let result = diagram_with(&trace(events), &options).expect("a sequence");
         assert_eq!(result.omitted_calls, 200 - MAX_CALL_NESTING);
-        assert!(result.to_mermaid().contains("calls nested too deeply"));
+        assert!(result.to_mermaid().contains("calls are not shown"));
     }
 
     /// Needs the real traces in `fork-docs/samples`, which are not committed.
