@@ -1387,6 +1387,18 @@ pub struct KustoSettingsContent {
     ///
     /// Default: "panel"
     pub results_location: Option<KustoResultsLocation>,
+
+    /// How many saved results the history keeps. When there are more, the oldest are deleted.
+    /// Zero keeps all of them.
+    ///
+    /// Default: 50
+    pub history_max_results: Option<usize>,
+
+    /// How much disk space the saved results in the history may use, in megabytes. When they use
+    /// more, the oldest are deleted. Zero sets no limit.
+    ///
+    /// Default: 1024
+    pub history_max_megabytes: Option<u64>,
 }
 
 /// Where the result of a Kusto query is shown.

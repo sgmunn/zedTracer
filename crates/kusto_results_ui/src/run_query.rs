@@ -18,8 +18,8 @@ use gpui::{
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
-    AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, KustoClient, QueryRequest,
-    RUN_LOG_FILE, RunRecord, TokenProvider, append_record, connection_for_selection,
+    AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, HistoryLimits, KustoClient,
+    QueryRequest, RUN_LOG_FILE, RunRecord, TokenProvider, append_record, connection_for_selection,
     parameters_for_query, resolve_query_at,
 };
 use multi_buffer::MultiBufferOffset;
@@ -66,6 +66,7 @@ pub struct KustoSettings {
     pub cluster: Option<String>,
     pub database: Option<String>,
     pub results_location: KustoResultsLocation,
+    pub history_limits: HistoryLimits,
 }
 
 impl Settings for KustoSettings {
@@ -84,6 +85,15 @@ impl Settings for KustoSettings {
             results_location: kusto
                 .and_then(|kusto| kusto.results_location)
                 .unwrap_or(KustoResultsLocation::Panel),
+            history_limits: HistoryLimits {
+                max_results: kusto
+                    .and_then(|kusto| kusto.history_max_results)
+                    .unwrap_or(50),
+                max_bytes: kusto
+                    .and_then(|kusto| kusto.history_max_megabytes)
+                    .unwrap_or(1024)
+                    .saturating_mul(1_000_000),
+            },
         }
     }
 }
@@ -142,13 +152,19 @@ fn copy_client_request_id(id: &str, cx: &mut App) {
 }
 
 fn show_saved_result(
-    _: &mut Workspace,
+    workspace: &mut Workspace,
     path: PathBuf,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    let fs = workspace.app_state().fs.clone();
     cx.spawn_in(window, async move |workspace, cx| {
-        display(&workspace, Ok(path), cx).await
+        let outcome = if fs.is_file(&path).await {
+            Ok(path)
+        } else {
+            Err(crate::history::deleted())
+        };
+        display(&workspace, outcome, cx).await
     })
     .detach();
 }
@@ -409,7 +425,7 @@ fn start_run(
                 Err(error) => Err(error),
             };
             log_run(
-                fs,
+                fs.clone(),
                 log_lock,
                 match &outcome {
                     Ok(saved) => run_log.finished(saved),
@@ -417,7 +433,11 @@ fn start_run(
                 },
             )
             .await;
+            let succeeded = outcome.is_ok();
             publish(&workspace, &toast_id, outcome.map(|saved| saved.path), cx).await;
+            if succeeded {
+                crate::history::prune_after_run(&workspace, fs, cx).await;
+            }
             runs.update(cx, |runs, _| runs.finish(run_id)).log_err();
         }
     });
@@ -462,7 +482,7 @@ async fn publish(
 }
 
 /// Shows a saved result, or why there is none: in the Results panel, or in a tab of its own.
-async fn display(
+pub(crate) async fn display(
     workspace: &WeakEntity<Workspace>,
     outcome: Result<PathBuf>,
     cx: &mut AsyncWindowContext,
@@ -587,7 +607,7 @@ async fn save_run(
         })
         .await?;
 
-    let history = paths::data_dir().join("kusto").join("history");
+    let history = crate::history::history_folder();
     fs.create_dir(&history)
         .await
         .context("could not create the history folder")?;
@@ -679,7 +699,7 @@ impl RunLog {
 /// Adds a record to the log the language server reads. Failing to is not worth failing a run.
 async fn log_run(fs: Arc<dyn Fs>, lock: Arc<futures::lock::Mutex<()>>, record: RunRecord) {
     let _guard = lock.lock().await;
-    let history = paths::data_dir().join("kusto").join("history");
+    let history = crate::history::history_folder();
     let path = history.join(RUN_LOG_FILE);
     let result = async {
         fs.create_dir(&history).await?;
@@ -725,9 +745,9 @@ pub(crate) mod tests {
         }
     }
 
-    const QUERIES: &str = "StormEvents\n| take 1\n\nStormEvents\n| count\n";
+    pub(crate) const QUERIES: &str = "StormEvents\n| take 1\n\nStormEvents\n| count\n";
 
-    const ANSWER: &str = r#"[{"FrameType":"DataTable","TableKind":"PrimaryResult","TableName":"PrimaryResult",
+    pub(crate) const ANSWER: &str = r#"[{"FrameType":"DataTable","TableKind":"PrimaryResult","TableName":"PrimaryResult",
         "Columns":[{"ColumnName":"n","ColumnType":"long"}],"Rows":[[1],[2]]},
         {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}]"#;
 
@@ -744,7 +764,7 @@ pub(crate) mod tests {
     }
 
     /// A workspace with `queries.kql` open, a fake Kusto service, and the sent query bodies.
-    async fn setup<'a>(
+    pub(crate) async fn setup<'a>(
         cx: &'a mut TestAppContext,
         status: u16,
         answer: &'static str,
@@ -879,7 +899,7 @@ pub(crate) mod tests {
     /// Runs the query and lets it finish. The registered action handler is only attached when a
     /// `MultiWorkspace` renders the workspace, so the tests call what the handler calls. The runs
     /// entity must outlive the run, because dropping it cancels the run.
-    fn run(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) {
+    pub(crate) fn run(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) {
         let runs = cx.new(|_| QueryRuns::default());
         start(workspace, &runs, cx);
     }
@@ -1575,6 +1595,7 @@ pub(crate) mod tests {
             cluster: Some("  https://help.kusto.windows.net ".into()),
             database: Some("   ".into()),
             results_location: None,
+            ..Default::default()
         });
         let settings = KustoSettings::from_settings(&content);
         assert_eq!(
@@ -1586,6 +1607,13 @@ pub(crate) mod tests {
             settings.results_location,
             KustoResultsLocation::Panel,
             "results go to the panel unless asked otherwise"
+        );
+        assert_eq!(
+            settings.history_limits,
+            HistoryLimits {
+                max_results: 50,
+                max_bytes: 1_024_000_000
+            }
         );
     }
 }

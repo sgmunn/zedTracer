@@ -3,6 +3,7 @@
 mod activity_tree;
 mod filter_popover;
 mod grid;
+mod history;
 mod inspector_text;
 mod query_parameters;
 mod results_panel;

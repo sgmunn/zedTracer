@@ -32,10 +32,12 @@ use crate::structured_view::StructuredView;
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
     crate::run_query::share_defaults_with_language_server(cx);
+    crate::history::prune_at_startup(cx);
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         crate::run_query::register(workspace, cx);
         crate::results_panel::register(workspace);
         crate::query_parameters::register(workspace);
+        crate::history::register(workspace);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
@@ -62,6 +64,9 @@ pub struct ResultsFile {
     write_in_flight: Option<Task<()>>,
     changed_during_write: bool,
     reload_task: Option<Task<()>>,
+    /// The project holds a worktree that is not shown only weakly, so a result opened from the
+    /// history would lose its worktree, and with it reloading and writing its layout back.
+    _worktree: Entity<Worktree>,
     _watch: Subscription,
 }
 
@@ -297,6 +302,7 @@ impl project::ProjectItem for ResultsFile {
                     write_in_flight: None,
                     changed_during_write: false,
                     reload_task: None,
+                    _worktree: worktree,
                     _watch: watch,
                 }
             }))
@@ -349,6 +355,12 @@ impl EventEmitter<()> for ResultsViewer {}
 impl Focusable for ResultsViewer {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl ResultsViewer {
+    pub(crate) fn project_path(&self, cx: &App) -> ProjectPath {
+        self.results_file.read(cx).project_path.clone()
     }
 }
 
