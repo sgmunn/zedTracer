@@ -60,6 +60,49 @@ Each query shows where it will run in a lens, for example `help.kusto.windows.ne
 that lens row remembers is of that query on that cluster and database. Both the editor and the language server read
 the directives with the same rule, and both are tested against `fork-docs/samples/connection-directives.json`.
 
+## Query parameters
+
+A query takes values from a parameter profile when it declares what it needs with
+`declare query_parameters(...)`:
+
+```kql
+declare query_parameters(raid:string);
+ASEdog().ASTrace
+| where RootActivityId == raid
+```
+
+The values come from YAML, in the profile marked active:
+
+```yaml
+active: Incident A
+profiles:
+  Incident A:
+    raid: abc-123
+    environment: prod
+  Incident B:
+    raid: def-456
+    environment: prod
+```
+
+The file is `.kusto/parameters.yaml` in the project, shared by every query in it. A query file can have its own
+profiles in a file beside it, `incident.parameters.yaml` for `incident.kql`, which is used instead of the
+project's file when it exists. Values are sent to Kusto as query parameters, not pasted into the text of the query,
+so a value cannot change what the query means, and only the parameters a query declares are sent. A value for a
+declared parameter that has no default is needed: if the profile has none, Kusto says so when the query runs.
+A profiles file that cannot be read stops the run with the reason.
+
+Each query that declares parameters has a lens, `Params: Incident A`, that opens a picker of the profiles (a
+click on it runs `kusto::SelectParameterProfile`); choosing one changes the `active:` line of the file and nothing
+else. The lens says `Params: none` when no profile is active and `Params: Incident A (no value for raid)` when the
+active profile lacks a declared parameter. These actions are also in the command palette:
+
+- `kusto: select parameter profile`
+- `kusto: open parameters` (the project's file, started from an example when it does not exist)
+- `kusto: open query parameters` (the file beside the query, started from the profiles that apply)
+
+The editor and the language server read the declarations and the files with the same rules, and agree on the declared names
+through `fork-docs/samples/query-parameters.json`.
+
 ## Schema from your clusters
 
 The server signs in with `az account get-access-token`, so run `az login`
@@ -120,7 +163,7 @@ about the last 200 runs.
 
 A lens acts through `zed.dispatchAction`, a lens command this fork of Zed handles in the editor: its
 arguments are the name of a Zed action (`kusto::RunQuery`, `kusto::CancelQuery`, `kusto::ShowResult`,
-`kusto::CopyClientRequestId`) and, optionally, the data the action takes. Zed moves the cursor to the lens
+`kusto::CopyClientRequestId`, `kusto::SelectParameterProfile`) and, optionally, the data the action takes. Zed moves the cursor to the lens
 before it runs the action, so `RunQuery` and `CancelQuery` act on that query.
 
 After updating, run `./install-server.sh`, then **Zed: Rebuild Dev Extension**, then restart Zed.
