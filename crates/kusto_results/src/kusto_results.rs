@@ -10,6 +10,7 @@ pub mod export;
 pub mod filter;
 pub mod inspector;
 pub mod result;
+pub mod trace_schema;
 pub mod typed;
 pub mod view;
 
