@@ -5,6 +5,7 @@
 //! network.
 
 mod directives;
+mod history;
 mod parameters;
 mod query_text;
 mod response;
@@ -29,6 +30,10 @@ use serde_json::json;
 pub use directives::{
     Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to,
     connections_of_queries, resolve_query_at,
+};
+pub use history::{
+    HistoryEntry, HistoryFile, HistoryLimits, HistoryOutcome, files_to_prune, history_entries,
+    is_history_file_name,
 };
 pub use parameters::{
     ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters,
