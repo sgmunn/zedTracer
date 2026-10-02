@@ -10,8 +10,8 @@ use anyhow::{Context as _, Result, anyhow};
 use editor::Editor;
 use fs::Fs;
 use gpui::{
-    App, AsyncWindowContext, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Task,
-    WeakEntity, actions,
+    Action, App, AsyncWindowContext, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    Task, WeakEntity, actions,
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
@@ -19,6 +19,8 @@ use kusto_client::{
 };
 use picker::{Picker, PickerDelegate};
 use project::Project;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::{ModalView, OpenOptions, OpenVisible, Workspace};
 
@@ -34,6 +36,14 @@ actions!(
     ]
 );
 
+/// Makes a profile the active one in the profiles file that is open, from the lens above it.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = kusto)]
+#[serde(deny_unknown_fields)]
+pub struct MakeParameterProfileActive {
+    pub name: String,
+}
+
 pub(crate) fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &SelectParameterProfile, window, cx| {
         select_parameter_profile(workspace, window, cx)
@@ -44,6 +54,89 @@ pub(crate) fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &OpenQueryParameters, window, cx| {
         open_parameters(workspace, ParameterFileKind::Query, window, cx)
     });
+    workspace.register_action(|workspace, action: &MakeParameterProfileActive, _, cx| {
+        make_profile_active(workspace, &action.name, cx)
+    });
+}
+
+/// Whether a file is one of query parameter profiles: `parameters.yaml` or `<name>.parameters.yaml`.
+fn is_profiles_file_name(name: &str) -> bool {
+    name == "parameters.yaml" || name.ends_with(".parameters.yaml")
+}
+
+/// The smallest edit that turns `old` into `new`: the range of `old` to replace, and with what.
+/// Changing only the lines that differ keeps the cursor, the undo history and the scroll of an
+/// open file where they are.
+fn minimal_edit<'a>(old: &str, new: &'a str) -> (std::ops::Range<usize>, &'a str) {
+    let mut start = 0;
+    for ((index, old_character), new_character) in old.char_indices().zip(new.chars()) {
+        if old_character != new_character {
+            break;
+        }
+        start = index + old_character.len_utf8();
+    }
+    let mut old_end = old.len();
+    let mut new_end = new.len();
+    while old_end > start && new_end > start {
+        let (Some(old_character), Some(new_character)) = (
+            old[..old_end].chars().next_back(),
+            new[..new_end].chars().next_back(),
+        ) else {
+            break;
+        };
+        if old_character != new_character {
+            break;
+        }
+        old_end -= old_character.len_utf8();
+        new_end -= new_character.len_utf8();
+    }
+    (start..old_end, &new[start..new_end])
+}
+
+/// Changes the `active:` line of the open profiles file, in its buffer, and saves it, so that
+/// the lenses, which follow the buffer, change with it.
+fn make_profile_active(workspace: &mut Workspace, name: &str, cx: &mut Context<Workspace>) {
+    if let Err(error) = change_active_profile(workspace, name, cx) {
+        workspace.show_error(error, cx);
+    }
+}
+
+fn change_active_profile(
+    workspace: &mut Workspace,
+    name: &str,
+    cx: &mut Context<Workspace>,
+) -> Result<()> {
+    let editor = workspace
+        .active_item_as::<Editor>(cx)
+        .context("Open a parameters file to make a profile active in it.")?;
+    let buffer = editor
+        .read(cx)
+        .buffer()
+        .read(cx)
+        .as_singleton()
+        .context("Open a parameters file to make a profile active in it.")?;
+    let is_profiles_file = buffer
+        .read(cx)
+        .file()
+        .is_some_and(|file| is_profiles_file_name(file.file_name(cx)));
+    if !is_profiles_file {
+        return Err(anyhow!("This is not a parameters file."));
+    }
+
+    let text = buffer.read(cx).text();
+    let changed = with_active_profile(&text, Some(name))
+        .ok_or_else(|| anyhow!("This file has no profile {name}, or cannot be read."))?;
+    if changed != text {
+        let (range, replacement) = minimal_edit(&text, &changed);
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(range, replacement)], None, cx);
+        });
+    }
+    workspace
+        .project()
+        .update(cx, |project, cx| project.save_buffer(buffer, cx))
+        .detach_and_log_err(cx);
+    Ok(())
 }
 
 /// Where the profiles for the query file of an editor would be.
@@ -650,5 +743,140 @@ mod tests {
                 .map(|path| path.path.as_unix_str().to_string())
         });
         assert_eq!(open_path.as_deref(), Some("queries.parameters.yaml"));
+    }
+
+    #[test]
+    fn the_smallest_edit_changes_only_what_differs() {
+        let old = "# note\nactive: A\nprofiles:\n  A: {}\n";
+        let new = "# note\nactive: \"B\"\nprofiles:\n  A: {}\n";
+        let (range, replacement) = minimal_edit(old, new);
+        assert_eq!(&old[range.clone()], "A");
+        assert_eq!(replacement, "\"B\"");
+        let mut applied = old.to_string();
+        applied.replace_range(range, replacement);
+        assert_eq!(applied, new);
+
+        assert_eq!(minimal_edit("same", "same"), (4..4, ""));
+        assert_eq!(minimal_edit("", "new"), (0..0, "new"));
+        assert_eq!(minimal_edit("gone", ""), (0..4, ""));
+    }
+
+    #[test]
+    fn the_smallest_edit_never_cuts_a_character_in_two() {
+        let (range, replacement) = minimal_edit("name: é\n", "name: ê\n");
+        assert_eq!(&"name: é\n"[range], "é");
+        assert_eq!(replacement, "ê");
+        let (range, replacement) = minimal_edit("a·b", "a·c");
+        assert_eq!(&"a·b"[range], "b");
+        assert_eq!(replacement, "c");
+    }
+
+    #[test]
+    fn only_profile_files_are_profile_file_names() {
+        assert!(is_profiles_file_name("parameters.yaml"));
+        assert!(is_profiles_file_name("incident.parameters.yaml"));
+        assert!(!is_profiles_file_name("config.yaml"));
+        assert!(!is_profiles_file_name("parameters.yml"));
+        assert!(!is_profiles_file_name("queries.kql"));
+    }
+
+    async fn open_in_editor(
+        workspace: &Entity<Workspace>,
+        name: &'static str,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Entity<Editor> {
+        let worktree_id = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .map(|worktree| worktree.read(cx).id())
+                .expect("the test project has a worktree")
+        });
+        let path = project::ProjectPath {
+            worktree_id,
+            path: util::rel_path::RelPath::new(
+                std::path::Path::new(name),
+                util::paths::PathStyle::Unix,
+            )
+            .expect("a relative path")
+            .into_arc(),
+        };
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("the file opens")
+            .downcast::<Editor>()
+            .expect("an editor")
+    }
+
+    #[gpui::test]
+    async fn making_a_profile_active_edits_the_open_buffer_and_saves_the_file(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            "",
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml": SHARED } }),
+        )
+        .await;
+        let editor = open_in_editor(&workspace, ".kusto/parameters.yaml", cx).await;
+        // An edit of the person's own, not saved yet, which must stay.
+        editor.update_in(cx, |editor, window, cx| {
+            editor.set_text(format!("{SHARED}# extra\n"), window, cx)
+        });
+
+        workspace.update(cx, |workspace, cx| make_profile_active(workspace, "B", cx));
+        cx.run_until_parked();
+
+        let expected = format!("{}# extra\n", SHARED.replace("active: A", "active: \"B\""));
+        let in_buffer = editor.update(cx, |editor, cx| editor.text(cx));
+        assert_eq!(in_buffer, expected);
+        let on_disk = fs_of(&workspace, cx)
+            .load(std::path::Path::new("/root/.kusto/parameters.yaml"))
+            .await
+            .expect("the file is there");
+        assert_eq!(
+            on_disk, expected,
+            "the buffer was saved, with its other edit"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_profile_the_file_does_not_have_changes_nothing(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            "",
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml": SHARED } }),
+        )
+        .await;
+        let editor = open_in_editor(&workspace, ".kusto/parameters.yaml", cx).await;
+        workspace.update(cx, |workspace, cx| {
+            make_profile_active(workspace, "Nope", cx)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(editor.update(cx, |editor, cx| editor.text(cx)), SHARED);
+        let on_disk = fs_of(&workspace, cx)
+            .load(std::path::Path::new("/root/.kusto/parameters.yaml"))
+            .await
+            .expect("the file is there");
+        assert_eq!(on_disk, SHARED);
+    }
+
+    #[gpui::test]
+    async fn a_file_that_is_not_a_profiles_file_is_never_edited(cx: &mut TestAppContext) {
+        let (workspace, editor, _sent, cx) = setup_in(cx, 200, "", SHARED, json!({})).await;
+        // The query file holds YAML that would otherwise be a valid profiles file.
+        workspace.update(cx, |workspace, cx| make_profile_active(workspace, "B", cx));
+        cx.run_until_parked();
+        assert_eq!(editor.update(cx, |editor, cx| editor.text(cx)), SHARED);
     }
 }
