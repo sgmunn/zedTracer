@@ -134,9 +134,15 @@ that folder yourself is safe, and so is any result open in a tab or in the panel
 
 ### Keeping a result
 
-A result is a normal `.ktt` file. To keep one, move or copy its file out of the history folder (the
-`kusto/history` folder in Zed's data folder) into your work folder: pruning only looks at that folder, so the file
-is yours to keep. A kept file opens in a tab like any other result, and the file carries what it needs to be
+Use **Save a copy…** (at the right of the tabs of a result, or `kusto: save result` in the command palette; the
+history has a download button on each row). It opens a save prompt in the folder of the file you were working on,
+with a name made from the query and the time it ran, such as `incident-123-t-where-id-raid-2026-10-01-1030.ktt`
+(the query's leading comments and then its first line of code, lower case, with the time in your time zone), which
+you can change before saving. A toast then offers to open the saved file.
+
+A result is a normal `.ktt` file, so you can also move or copy its file out of the history folder (the
+`kusto/history` folder in Zed's data folder) yourself. Pruning only looks at that folder, so a saved file is
+yours to keep. A kept file opens in a tab like any other result, and the file carries what it needs to be
 understood and repeated, so it needs nothing from the history:
 
 - The **Query** tab (next to Data) shows the query the result came from, read-only and selectable, coloured
