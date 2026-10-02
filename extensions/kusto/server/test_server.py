@@ -601,6 +601,15 @@ class CodeLensTest(unittest.TestCase):
             ["kusto::CopyClientRequestId", {"id": "id-1"}],
         )
 
+    def test_a_record_that_carries_parameter_values_is_read_like_any_other(self):
+        self.record("started", "id-1", "T1\n| take 1", parameters={"raid": "abc"})
+        self.record(
+            "finished", "id-1", "T1\n| take 1",
+            durationMs=900, rows=7, path="/history/a.ktt", parameters={"raid": "abc"},
+        )
+        titles = self.titles(self.lenses(), 0)
+        self.assertTrue(titles[1].startswith("Last run: "), titles)
+
     def test_the_same_text_on_another_cluster_is_another_query(self):
         self.record("started", "id-1", "T1\n| take 1")
         self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")

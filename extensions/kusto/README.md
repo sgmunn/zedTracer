@@ -113,6 +113,12 @@ database or an error message. Enter shows that result in the Results panel, and 
 opens it in a tab. A failed run shows its error. The trash button that appears when you hover a row
 deletes that result's file; the row stays in the list, marked `result deleted`.
 
+The play button that appears when you hover a row runs that query again: the same text, on the same cluster
+and database, with the same values for its parameters as the original run. It does not use today's active
+parameter profile, so a rerun repeats the run even if you have switched profiles since. The values are kept
+in the run log (`runs.jsonl`) next to the query text. A rerun is a run like any other: it appears in the history,
+can be cancelled, and shows its result in the Results panel.
+
 The list comes from the run log, `runs.jsonl`, which keeps the last 200 or so runs, so older results are still
 on disk but no longer listed.
 
