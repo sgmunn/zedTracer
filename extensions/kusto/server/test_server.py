@@ -858,6 +858,116 @@ class DirectiveTest(unittest.TestCase):
         self.assertEqual(lines, [4], "only the query has lenses")
 
 
+class DefaultsFileTest(unittest.TestCase):
+    """The cluster and database from the editor's settings, which it writes to `defaults.json`."""
+
+    def setUp(self):
+        self.data = tempfile.TemporaryDirectory()
+        self.file = Path(self.data.name) / "kusto" / "defaults.json"
+        self.file.parent.mkdir(parents=True)
+        self.process = None
+        self.next_request = 10
+
+    def tearDown(self):
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.communicate()
+        self.data.cleanup()
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+    open_document = CodeLensTest.open_document
+
+    def start(self, options=None):
+        LanguageServerTest.start_server(
+            self,
+            None,
+            options,
+            {
+                "KUSTO_ZED_DATA_DIR": self.data.name,
+                "KUSTO_LSP_TEST_TOKEN": "unused",
+                "KUSTO_LSP_TEST_ENDPOINTS": json.dumps(
+                    {
+                        "a.kusto.windows.net": "http://127.0.0.1:9",
+                        "b.kusto.windows.net": "http://127.0.0.1:9",
+                    }
+                ),
+            },
+        )
+
+    def write(self, cluster, database):
+        temporary = self.file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"cluster": cluster, "database": database}))
+        temporary.replace(self.file)
+
+    def connection_title(self):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(request_id, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        lenses = self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]
+        titles = [
+            lens["command"]["title"]
+            for lens in lenses
+            if lens["command"]["command"] == "kusto.connection"
+        ]
+        self.assertEqual(len(titles), 1)
+        return titles[0]
+
+    def title_becomes(self, wanted):
+        deadline = time.time() + 10
+        while True:
+            title = self.connection_title()
+            if title == wanted or time.time() > deadline:
+                return title
+            time.sleep(0.1)
+
+    def test_the_file_gives_the_defaults_when_the_server_starts(self):
+        self.write("a", "one")
+        self.start()
+        self.open_document("print 1")
+        self.assertEqual(self.connection_title(), "a.kusto.windows.net / one")
+
+    def test_the_file_wins_over_the_initialization_options(self):
+        self.write("a", "one")
+        self.start({"cluster": "b", "database": "two"})
+        self.open_document("print 1")
+        self.assertEqual(self.connection_title(), "a.kusto.windows.net / one")
+
+    def test_the_initialization_options_stand_without_a_file(self):
+        self.start({"cluster": "b", "database": "two"})
+        self.open_document("print 1")
+        self.assertEqual(self.connection_title(), "b.kusto.windows.net / two")
+
+    def test_a_change_to_the_file_applies_to_open_documents_and_asks_for_new_lenses(self):
+        self.write("a", "one")
+        self.start()
+        self.open_document("print 1")
+        self.write("b", "two")
+        self.assertEqual(self.title_becomes("b.kusto.windows.net / two"), "b.kusto.windows.net / two")
+
+    def test_removing_the_settings_leaves_no_cluster(self):
+        self.write("a", "one")
+        self.start()
+        self.open_document("print 1")
+        self.write(None, None)
+        self.assertEqual(self.title_becomes("no cluster"), "no cluster")
+
+    def test_a_file_that_is_not_json_is_ignored(self):
+        self.write("a", "one")
+        self.start()
+        self.open_document("print 1")
+        self.file.write_text("{ not json")
+        time.sleep(0.5)
+        self.assertEqual(self.connection_title(), "a.kusto.windows.net / one")
+
+
 class DirectiveSchemaTest(SchemaTest):
     def test_each_query_gets_the_schema_of_the_cluster_its_directives_name(self):
         first = self.fake(["Samples"], STORM_ENTITIES)

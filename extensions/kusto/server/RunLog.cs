@@ -15,49 +15,26 @@ internal sealed class RunLog : IDisposable
     private const int MaxBytesRead = 512 * 1024;
 
     private readonly string? path;
-    private FileSystemWatcher? watcher;
-    private Timer? debounce;
+    private readonly FileChangeWatcher watcher;
 
     public RunLog(string? dataDirectory)
     {
         path = string.IsNullOrWhiteSpace(dataDirectory)
             ? null
             : Path.Combine(dataDirectory, "kusto", "history", "runs.jsonl");
+        watcher = new FileChangeWatcher(path);
     }
 
     /// <summary>Raised, after a short quiet period, when the log changes.</summary>
-    public event Action? Changed;
-
-    public void Watch()
+    public event Action Changed
     {
-        if (path is null || watcher is not null)
-            return;
-        try
-        {
-            var directory = Path.GetDirectoryName(path)!;
-            Directory.CreateDirectory(directory);
-            watcher = new FileSystemWatcher(directory, Path.GetFileName(path))
-            {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
-                EnableRaisingEvents = true
-            };
-            void OnChange(object? sender, FileSystemEventArgs e) =>
-                (debounce ??= new Timer(_ => Changed?.Invoke())).Change(150, Timeout.Infinite);
-            watcher.Changed += OnChange;
-            watcher.Created += OnChange;
-            watcher.Renamed += (sender, e) => OnChange(sender, e);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine($"Could not watch {path}: {exception.Message}");
-        }
+        add => watcher.Changed += value;
+        remove => watcher.Changed -= value;
     }
 
-    public void Dispose()
-    {
-        watcher?.Dispose();
-        debounce?.Dispose();
-    }
+    public void Watch() => watcher.Start();
+
+    public void Dispose() => watcher.Dispose();
 
     /// <summary>
     /// What names a query for the log: where it runs and its text without comments and layout,

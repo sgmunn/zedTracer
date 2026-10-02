@@ -8,10 +8,11 @@ await new KustoLanguageServer(Console.OpenStandardInput(), Console.OpenStandardO
 
 internal sealed partial class KustoLanguageServer(Stream input, Stream output)
 {
-    private readonly Dictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DocumentSnapshot> documents = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writeLock = new(1, 1);
     private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default, new SchemaCache(null));
     private RunLog runLog = new(null);
+    private DefaultsFile defaultsFile = new(null);
     private int nextRequestId;
     private Timer? spinner;
     private readonly object spinnerGate = new();
@@ -64,6 +65,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters), new SchemaCache(dataDirectory));
                 ApplyInitializationOptions(parameters);
                 StartRunLog(dataDirectory);
+                StartDefaultsFile(dataDirectory);
                 return new
                 {
                     capabilities = new
@@ -108,7 +110,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "textDocument/didClose":
             {
                 var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString()!;
-                documents.Remove(uri);
+                documents.TryRemove(uri, out _);
                 await SendAsync(new
                 {
                     jsonrpc = "2.0",
@@ -221,6 +223,52 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         runLog = new RunLog(directory);
         runLog.Changed += OnRunLogChanged;
         runLog.Watch();
+    }
+
+    /// <summary>
+    /// Follows the cluster and database the editor's settings name. They win over the
+    /// initialization options, because they are what a run uses.
+    /// </summary>
+    private void StartDefaultsFile(string? directory)
+    {
+        defaultsFile.Dispose();
+        defaultsFile = new DefaultsFile(directory);
+        ApplyDefaultsFile();
+        defaultsFile.Changed += OnDefaultsFileChanged;
+        defaultsFile.Watch();
+    }
+
+    private bool ApplyDefaultsFile()
+    {
+        if (defaultsFile.Read() is not { } connection || connection == schema.Defaults)
+            return false;
+        schema.SetDefaults(connection.Cluster, connection.Database);
+        return true;
+    }
+
+    private void OnDefaultsFileChanged()
+    {
+        if (!ApplyDefaultsFile())
+            return;
+        _ = RepublishAsync();
+    }
+
+    /// <summary>Analyses every open file again and asks for its lenses, for a change of defaults.</summary>
+    private async Task RepublishAsync()
+    {
+        foreach (var (uri, document) in documents.ToArray())
+        {
+            try
+            {
+                await PublishDiagnosticsAsync(uri, document);
+                LoadReferencedSchema(document);
+            }
+            catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+            {
+                Console.Error.WriteLine($"Could not publish diagnostics for {uri}: {exception.Message}");
+            }
+        }
+        await RequestCodeLensRefreshAsync();
     }
 
     private void OnRunLogChanged()

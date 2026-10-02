@@ -141,7 +141,7 @@ Most of this ran on GPUI's test platform and the language server's own tests: no
 ## Known gaps
 
 - Large downloads are very slow in a debug build (see above); the cause is only partly understood.
-- The default cluster and database are set twice: `kusto.*` for running and `lsp.kusto-lsp.initialization_options` for the language server, because the extension cannot read `kusto`. A file whose directives name both does not need either.
+- The settings reach the server through a file, not through the LSP: Zed writes the `kusto` cluster and database to `<data dir>/kusto/defaults.json` (`run_query.rs`, `share_defaults_with_language_server`) and the server follows it (`DefaultsFile.cs`), so a change applies without a restart and wins over `lsp.kusto-lsp.initialization_options`. Only the user-level `kusto` values are written, as for running.
 - A cached schema is replaced only when it is more than an hour old (option `schemaCacheMinutes`); there is no command to refresh it now, so delete `<data dir>/kusto/schema` or set the option to 0. The token audience is cached in memory (editor and server) but not on disk, which would save about 0.4 s on the first run after starting Zed.
 - Diagnostics are syntax-only (table and column names are not checked). Signature help finds unqualified function names only, and a repeatable parameter such as `strcat`'s highlights the wrong argument.
 - The Results panel is fixed to the bottom dock and shows the first table of a result; there is no Query tab, no Save As and no history picker.
@@ -152,7 +152,7 @@ Most of this ran on GPUI's test platform and the language server's own tests: no
 ## Next steps
 
 1. The user looks at the Results panel, the lenses and the spinner in a real window; fix what shows up. If the spinner flickers, refresh once a second instead.
-2. Feed the `kusto` settings to the server as initialization options (a change in the fork) so the defaults are set once. Directives and the on-disk schema cache are done; see the decisions above. Possibly a refresh-schema command or lens, and persisting the token audience.
+2. A refresh-schema command or lens, and persisting the token audience on disk. The `kusto` settings, directives and the schema cache are done; see the decisions above.
 3. Query parameters (`declare query_parameters`, profiles in `.kusto/parameters.yaml`), so a `raid` is a saved value rather than a `let` in every query.
 4. History: delete old result files, and a picker that shows any of them in the panel (`ResultsPanel::show_result` and `kusto::ShowResult` already do the showing).
 5. Schema-aware diagnostics, once schema is cached so they do not flag names while a load is in flight; a cluster and database per file; the missing lenses (Select, Copy, Format); a table tab for each table of a result.
