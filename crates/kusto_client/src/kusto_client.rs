@@ -5,12 +5,13 @@
 //! network.
 
 mod directives;
+mod parameters;
 mod query_text;
 mod response;
 mod run_log;
 mod token;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -28,6 +29,10 @@ use serde_json::json;
 pub use directives::{
     Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to, connections_of_queries,
     resolve_query_at,
+};
+pub use parameters::{
+    ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters, parameters_for_query,
+    sidecar_path, template, with_active_profile,
 };
 pub use query_text::{query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
@@ -79,6 +84,8 @@ pub struct QueryRequest {
     pub query: String,
     /// Names this run to the service and in support requests; it is also what cancels it.
     pub client_request_id: String,
+    /// Values for the parameters the query declares.
+    pub parameters: BTreeMap<String, String>,
 }
 
 /// Runs queries. Keep one around and reuse it: it remembers each cluster's token audience and
@@ -108,7 +115,10 @@ impl KustoClient {
         let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let timer = Instant::now();
 
-        let body = json!({ "db": request.database, "csl": request.query });
+        let mut body = json!({ "db": request.database, "csl": request.query });
+        if !request.parameters.is_empty() {
+            body["properties"] = json!({ "Parameters": request.parameters });
+        }
         let body = self
             .post(
                 &request.cluster,
@@ -441,6 +451,7 @@ mod tests {
             database: "Samples".into(),
             query: "print a=1".into(),
             client_request_id: "ZedTracer;1".into(),
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -478,6 +489,26 @@ mod tests {
         assert_eq!(authorization, "Bearer secret-1");
         assert_eq!(request_id, "ZedTracer;1");
         assert_eq!(body, r#"{"db":"Samples","csl":"print a=1"}"#);
+    }
+
+    #[test]
+    fn sends_parameter_values_as_query_parameters_and_leaves_the_query_alone() {
+        let (client, seen, _) = client(answer);
+        let mut with_parameters = request();
+        with_parameters.query = "declare query_parameters(raid:string);\nprint raid".into();
+        with_parameters.parameters = BTreeMap::from([("raid".to_string(), "a\"b".to_string())]);
+        block_on(client.execute(&with_parameters)).expect("result");
+
+        let seen = seen.lock().expect("test lock");
+        let body: serde_json::Value = serde_json::from_str(&seen[1].3).expect("a JSON body");
+        assert_eq!(
+            body,
+            json!({
+                "db": "Samples",
+                "csl": "declare query_parameters(raid:string);\nprint raid",
+                "properties": { "Parameters": { "raid": "a\"b" } }
+            })
+        );
     }
 
     #[test]

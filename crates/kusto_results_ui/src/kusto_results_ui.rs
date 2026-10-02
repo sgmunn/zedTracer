@@ -4,6 +4,7 @@ mod activity_tree;
 mod filter_popover;
 mod grid;
 mod inspector_text;
+mod query_parameters;
 mod results_panel;
 mod results_settings;
 mod results_viewer;
