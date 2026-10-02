@@ -2552,6 +2552,11 @@
       "format_on_save": "on",
       "language_servers": ["!kotlin-language-server", "kotlin-lsp", "..."],
     },
+    "Kusto": {
+      // The colours come from the Kusto language server, which knows all of the language and the
+      // schema, so they are used on their own: there is no tree-sitter grammar for Kusto.
+      "semantic_tokens": "full",
+    },
     "LaTeX": {
       "formatter": "language_server",
       "language_servers": ["texlab", "..."],

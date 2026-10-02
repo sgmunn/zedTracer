@@ -60,6 +60,33 @@ Each query shows where it will run in a lens, for example `help.kusto.windows.ne
 that lens row remembers is of that query on that cluster and database. Both the editor and the language server read
 the directives with the same rule, and both are tested against `fork-docs/samples/connection-directives.json`.
 
+## Colours
+
+The colours come from the language server as LSP semantic tokens, which Zed uses on their own for Kusto
+(`"semantic_tokens": "full"` for the language, set in Zed's default settings). Kusto's own analysis classifies
+every part of a query, so everything is coloured: `declare query_parameters`, `print`, control commands such as
+`.show`, every operator, functions, types, strings, numbers and comments. Once a schema has loaded, tables,
+columns and functions get different colours, which a grammar that only reads the text cannot do, and the
+colours are asked for again when a schema arrives or is refreshed.
+
+| Kusto | Token type |
+|---|---|
+| keywords, query and scalar operators, commands | `keyword` |
+| strings / numbers and timespans | `string` / `number` |
+| comments | `comment` |
+| types such as `string` | `type` |
+| tables and materialized views | `class` |
+| columns and schema members | `property` |
+| functions | `function` |
+| variables from `let` | `variable` |
+| parameters | `parameter` |
+| `==`, `+` and other symbols | `operator` |
+
+The theme decides the colour of each type, with Zed's usual rules for them (see `semantic_token_rules` in Zed
+settings to change one). Punctuation and a name the analysis cannot place keep the default text colour. The
+colours exist once the language server has started, so a file shows plain text for a moment when it is first
+opened, and without the server (for instance when it is not installed) there are no colours at all.
+
 ## Control commands
 
 A query whose first line of code starts with a dot is a control command, such as `.show tables`,
