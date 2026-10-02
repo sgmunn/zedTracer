@@ -127,7 +127,9 @@ mod tests {
         };
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&connection.to_defaults_file()).ok(),
-            Some(serde_json::json!({ "cluster": "https://help.kusto.windows.net", "database": null }))
+            Some(
+                serde_json::json!({ "cluster": "https://help.kusto.windows.net", "database": null })
+            )
         );
     }
 
@@ -209,12 +211,16 @@ mod tests {
         let text = "T1\n\n//:setDefaultDb(\"two\")\n\nT2 | take 1";
         let selection = text.find("T2").unwrap()..text.len();
         assert_eq!(
-            connection_for_selection(text, selection, &defaults()).database.as_deref(),
+            connection_for_selection(text, selection, &defaults())
+                .database
+                .as_deref(),
             Some("two")
         );
         let first_line = 0..2;
         assert_eq!(
-            connection_for_selection(text, first_line, &defaults()).database.as_deref(),
+            connection_for_selection(text, first_line, &defaults())
+                .database
+                .as_deref(),
             Some("da")
         );
     }

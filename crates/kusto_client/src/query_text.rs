@@ -85,7 +85,10 @@ mod tests {
     #[test]
     fn a_blank_line_belongs_to_the_query_above() {
         let text = "T1\n\n\nT2";
-        assert_eq!(query_range_at(text, 3).map(|range| &text[range]), Some("T1"));
+        assert_eq!(
+            query_range_at(text, 3).map(|range| &text[range]),
+            Some("T1")
+        );
     }
 
     #[test]
@@ -122,8 +125,16 @@ mod tests {
     fn a_block_of_only_comments_is_not_a_query() {
         let text = "// notes\n\n//:setDefaultDb(\"x\")\n\nT1\n\n// more notes";
         assert_eq!(query_blocks(text).len(), 1);
-        assert_eq!(query_at(text, "notes"), Some("T1"), "a note belongs to the query below");
-        assert_eq!(query_at(text, "more notes"), Some("T1"), "a trailing note, to the query above");
+        assert_eq!(
+            query_at(text, "notes"),
+            Some("T1"),
+            "a note belongs to the query below"
+        );
+        assert_eq!(
+            query_at(text, "more notes"),
+            Some("T1"),
+            "a trailing note, to the query above"
+        );
         assert_eq!(query_at(text, "T1"), Some("T1"));
     }
 

@@ -57,7 +57,9 @@ pub fn parse_query_response(body: &[u8]) -> Result<Vec<Table>> {
             }
             "DataSetCompletion" => {
                 if frame.has_errors {
-                    return Err(completion_error(frame.errors.as_deref().unwrap_or_default()));
+                    return Err(completion_error(
+                        frame.errors.as_deref().unwrap_or_default(),
+                    ));
                 }
                 if frame.cancelled {
                     bail!("The query was cancelled.");
@@ -83,9 +85,8 @@ fn read_table(name: String, columns: Vec<Column>, rows: Vec<&RawValue>) -> Resul
                 .unwrap_or_default();
             return Err(completion_error(errors));
         }
-        cell_rows.push(
-            serde_json::from_str::<Vec<&RawValue>>(text).context("a result row is invalid")?,
-        );
+        cell_rows
+            .push(serde_json::from_str::<Vec<&RawValue>>(text).context("a result row is invalid")?);
     }
     Table::from_raw_rows(name, columns, &cell_rows)
 }
@@ -248,10 +249,7 @@ mod tests {
 
     #[test]
     fn an_http_error_without_json_shows_the_text() {
-        assert_eq!(
-            http_error(502, b"Bad gateway\n").to_string(),
-            "Bad gateway"
-        );
+        assert_eq!(http_error(502, b"Bad gateway\n").to_string(), "Bad gateway");
         assert_eq!(
             http_error(500, b"").to_string(),
             "The request failed (HTTP 500)."

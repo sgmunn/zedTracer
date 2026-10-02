@@ -12,7 +12,8 @@ use reqwest_client::ReqwestClient;
 
 fn client() -> KustoClient {
     // The app builds its client with a user agent; `KUSTO_TIMING_APP_CLIENT=1` does the same here.
-    let http: Arc<dyn http_client::HttpClient> = if std::env::var("KUSTO_TIMING_APP_CLIENT").is_ok() {
+    let http: Arc<dyn http_client::HttpClient> = if std::env::var("KUSTO_TIMING_APP_CLIENT").is_ok()
+    {
         Arc::new(
             ReqwestClient::proxy_and_user_agent(None, "Zed/0.0.0 (macos; aarch64)")
                 .expect("client"),
@@ -20,10 +21,7 @@ fn client() -> KustoClient {
     } else {
         Arc::new(ReqwestClient::new())
     };
-    KustoClient::new(
-        http,
-        Arc::new(AzureCliTokenProvider::new(std::env::vars())),
-    )
+    KustoClient::new(http, Arc::new(AzureCliTokenProvider::new(std::env::vars())))
 }
 
 fn request(query: &str) -> Result<QueryRequest> {
@@ -67,7 +65,10 @@ fn passes_values_for_declared_query_parameters() -> Result<()> {
     .collect();
     let result = block_on(client().execute(&request))?;
     let row = &result.tables[0].rows[0];
-    let shown: Vec<String> = row.iter().map(|value| value.display_text().into_owned()).collect();
+    let shown: Vec<String> = row
+        .iter()
+        .map(|value| value.display_text().into_owned())
+        .collect();
     println!("{shown:?}");
     assert_eq!(shown[0], "abc\"; drop");
     assert_eq!(shown[1], "5");
@@ -78,8 +79,10 @@ fn passes_values_for_declared_query_parameters() -> Result<()> {
 #[test]
 #[ignore = "needs a network and an Azure CLI sign-in"]
 fn reports_a_declared_parameter_that_was_given_no_value() -> Result<()> {
-    let error = block_on(client().execute(&request("declare query_parameters(raid:string); print raid")?))
-        .expect_err("raid has no value");
+    let error = block_on(client().execute(&request(
+        "declare query_parameters(raid:string); print raid",
+    )?))
+    .expect_err("raid has no value");
     println!("{error}");
     assert!(error.to_string().contains("raid"));
     Ok(())
@@ -102,7 +105,10 @@ fn timings() -> Result<()> {
 
     let client = client();
     let time = |label: &str, started: Instant| {
-        println!("{label:<40} {:>7.0} ms", started.elapsed().as_secs_f64() * 1000.0)
+        println!(
+            "{label:<40} {:>7.0} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        )
     };
 
     let started = Instant::now();
@@ -144,7 +150,7 @@ fn time_a_query_from_a_file() -> Result<()> {
         database: std::env::var("KUSTO_TIMING_DATABASE")?,
         query,
         client_request_id: "ZedTracer;timing".into(),
-    parameters: Default::default(),
+        parameters: Default::default(),
     };
     let client = client();
     block_on(client.execute(&self::request("print 1")?)).ok();
@@ -216,8 +222,14 @@ fn http_version_by_client_construction() -> Result<()> {
     const AGENT: &str = "Zed/0.0.0 (macos; aarch64)";
     let variants: Vec<(&str, Arc<dyn http_client::HttpClient>)> = vec![
         ("plain", Arc::new(ReqwestClient::new())),
-        ("user agent only", Arc::new(ReqwestClient::user_agent(AGENT)?)),
-        ("app (agent + preconfigured TLS)", Arc::new(ReqwestClient::proxy_and_user_agent(None, AGENT)?)),
+        (
+            "user agent only",
+            Arc::new(ReqwestClient::user_agent(AGENT)?),
+        ),
+        (
+            "app (agent + preconfigured TLS)",
+            Arc::new(ReqwestClient::proxy_and_user_agent(None, AGENT)?),
+        ),
     ];
     for (label, http) in variants {
         let response = block_on(http.get(

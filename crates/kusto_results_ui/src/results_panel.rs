@@ -10,8 +10,8 @@ use gpui::{
 };
 use kusto_results::ResultSet;
 use ui::{Icon, IconName, Label, LabelCommon as _, LabelSize, prelude::*};
-use workspace::dock::{DockPosition, Panel, PanelEvent};
 use workspace::Workspace;
+use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 use crate::results_viewer::{ResultsFile, ResultsViewer};
 

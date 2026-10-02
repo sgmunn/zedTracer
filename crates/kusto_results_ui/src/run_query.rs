@@ -19,14 +19,13 @@ use gpui::{
 use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, KustoClient, QueryRequest,
-    RUN_LOG_FILE,
-    RunRecord, TokenProvider, append_record, connection_for_selection, parameters_for_query,
-    resolve_query_at,
+    RUN_LOG_FILE, RunRecord, TokenProvider, append_record, connection_for_selection,
+    parameters_for_query, resolve_query_at,
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use settings::{KustoResultsLocation, RegisterSetting, Settings, SettingsStore};
 use workspace::notifications::{DetachAndPromptErr as _, NotificationId};
 use workspace::{OpenOptions, OpenVisible, Toast, Workspace};
@@ -317,7 +316,9 @@ fn start_run(
     let query = query.text;
     let parameter_files = {
         let project = workspace.project().clone();
-        editor.update(cx, |editor, cx| ParameterFiles::of_editor(editor, project.read(cx), cx))
+        editor.update(cx, |editor, cx| {
+            ParameterFiles::of_editor(editor, project.read(cx), cx)
+        })
     };
 
     let run_uuid = uuid::Uuid::new_v4();
@@ -335,8 +336,7 @@ fn start_run(
     });
     let toast_id = NotificationId::composite::<QueryRuns>(run_id);
     let environment = workspace.project().read(cx).environment().clone();
-    let environment =
-        environment.update(cx, |environment, cx| environment.default_environment(cx));
+    let environment = environment.update(cx, |environment, cx| environment.default_environment(cx));
     let fs = workspace.app_state().fs.clone();
     let http_client = cx.http_client();
 
@@ -350,7 +350,8 @@ fn start_run(
             let workspace = cx.weak_entity();
             let toast_id = toast_id.clone();
             move |_, cx| {
-                runs.update(cx, |runs, cx| runs.cancel(run_id, cx)).log_err();
+                runs.update(cx, |runs, cx| runs.cancel(run_id, cx))
+                    .log_err();
                 workspace
                     .update(cx, |workspace, cx| workspace.dismiss_toast(&toast_id, cx))
                     .log_err();
@@ -505,9 +506,12 @@ async fn display(
                     window,
                     cx,
                 )
-                .detach_and_prompt_err("Could not open the query results", window, cx, |_, _, _| {
-                    None
-                }),
+                .detach_and_prompt_err(
+                    "Could not open the query results",
+                    window,
+                    cx,
+                    |_, _, _| None,
+                ),
             Err(error) => workspace.show_error(error, cx),
         })
         .log_err();
@@ -540,7 +544,10 @@ fn token_provider(
 ) -> Arc<dyn TokenProvider> {
     #[cfg(test)]
     if let Some(provider) = cx
-        .update(|_, cx| cx.try_global::<tests::TestTokenProvider>().map(|global| global.0.clone()))
+        .update(|_, cx| {
+            cx.try_global::<tests::TestTokenProvider>()
+                .map(|global| global.0.clone())
+        })
         .ok()
         .flatten()
     {
@@ -670,11 +677,7 @@ impl RunLog {
 }
 
 /// Adds a record to the log the language server reads. Failing to is not worth failing a run.
-async fn log_run(
-    fs: Arc<dyn Fs>,
-    lock: Arc<futures::lock::Mutex<()>>,
-    record: RunRecord,
-) {
+async fn log_run(fs: Arc<dyn Fs>, lock: Arc<futures::lock::Mutex<()>>, record: RunRecord) {
     let _guard = lock.lock().await;
     let history = paths::data_dir().join("kusto").join("history");
     let path = history.join(RUN_LOG_FILE);
@@ -845,9 +848,12 @@ pub(crate) mod tests {
             .expect("the test project has a worktree");
         let path = ProjectPath {
             worktree_id,
-            path: RelPath::new(std::path::Path::new("queries.kql"), util::paths::PathStyle::Unix)
-                .expect("relative path")
-                .into_arc(),
+            path: RelPath::new(
+                std::path::Path::new("queries.kql"),
+                util::paths::PathStyle::Unix,
+            )
+            .expect("relative path")
+            .into_arc(),
         };
         let item = workspace
             .update_in(cx, |workspace, window, cx| {
@@ -859,7 +865,9 @@ pub(crate) mod tests {
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.add_panel(panel, window, cx)
         });
-        let editor = item.downcast::<Editor>().expect("the file opens in an editor");
+        let editor = item
+            .downcast::<Editor>()
+            .expect("the file opens in an editor");
         editor.update_in(cx, |editor, window, cx| {
             window.focus(&editor.focus_handle(cx), cx)
         });
@@ -903,9 +911,7 @@ pub(crate) mod tests {
 
     fn results_viewers(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> usize {
         workspace.read_with(cx, |workspace, cx| {
-            workspace
-                .items_of_type::<ResultsViewer>(cx)
-                .count()
+            workspace.items_of_type::<ResultsViewer>(cx).count()
         })
     }
 
@@ -947,24 +953,34 @@ pub(crate) mod tests {
         let panel = workspace
             .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
             .expect("the panel is added");
-        assert!(!workspace.read_with(cx, |workspace, cx| workspace.bottom_dock().read(cx).is_open()));
+        assert!(!workspace.read_with(cx, |workspace, cx| {
+            workspace.bottom_dock().read(cx).is_open()
+        }));
 
         run(&workspace, cx);
 
         let viewer = panel
             .read_with(cx, |panel, _| panel.shown_viewer().cloned())
             .expect("the panel shows the result");
-        assert_eq!(viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()), 2);
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()),
+            2
+        );
         assert_eq!(
             cx.update(|window, cx| panel.read(cx).icon_label(window, cx)),
             Some("2".to_string())
         );
         assert!(
-            workspace.read_with(cx, |workspace, cx| workspace.bottom_dock().read(cx).is_open()),
+            workspace.read_with(cx, |workspace, cx| workspace
+                .bottom_dock()
+                .read(cx)
+                .is_open()),
             "the panel opens"
         );
         assert!(
-            workspace.read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx).is_some()),
+            workspace.read_with(cx, |workspace, cx| workspace
+                .active_item_as::<Editor>(cx)
+                .is_some()),
             "the query stays in front, so it can be run again"
         );
         assert_eq!(results_viewers(&workspace, cx), 0, "no tab is opened");
@@ -988,7 +1004,11 @@ pub(crate) mod tests {
             .expect("a second result");
 
         assert_eq!(bodies(&sent, "/v2/rest/query").len(), 2);
-        assert_ne!(first.entity_id(), second.entity_id(), "the second run's result is shown");
+        assert_ne!(
+            first.entity_id(),
+            second.entity_id(),
+            "the second run's result is shown"
+        );
         assert_eq!(results_viewers(&workspace, cx), 0);
     }
 
@@ -1098,9 +1118,15 @@ pub(crate) mod tests {
         );
     }
 
-    async fn run_log(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> Vec<serde_json::Value> {
+    async fn run_log(
+        workspace: &Entity<Workspace>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<serde_json::Value> {
         let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
-        let path = paths::data_dir().join("kusto").join("history").join(RUN_LOG_FILE);
+        let path = paths::data_dir()
+            .join("kusto")
+            .join("history")
+            .join(RUN_LOG_FILE);
         fs.load(&path)
             .await
             .unwrap_or_default()
@@ -1124,12 +1150,18 @@ pub(crate) mod tests {
         assert_eq!(records[0]["cluster"], "help.kusto.windows.net");
         assert_eq!(records[0]["database"], "Samples");
         assert_eq!(records[0]["cid"], records[1]["cid"]);
-        assert_eq!(records[0]["at"], records[1]["at"], "both name the start of the run");
+        assert_eq!(
+            records[0]["at"], records[1]["at"],
+            "both name the start of the run"
+        );
         assert_eq!(records[1]["rows"], 2);
         let path = records[1]["path"].as_str().expect("the result file");
         assert!(path.ends_with(".ktt"), "{path}");
         let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
-        assert!(fs.is_file(std::path::Path::new(path)).await, "the file is on disk");
+        assert!(
+            fs.is_file(std::path::Path::new(path)).await,
+            "the file is on disk"
+        );
     }
 
     #[gpui::test]
@@ -1172,7 +1204,8 @@ pub(crate) mod tests {
         );
     }
 
-    const DECLARING: &str = "declare query_parameters(raid:string);\nStormEvents\n| where Id == raid\n";
+    const DECLARING: &str =
+        "declare query_parameters(raid:string);\nStormEvents\n| where Id == raid\n";
 
     async fn query_body(sent: &Sent) -> serde_json::Value {
         let sent = bodies(sent, "/v2/rest/query");
@@ -1196,8 +1229,15 @@ pub(crate) mod tests {
         run(&workspace, cx);
 
         let body = query_body(&sent).await;
-        assert_eq!(body["properties"], json!({ "Parameters": { "raid": "from-b" } }));
-        assert_eq!(body["csl"], DECLARING.trim_end(), "the query is sent as written");
+        assert_eq!(
+            body["properties"],
+            json!({ "Parameters": { "raid": "from-b" } })
+        );
+        assert_eq!(
+            body["csl"],
+            DECLARING.trim_end(),
+            "the query is sent as written"
+        );
     }
 
     #[gpui::test]
@@ -1252,7 +1292,10 @@ pub(crate) mod tests {
         .await;
         run(&workspace, cx);
 
-        assert!(bodies(&sent, "/v2/rest/query").is_empty(), "nothing was sent");
+        assert!(
+            bodies(&sent, "/v2/rest/query").is_empty(),
+            "nothing was sent"
+        );
         let records = run_log(&workspace, cx).await;
         let failure = records
             .iter()
@@ -1298,7 +1341,11 @@ pub(crate) mod tests {
             }),
             "the running notice goes away"
         );
-        assert_eq!(bodies(&sent, "/v1/rest/mgmt").len(), 1, "the service is told to stop");
+        assert_eq!(
+            bodies(&sent, "/v1/rest/mgmt").len(),
+            1,
+            "the service is told to stop"
+        );
         let events: Vec<String> = run_log(&workspace, cx)
             .await
             .iter()
@@ -1366,7 +1413,10 @@ pub(crate) mod tests {
         let viewer = panel
             .read_with(cx, |panel, _| panel.shown_viewer().cloned())
             .expect("the saved result replaces the error");
-        assert_eq!(viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()), 2);
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer.result(cx).total_rows()),
+            2
+        );
     }
 
     #[gpui::test]
@@ -1406,7 +1456,10 @@ pub(crate) mod tests {
             serde_json::from_str(&bodies(&sent, "/v2/rest/query")[0]).expect("a JSON body");
         assert_eq!(body["db"], "Logs");
         assert!(
-            body["csl"].as_str().expect("a query").ends_with("T1\n| take 1"),
+            body["csl"]
+                .as_str()
+                .expect("a query")
+                .ends_with("T1\n| take 1"),
             "the query keeps its comments"
         );
         let records = run_log(&workspace, cx).await;
@@ -1435,19 +1488,20 @@ pub(crate) mod tests {
 
         let error = error.to_string();
         assert!(error.contains("no database"), "{error}");
-        assert!(error.contains("setDefaultDb"), "it says how to fix it: {error}");
-        assert!(bodies(&sent, "/v2/rest/query").is_empty(), "nothing was sent");
+        assert!(
+            error.contains("setDefaultDb"),
+            "it says how to fix it: {error}"
+        );
+        assert!(
+            bodies(&sent, "/v2/rest/query").is_empty(),
+            "nothing was sent"
+        );
     }
 
     #[gpui::test]
     async fn the_directive_above_a_query_decides_where_that_query_runs(cx: &mut TestAppContext) {
-        let (workspace, editor, sent, cx) = setup_with(
-            cx,
-            200,
-            ANSWER,
-            "T1\n\n//:setDefaultDb(\"Second\")\n\nT2",
-        )
-        .await;
+        let (workspace, editor, sent, cx) =
+            setup_with(cx, 200, ANSWER, "T1\n\n//:setDefaultDb(\"Second\")\n\nT2").await;
         let runs = cx.new(|_| QueryRuns::default());
 
         start(&workspace, &runs, cx);

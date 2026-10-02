@@ -136,14 +136,7 @@ fn select_parameter_profile(
                 Ok(loaded) => {
                     let weak_workspace = cx.weak_entity();
                     workspace.toggle_modal(window, cx, move |window, cx| {
-                        ParameterProfileSelector::new(
-                            loaded,
-                            files,
-                            fs,
-                            weak_workspace,
-                            window,
-                            cx,
-                        )
+                        ParameterProfileSelector::new(loaded, files, fs, weak_workspace, window, cx)
                     });
                 }
                 Err(error) => workspace.show_error(error, cx),
@@ -315,13 +308,7 @@ impl ParameterProfileDelegate {
             .profiles
             .iter()
             .map(|profile| Entry::Profile(profile.name.clone()))
-            .chain(
-                loaded
-                    .profiles
-                    .active
-                    .is_some()
-                    .then_some(Entry::NoProfile),
-            )
+            .chain(loaded.profiles.active.is_some().then_some(Entry::NoProfile))
             .chain([Entry::EditProfiles])
             .collect()
     }
@@ -451,7 +438,8 @@ mod tests {
     use super::*;
     use crate::run_query::tests::setup_in;
 
-    const SHARED: &str = "# who is on call\nactive: A\nprofiles:\n  A:\n    raid: from-a\n  B:\n    raid: from-b\n";
+    const SHARED: &str =
+        "# who is on call\nactive: A\nprofiles:\n  A:\n    raid: from-a\n  B:\n    raid: from-b\n";
     const DECLARING: &str = "declare query_parameters(raid:string);\nprint raid\n";
 
     fn fs_of(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> Arc<dyn Fs> {
@@ -469,7 +457,10 @@ mod tests {
             .expect("the profile selector is open")
     }
 
-    fn choices(selector: &Entity<ParameterProfileSelector>, cx: &mut gpui::VisualTestContext) -> Vec<String> {
+    fn choices(
+        selector: &Entity<ParameterProfileSelector>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<String> {
         selector.read_with(cx, |selector, cx| {
             selector
                 .picker
@@ -530,7 +521,11 @@ mod tests {
             .load(std::path::Path::new("/root/.kusto/parameters.yaml"))
             .await
             .expect("the file is still there");
-        assert_eq!(text, SHARED.replace("active: A", "active: \"B\""), "only the active line changes");
+        assert_eq!(
+            text,
+            SHARED.replace("active: A", "active: \"B\""),
+            "only the active line changes"
+        );
         assert!(
             workspace.read_with(cx, |workspace, cx| workspace
                 .active_modal::<ParameterProfileSelector>(cx)
@@ -558,7 +553,9 @@ mod tests {
         let selector = selector(&workspace, cx);
 
         let picker = selector.read_with(cx, |selector, _| selector.picker.clone());
-        picker.update_in(cx, |picker, window, cx| picker.set_query("no act", window, cx));
+        picker.update_in(cx, |picker, window, cx| {
+            picker.set_query("no act", window, cx)
+        });
         cx.run_until_parked();
         assert_eq!(choices(&selector, cx), ["No active profile"]);
         confirm(&selector, "No active profile", cx);
@@ -640,7 +637,10 @@ mod tests {
         });
         cx.run_until_parked();
         let selector = selector(&workspace, cx);
-        assert_eq!(choices(&selector, cx), ["Mine", "No active profile", "Edit profiles…"]);
+        assert_eq!(
+            choices(&selector, cx),
+            ["Mine", "No active profile", "Edit profiles…"]
+        );
 
         confirm(&selector, "Edit profiles…", cx);
         let open_path = workspace.read_with(cx, |workspace, cx| {
