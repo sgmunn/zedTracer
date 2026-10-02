@@ -3,12 +3,15 @@
 //! A run is saved to the history folder and the panel shows that file in the same viewer a
 //! results tab uses, so what the panel shows can be loaded again from history.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Local};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement as _,
     Pixels, Render, SharedString, Styled as _, Window, actions, div, px,
 };
 use kusto_results::ResultSet;
+use language::LanguageRegistry;
 use ui::{Icon, IconName, Label, LabelCommon as _, LabelSize, prelude::*};
 use workspace::Workspace;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
@@ -67,10 +70,11 @@ impl ResultsPanel {
     pub(crate) fn show_result(
         &mut self,
         file: Entity<ResultsFile>,
+        languages: Option<Arc<LanguageRegistry>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let viewer = cx.new(|cx| ResultsViewer::new(file, window, cx));
+        let viewer = cx.new(|cx| ResultsViewer::new(file, languages, window, cx));
         let result = viewer.read(cx).result(cx);
         self.content = Content::Result(Shown {
             viewer,
@@ -103,7 +107,7 @@ impl ResultsPanel {
 }
 
 /// `help.kusto.windows.net / Samples · 1,240 rows · took 1.8 s · 10:42:11`
-fn summarize(result: &ResultSet) -> String {
+pub(crate) fn summarize(result: &ResultSet) -> String {
     let mut parts = Vec::new();
     let place: Vec<&str> = [result.cluster.as_deref(), result.database.as_deref()]
         .into_iter()
