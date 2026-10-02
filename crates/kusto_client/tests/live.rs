@@ -32,6 +32,7 @@ fn request(query: &str) -> Result<QueryRequest> {
         database: "Samples".into(),
         query: query.into(),
         client_request_id: "ZedTracer;live-test".into(),
+        parameters: Default::default(),
     })
 }
 
@@ -47,6 +48,30 @@ fn runs_a_query_on_the_help_cluster() -> Result<()> {
     assert_eq!(result.tables.len(), 2);
     assert_eq!(result.tables[0].rows.len(), 1);
     assert_eq!(result.tables[1].rows.len(), 3);
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs a network and an Azure CLI sign-in"]
+fn passes_values_for_declared_query_parameters() -> Result<()> {
+    let mut request = request(
+        "declare query_parameters(raid:string, count:long, since:datetime); print raid, count, since",
+    )?;
+    request.parameters = [
+        ("raid", "abc\"; drop"),
+        ("count", "5"),
+        ("since", "2024-01-02T03:04:05Z"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value.to_string()))
+    .collect();
+    let result = block_on(client().execute(&request))?;
+    let row = &result.tables[0].rows[0];
+    let shown: Vec<String> = row.iter().map(|value| value.display_text().into_owned()).collect();
+    println!("{shown:?}");
+    assert_eq!(shown[0], "abc\"; drop");
+    assert_eq!(shown[1], "5");
+    assert!(shown[2].contains("2024-01-02"), "{}", shown[2]);
     Ok(())
 }
 
@@ -109,6 +134,7 @@ fn time_a_query_from_a_file() -> Result<()> {
         database: std::env::var("KUSTO_TIMING_DATABASE")?,
         query,
         client_request_id: "ZedTracer;timing".into(),
+    parameters: Default::default(),
     };
     let client = client();
     block_on(client.execute(&self::request("print 1")?)).ok();

@@ -4,6 +4,7 @@
 //! file, so a result belongs to the tab that was opened for it and a late answer can never
 //! replace another run's.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -19,7 +20,8 @@ use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, KustoClient, QueryRequest,
     RUN_LOG_FILE,
-    RunRecord, TokenProvider, append_record, connection_for_selection, resolve_query_at,
+    RunRecord, TokenProvider, append_record, connection_for_selection, parameters_for_query,
+    resolve_query_at,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -29,6 +31,7 @@ use settings::{KustoResultsLocation, RegisterSetting, Settings, SettingsStore};
 use workspace::notifications::{DetachAndPromptErr as _, NotificationId};
 use workspace::{OpenOptions, OpenVisible, Toast, Workspace};
 
+use crate::query_parameters::{self, ParameterFiles};
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsFile;
 
@@ -312,6 +315,10 @@ fn start_run(
         "This query has no database. Add // :setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
     )?;
     let query = query.text;
+    let parameter_files = {
+        let project = workspace.project().clone();
+        editor.update(cx, |editor, cx| ParameterFiles::of_editor(editor, project.read(cx), cx))
+    };
 
     let run_uuid = uuid::Uuid::new_v4();
     let request = QueryRequest {
@@ -319,6 +326,7 @@ fn start_run(
         database,
         query,
         client_request_id: format!("ZedTracer;{run_uuid}"),
+        parameters: Default::default(),
     };
 
     let run_id = runs.update(cx, |runs, _| {
@@ -382,14 +390,23 @@ fn start_run(
 
             let run_log = RunLog::of(&request, &started_at);
             log_run(fs.clone(), log_lock.clone(), run_log.started()).await;
-            let outcome = save_run(
-                client,
-                request,
-                fs.clone(),
-                run_uuid,
-                cx.background_executor().clone(),
-            )
-            .await;
+            let outcome = match parameters_of_run(fs.as_ref(), &parameter_files, &request).await {
+                Ok(parameters) => {
+                    let request = QueryRequest {
+                        parameters,
+                        ..request
+                    };
+                    save_run(
+                        client,
+                        request,
+                        fs.clone(),
+                        run_uuid,
+                        cx.background_executor().clone(),
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
             log_run(
                 fs,
                 log_lock,
@@ -415,6 +432,19 @@ fn start_run(
         })
     });
     Ok(())
+}
+
+/// The values for the parameters the query declares, from the active profile of the file that applies.
+async fn parameters_of_run(
+    fs: &dyn Fs,
+    files: &ParameterFiles,
+    request: &QueryRequest,
+) -> Result<BTreeMap<String, String>> {
+    let loaded = query_parameters::load(fs, files).await?;
+    Ok(parameters_for_query(
+        &request.query,
+        loaded.profiles.active_profile(),
+    ))
 }
 
 /// Shows what a run produced. The run has finished, so its "running" notice goes away.
@@ -736,6 +766,22 @@ mod tests {
         Sent,
         &'a mut gpui::VisualTestContext,
     ) {
+        setup_in(cx, status, answer, queries, json!({})).await
+    }
+
+    /// Like [`setup_with`], with more files in the project, as a directory tree.
+    async fn setup_in<'a>(
+        cx: &'a mut TestAppContext,
+        status: u16,
+        answer: &'static str,
+        queries: &'static str,
+        extra_files: serde_json::Value,
+    ) -> (
+        Entity<Workspace>,
+        Entity<Editor>,
+        Sent,
+        &'a mut gpui::VisualTestContext,
+    ) {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
@@ -783,7 +829,9 @@ mod tests {
         });
 
         let fs = FakeFs::new(cx.executor());
-        fs.insert_tree("/root", json!({ "queries.kql": queries })).await;
+        let mut tree = extra_files;
+        tree["queries.kql"] = json!(queries);
+        fs.insert_tree("/root", tree).await;
         let project = Project::test(fs, ["/root".as_ref()], cx).await;
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
@@ -1122,6 +1170,96 @@ mod tests {
             json!({ "cluster": null, "database": "Other" }),
             "removing a setting removes it for the language server too"
         );
+    }
+
+    const DECLARING: &str = "declare query_parameters(raid:string);\nStormEvents\n| where Id == raid\n";
+
+    async fn query_body(sent: &Sent) -> serde_json::Value {
+        let sent = bodies(sent, "/v2/rest/query");
+        assert_eq!(sent.len(), 1);
+        serde_json::from_str(&sent[0]).expect("a JSON body")
+    }
+
+    #[gpui::test]
+    async fn the_active_profile_of_the_project_gives_the_declared_parameters(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml":
+                "active: B\nprofiles:\n  A:\n    raid: from-a\n  B:\n    raid: from-b\n    other: unused\n" } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        let body = query_body(&sent).await;
+        assert_eq!(body["properties"], json!({ "Parameters": { "raid": "from-b" } }));
+        assert_eq!(body["csl"], DECLARING.trim_end(), "the query is sent as written");
+    }
+
+    #[gpui::test]
+    async fn a_file_beside_the_query_takes_the_place_of_the_projects_profiles(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({
+                "queries.parameters.yaml": "active: Mine\nprofiles:\n  Mine:\n    raid: beside\n",
+                ".kusto": { "parameters.yaml": "active: A\nprofiles:\n  A:\n    raid: shared\n" },
+            }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        assert_eq!(
+            query_body(&sent).await["properties"],
+            json!({ "Parameters": { "raid": "beside" } })
+        );
+    }
+
+    #[gpui::test]
+    async fn a_query_that_declares_nothing_sends_no_parameters(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            "StormEvents\n| take 1\n",
+            json!({ ".kusto": { "parameters.yaml": "active: A\nprofiles:\n  A:\n    raid: x\n" } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        assert!(query_body(&sent).await.get("properties").is_none());
+    }
+
+    #[gpui::test]
+    async fn a_profiles_file_that_cannot_be_read_stops_the_run_and_says_why(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml": "active: [" } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        assert!(bodies(&sent, "/v2/rest/query").is_empty(), "nothing was sent");
+        let records = run_log(&workspace, cx).await;
+        let failure = records
+            .iter()
+            .find(|record| record["event"] == "failed")
+            .expect("the run is recorded as failed");
+        let message = failure["message"].as_str().expect("a message");
+        assert!(message.contains(".kusto/parameters.yaml"), "{message}");
     }
 
     #[gpui::test]
