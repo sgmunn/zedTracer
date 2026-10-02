@@ -50,22 +50,11 @@ project's `.zed/settings.json`:
 { "kusto": { "cluster": "https://help.kusto.windows.net", "database": "Samples" } }
 ```
 
-The language server needs the same default for completion, because an extension cannot read the `kusto` settings.
-Until the fork passes them on, put them in the server's own settings too (a file whose directives name the cluster and
-database does not need this):
-
-```json
-{
-  "lsp": {
-    "kusto-lsp": {
-      "initialization_options": {
-        "cluster": "https://help.kusto.windows.net",
-        "database": "Samples"
-      }
-    }
-  }
-}
-```
+The language server uses the same default for completion and the lenses. Zed writes the two settings to
+`kusto/defaults.json` in its data folder, whenever they change, and the server follows that file, so there is one
+place to set them and a change applies to open files at once. The server's own
+`lsp.kusto-lsp.initialization_options` (`cluster` and `database`) still work for a server run without Zed, but the
+file wins when it exists.
 
 Each query shows where it will run in a lens, for example `help.kusto.windows.net / Samples`, and the last run
 that lens row remembers is of that query on that cluster and database. Both the editor and the language server read
