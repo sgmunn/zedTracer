@@ -207,7 +207,7 @@ where
     };
     let place = format!("{} / {}", entry.cluster, entry.database);
     let outcome = match (&entry.outcome, row.available) {
-        (HistoryOutcome::Finished { .. }, false) => "result deleted".to_string(),
+        (HistoryOutcome::Finished { .. }, false) => "result moved or deleted".to_string(),
         (
             HistoryOutcome::Finished {
                 duration_ms, rows, ..
@@ -512,7 +512,9 @@ async fn show_row(
 }
 
 pub(crate) fn deleted() -> anyhow::Error {
-    anyhow!("That result was deleted to keep the history within its limits.")
+    anyhow!(
+        "That result is no longer in the history folder. It was deleted to keep the history within its limits, or moved."
+    )
 }
 
 fn open_in_a_tab(
@@ -657,7 +659,10 @@ mod tests {
 
     #[test]
     fn a_deleted_result_says_so() {
-        assert!(describe(&row(finished(3, 10), false), at(0, 1, 20)).contains("result deleted"));
+        assert!(
+            describe(&row(finished(3, 10), false), at(0, 1, 20))
+                .contains("result moved or deleted")
+        );
     }
 
     #[test]
@@ -794,7 +799,7 @@ mod tests {
         let picker = selector.read_with(cx, |selector, _| selector.picker.clone());
         let rows = picker.read_with(cx, |picker, _| picker.delegate.rows.clone());
         assert!(!rows[0].available);
-        assert!(describe(&rows[0], Local::now()).contains("result deleted"));
+        assert!(describe(&rows[0], Local::now()).contains("result moved or deleted"));
 
         picker.update_in(cx, |picker, window, cx| {
             picker.delegate.confirm(false, window, cx)
@@ -804,7 +809,7 @@ mod tests {
             .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
             .expect("the panel is added");
         let error = panel.read_with(cx, |panel, _| panel.shown_error().map(str::to_string));
-        assert!(error.is_some_and(|error| error.contains("was deleted")));
+        assert!(error.is_some_and(|error| error.contains("no longer in the history folder")));
     }
 
     #[gpui::test]

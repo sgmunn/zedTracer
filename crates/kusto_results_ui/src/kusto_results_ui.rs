@@ -6,6 +6,7 @@ mod grid;
 mod history;
 mod inspector_text;
 mod query_parameters;
+mod query_view;
 mod results_panel;
 mod results_settings;
 mod results_viewer;

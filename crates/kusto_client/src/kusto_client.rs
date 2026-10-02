@@ -152,6 +152,13 @@ impl KustoClient {
                 u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX),
             ),
             client_request_id: Some(request.client_request_id.clone()),
+            parameters: (!request.parameters.is_empty()).then(|| {
+                request
+                    .parameters
+                    .iter()
+                    .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+                    .collect()
+            }),
             tables,
             ..ResultSet::default()
         })
@@ -516,6 +523,24 @@ mod tests {
                 "csl": "declare query_parameters(raid:string);\nprint raid",
                 "properties": { "Parameters": { "raid": "a\"b" } }
             })
+        );
+    }
+
+    #[test]
+    fn the_result_keeps_the_values_the_parameters_had() {
+        let (client, _, _) = client(answer);
+        let plain = block_on(client.execute(&request())).expect("result");
+        assert_eq!(
+            plain.parameters, None,
+            "nothing is written when there are none"
+        );
+
+        let mut with_parameters = request();
+        with_parameters.parameters = BTreeMap::from([("raid".to_string(), "abc".to_string())]);
+        let result = block_on(client.execute(&with_parameters)).expect("result");
+        assert_eq!(
+            result.parameters.map(serde_json::Value::Object),
+            Some(json!({ "raid": "abc" }))
         );
     }
 

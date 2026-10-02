@@ -8,13 +8,14 @@ use std::time::Duration;
 use anyhow::Context as _;
 use encoding_rs::Encoding;
 use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, Task, WeakEntity, Window, div,
+    Action as _, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::activity::{build_projection, has_activity_columns};
 use kusto_results::{NoResultData, ResultSet, TableView};
+use language::LanguageRegistry;
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use text::LineEnding;
@@ -26,7 +27,9 @@ use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem}
 use worktree::Worktree;
 
 use crate::grid::{ResultGrid, ResultGridEvent};
+use crate::query_view::{QueryView, parameter_values};
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
+use crate::run_query::RerunQuery;
 use crate::structured_view::StructuredView;
 
 pub fn init(cx: &mut App) {
@@ -327,6 +330,8 @@ impl project::ProjectItem for ResultsFile {
 pub enum ViewMode {
     Data,
     Structured,
+    /// The query the result came from, to read.
+    Query,
 }
 
 /// The structured view is built when it is first asked for: the projection of a large trace
@@ -345,6 +350,10 @@ pub struct ResultsViewer {
     /// Whether the table has the columns the structured view needs.
     can_show_structured: bool,
     structured: Option<Structured>,
+    /// Whether the file says which query it came from, which can be shown and run again.
+    can_show_query: bool,
+    query_view: Option<Entity<QueryView>>,
+    languages: Option<Arc<LanguageRegistry>>,
     _grid_subscription: Option<Subscription>,
     _structured_subscription: Option<Subscription>,
     _reload_subscription: Subscription,
@@ -392,13 +401,14 @@ impl WorkspaceProjectItem for ResultsViewer {
     type Item = ResultsFile;
 
     fn for_project_item(
-        _: Entity<Project>,
+        project: Entity<Project>,
         _: Option<&Pane>,
         item: Entity<Self::Item>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new(item, window, cx)
+        let languages = Some(project.read(cx).languages().clone());
+        Self::new(item, languages, window, cx)
     }
 }
 
@@ -406,6 +416,7 @@ impl ResultsViewer {
     /// A viewer of a result file, which shows it again when the file changes.
     pub(crate) fn new(
         item: Entity<ResultsFile>,
+        languages: Option<Arc<LanguageRegistry>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -425,6 +436,9 @@ impl ResultsViewer {
             mode: ViewMode::Data,
             can_show_structured: false,
             structured: None,
+            can_show_query: false,
+            query_view: None,
+            languages,
             _grid_subscription: None,
             _structured_subscription: None,
             _reload_subscription: reload,
@@ -452,11 +466,50 @@ impl ResultsViewer {
         // What the structured view was built from has changed.
         self.structured = None;
         self._structured_subscription = None;
-        if !self.can_show_structured {
+        self.can_show_query = self.grid.is_some()
+            && result
+                .query
+                .as_deref()
+                .is_some_and(|query| !query.trim().is_empty());
+        self.query_view = None;
+        if self.mode == ViewMode::Structured && !self.can_show_structured
+            || self.mode == ViewMode::Query && !self.can_show_query
+        {
             self.mode = ViewMode::Data;
         } else if self.mode == ViewMode::Structured {
             self.build_structured(window, cx);
+        } else if self.mode == ViewMode::Query {
+            self.build_query_view(window, cx);
         }
+    }
+
+    fn build_query_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let languages = self.languages.clone();
+        self.query_view = Some(cx.new(|cx| QueryView::new(&result, languages, window, cx)));
+    }
+
+    /// Runs the query of this result again, if the file says where it ran, with the values its
+    /// parameters had.
+    pub(crate) fn rerun_action(&self, cx: &App) -> Option<RerunQuery> {
+        let result = &self.results_file.read(cx).result;
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        Some(RerunQuery {
+            query: result
+                .query
+                .as_deref()
+                .filter(|query| !query.trim().is_empty())?
+                .to_string(),
+            cluster: text(&result.cluster)?,
+            database: text(&result.database)?,
+            parameters: parameter_values(result).into_iter().collect(),
+        })
     }
 
     fn save_layouts_of(grid: &Entity<ResultGrid>, cx: &mut Context<Self>) -> Subscription {
@@ -480,12 +533,17 @@ impl ResultsViewer {
     }
 
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
-        if mode == ViewMode::Structured && !self.can_show_structured {
+        if mode == ViewMode::Structured && !self.can_show_structured
+            || mode == ViewMode::Query && !self.can_show_query
+        {
             return;
         }
         self.mode = mode;
         if mode == ViewMode::Structured && self.structured.is_none() {
             self.build_structured(window, cx);
+        }
+        if mode == ViewMode::Query && self.query_view.is_none() {
+            self.build_query_view(window, cx);
         }
         cx.notify();
     }
@@ -524,23 +582,25 @@ impl ResultsViewer {
 
 impl Render for ResultsViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match (self.mode, &self.structured, &self.grid) {
-            (ViewMode::Structured, Some(Structured::Ready(view)), _) => {
+        let body = match (self.mode, &self.structured, &self.grid, &self.query_view) {
+            (ViewMode::Query, _, _, Some(view)) => div().size_full().child(view.clone()),
+            (ViewMode::Structured, Some(Structured::Ready(view)), _, _) => {
                 div().size_full().child(view.clone())
             }
-            (ViewMode::Structured, _, _) => div()
+            (ViewMode::Structured, _, _, _) => div()
                 .p_4()
                 .child(ui::Label::new("Building the activity tree…")),
-            (ViewMode::Data, _, Some(grid)) => div().size_full().child(grid.clone()),
-            (ViewMode::Data, _, None) => div()
+            (_, _, Some(grid), _) => div().size_full().child(grid.clone()),
+            (_, _, None, _) => div()
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
         let mode = self.mode;
+        let rerun = self.rerun_action(cx);
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
-            .when(self.can_show_structured, |viewer| {
+            .when(self.grid.is_some(), |viewer| {
                 viewer.child(
                     h_flex()
                         .gap_1()
@@ -557,15 +617,45 @@ impl Render for ResultsViewer {
                                     })),
                             ),
                         )
-                        .child(
-                            div().debug_selector(|| "structured-tab".to_string()).child(
-                                Button::new("results-structured-tab", "Structured")
-                                    .toggle_state(mode == ViewMode::Structured)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.set_mode(ViewMode::Structured, window, cx)
-                                    })),
-                            ),
-                        ),
+                        .when(self.can_show_structured, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "structured-tab".to_string()).child(
+                                    Button::new("results-structured-tab", "Structured")
+                                        .toggle_state(mode == ViewMode::Structured)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_mode(ViewMode::Structured, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .when(self.can_show_query, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "query-tab".to_string()).child(
+                                    Button::new("results-query-tab", "Query")
+                                        .toggle_state(mode == ViewMode::Query)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_mode(ViewMode::Query, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .child(div().flex_1())
+                        .when_some(rerun, |bar, action| {
+                            bar.child(
+                                div().debug_selector(|| "rerun-button".to_string()).child(
+                                    Button::new("results-rerun", "Run again")
+                                        .start_icon(
+                                            Icon::new(IconName::PlayFilled).size(IconSize::Small),
+                                        )
+                                        .tooltip(ui::Tooltip::text(
+                                            "Run this query again, with the values it had",
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(action.boxed_clone(), cx)
+                                        }),
+                                ),
+                            )
+                        }),
                 )
             })
             .child(div().flex_1().min_h_0().child(body))
@@ -843,6 +933,156 @@ mod tests {
         assert_eq!(
             viewer.read_with(cx, |viewer, _| viewer.problem),
             Some("Invalid result file.")
+        );
+    }
+
+    const MOVED: &str = r#"{
+      "query": "// incident 123\ndeclare query_parameters(raid:string);\nT | where Id == raid",
+      "cluster": "help.kusto.windows.net",
+      "database": "Samples",
+      "parameters": {"raid": "abc", "count": 5},
+      "tables": [{"name": "PrimaryResult", "columns": [{"name": "n", "type": "long"}], "rows": [[1]]}],
+      "executionStartedAt": "2026-10-01T10:00:00.000Z",
+      "executionDurationMs": 1840
+    }"#;
+
+    const WITHOUT_QUERY: &str = r#"{
+      "tables": [{"name": "PrimaryResult", "columns": [{"name": "n", "type": "long"}], "rows": [[1]]}]
+    }"#;
+
+    /// Opens each of `files` from a fresh project and returns the viewers, in order.
+    async fn open_files<'a>(
+        cx: &'a mut TestAppContext,
+        files: &[(&'static str, &'static str)],
+    ) -> (Vec<Entity<ResultsViewer>>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        let tree: serde_json::Map<String, serde_json::Value> = files
+            .iter()
+            .map(|(name, text)| (name.to_string(), json!(text)))
+            .collect();
+        fs.insert_tree("/root", serde_json::Value::Object(tree))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let mut viewers = Vec::new();
+        for (name, _) in files {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            let item = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_path(path, None, true, window, cx)
+                })
+                .await
+                .expect("opens");
+            viewers.push(item.downcast::<ResultsViewer>().expect("a results viewer"));
+            cx.run_until_parked();
+        }
+        (viewers, cx)
+    }
+
+    #[gpui::test]
+    async fn a_result_file_shows_the_query_it_came_from_to_read_and_not_to_edit(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewers, cx) = open_files(cx, &[("moved.ktt", MOVED)]).await;
+        let viewer = &viewers[0];
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("query-tab").is_some(),
+            "the file names its query"
+        );
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Query, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let (text, read_only) = viewer.read_with(cx, |viewer, cx| {
+            let view = viewer.query_view.as_ref().expect("the query view is built");
+            let editor = view.read(cx).editor().read(cx);
+            (editor.text(cx), editor.read_only(cx))
+        });
+        assert!(
+            text.starts_with("// incident 123\ndeclare query_parameters"),
+            "{text}"
+        );
+        assert!(text.ends_with("T | where Id == raid"));
+        assert!(read_only, "the query cannot be edited here");
+        let details = viewer.read_with(cx, |viewer, cx| {
+            let view = viewer.query_view.as_ref().expect("the query view");
+            view.read(cx).parameters().to_vec()
+        });
+        assert_eq!(
+            details,
+            [
+                ("count".to_string(), "5".to_string()),
+                ("raid".to_string(), "abc".to_string())
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn a_result_file_can_be_run_again_with_the_values_it_had(cx: &mut TestAppContext) {
+        let (viewers, cx) = open_files(cx, &[("moved.ktt", MOVED)]).await;
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("rerun-button").is_some());
+
+        let action = viewers[0]
+            .read_with(cx, |viewer, cx| viewer.rerun_action(cx))
+            .expect("the file says where it ran");
+        assert_eq!(action.cluster, "help.kusto.windows.net");
+        assert_eq!(action.database, "Samples");
+        assert!(action.query.ends_with("T | where Id == raid"));
+        assert_eq!(
+            action.parameters,
+            std::collections::BTreeMap::from([
+                ("count".to_string(), "5".to_string()),
+                ("raid".to_string(), "abc".to_string()),
+            ])
+        );
+    }
+
+    #[gpui::test]
+    async fn a_result_that_does_not_say_where_it_came_from_offers_neither(cx: &mut TestAppContext) {
+        let (viewers, cx) = open_files(cx, &[("plain.ktt", WITHOUT_QUERY)]).await;
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("query-tab").is_none());
+        assert!(cx.debug_bounds("rerun-button").is_none());
+        assert!(
+            viewers[0]
+                .read_with(cx, |viewer, cx| viewer.rerun_action(cx))
+                .is_none()
+        );
+
+        viewers[0].update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Query, window, cx)
+        });
+        assert_eq!(
+            viewers[0].read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data,
+            "there is no query to show"
         );
     }
 
