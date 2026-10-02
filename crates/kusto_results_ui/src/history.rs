@@ -163,13 +163,32 @@ async fn load_rows(fs: &dyn Fs) -> Vec<Row> {
     rows
 }
 
-/// The first line of a query that is not blank or a comment, to tell queries apart.
-fn title(query: &str) -> &str {
-    query
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("//"))
-        .unwrap_or("(no query text)")
+/// What tells a query apart in the list: the comments it starts with, which people write for that
+/// purpose, then its first line of code. Directives that say where it runs are not comments to
+/// read.
+fn title(query: &str) -> String {
+    let mut comments = Vec::new();
+    let mut code = None;
+    for line in query.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        match line.strip_prefix("//") {
+            Some(comment) => {
+                let comment = comment.trim();
+                if !comment.is_empty() && !comment.starts_with(':') {
+                    comments.push(comment);
+                }
+            }
+            None => {
+                code = Some(line);
+                break;
+            }
+        }
+    }
+    match (comments.is_empty(), code) {
+        (true, Some(code)) => code.to_string(),
+        (true, None) => "(no query text)".to_string(),
+        (false, Some(code)) => format!("{} — {code}", comments.join(" · ")),
+        (false, None) => comments.join(" · "),
+    }
 }
 
 /// What a row says about its run: when, how it went and where.
@@ -253,14 +272,15 @@ impl HistorySelector {
             query: String::new(),
             selected_index: 0,
         };
-        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
+        let picker =
+            cx.new(|cx| Picker::uniform_list(delegate, window, cx).initial_width(rems(40.)));
         Self { picker }
     }
 }
 
 impl Render for HistorySelector {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().w(rems(40.)).child(self.picker.clone())
+        v_flex().child(self.picker.clone())
     }
 }
 
@@ -407,7 +427,7 @@ impl PickerDelegate for HistoryDelegate {
             .toggle_state(selected)
             .child(
                 v_flex()
-                    .child(Label::new(title(&row.entry.query).to_string()).truncate())
+                    .child(Label::new(title(&row.entry.query)).truncate())
                     .child(
                         Label::new(describe(row, Local::now()))
                             .size(LabelSize::Small)
@@ -518,9 +538,28 @@ mod tests {
     }
 
     #[test]
-    fn a_title_is_the_first_line_that_says_something() {
-        assert_eq!(title("// note\n\n  StormEvents\n| take 1"), "StormEvents");
-        assert_eq!(title("// only a note"), "(no query text)");
+    fn a_title_is_the_leading_comments_and_then_the_first_line_of_code() {
+        assert_eq!(title("StormEvents\n| take 1"), "StormEvents");
+        assert_eq!(
+            title("// incident 123\n//   second try\n\n  StormEvents\n| take 1"),
+            "incident 123 · second try — StormEvents"
+        );
+        assert_eq!(
+            title("// :setDefaultDb(\"db\")\n// for the report\nT | take 1"),
+            "for the report — T | take 1"
+        );
+        assert_eq!(
+            title("// :setDefaultCluster(\"https://a\")\nT"),
+            "T",
+            "a directive says nothing about the query"
+        );
+        assert_eq!(
+            title("T\n// a later comment"),
+            "T",
+            "only comments at the start count"
+        );
+        assert_eq!(title("// only a note"), "only a note");
+        assert_eq!(title("//\n"), "(no query text)");
         assert_eq!(title(""), "(no query text)");
     }
 
@@ -658,6 +697,12 @@ mod tests {
         let selector = open_history(&workspace, cx);
         let picker = selector.read_with(cx, |selector, _| selector.picker.clone());
         let rows = picker.read_with(cx, |picker, _| picker.delegate.rows.clone());
+        let width =
+            cx.update(|window, cx| picker.read(cx).results_width(window) / window.rem_size());
+        assert!(
+            (width - 40.).abs() < 0.01,
+            "the picker takes the width it asked for, not its wrapper's: {width} rem"
+        );
         assert_eq!(rows.len(), 2);
         assert!(rows[0].entry.at >= rows[1].entry.at, "newest first");
         assert!(rows.iter().all(|row| row.available));
@@ -750,7 +795,10 @@ mod tests {
         }
 
         let files = history_files(fs.as_ref()).await;
-        assert_eq!(files.len(), 2, "{files:?}");
+        // The runs happen in one second of real time, so which result sorts newest is down to
+        // the random part of the name. The open result is kept whichever it is, so there may be
+        // one more than the limit.
+        assert!((2..=3).contains(&files.len()), "{files:?}");
         let shown = workspace.read_with(cx, |workspace, cx| open_results(workspace, cx));
         assert_eq!(shown.len(), 1, "the panel shows a result");
         assert!(

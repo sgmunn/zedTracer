@@ -107,7 +107,8 @@ through `fork-docs/samples/query-parameters.json`.
 
 Every run is saved as a result file in the `kusto/history` folder of Zed's data folder. **kusto: show history**
 (in the command palette) lists the queries that were run, newest first, with the time, the number of rows, how
-long it took, where it ran and the first line of the query. Type to search the query text, the cluster, the
+long it took, where it ran and the query's first line of code, after any comment lines the query starts with
+(`// incident 123 — second try`), which makes a good label. Directive comments (`// :setDefaultDb(...)`) are not shown. Type to search the query text, the cluster, the
 database or an error message. Enter shows that result in the Results panel, and Cmd-Enter on macOS (Ctrl-Enter elsewhere)
 opens it in a tab. A failed run shows its error. The trash button that appears when you hover a row
 deletes that result's file; the row stays in the list, marked `result deleted`.
