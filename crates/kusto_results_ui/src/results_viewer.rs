@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::Context as _;
 use encoding_rs::Encoding;
 use gpui::{
-    Action as _, App, AppContext as _, AsyncApp, ClipboardItem, Context, Entity, EntityId,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Action as _, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_util::ResultExt as _;
@@ -587,6 +587,7 @@ impl ResultsViewer {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn sequence_view(&self) -> Option<&Entity<SequenceView>> {
         match &self.sequence {
             Some(Sequence::Ready(view)) => Some(view),
@@ -715,7 +716,6 @@ impl Render for ResultsViewer {
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
-        let mermaid = self.sequence_view().map(|view| view.read(cx).mermaid().clone());
         let mode = self.mode;
         let rerun = self.rerun_action(cx);
         let save = self.save_action(cx);
@@ -780,24 +780,6 @@ impl Render for ResultsViewer {
                             )
                         })
                         .child(div().flex_1())
-                        .when_some(
-                            mermaid.filter(|_| mode == ViewMode::Sequence),
-                            |bar, mermaid| {
-                                bar.child(
-                                    div().debug_selector(|| "copy-mermaid".to_string()).child(
-                                        Button::new("results-copy-mermaid", "Copy as Mermaid")
-                                            .tooltip(ui::Tooltip::text(
-                                                "Copy the diagram as Mermaid text, for a wiki, a pull request or a ticket",
-                                            ))
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    mermaid.to_string(),
-                                                ))
-                                            }),
-                                    ),
-                                )
-                            },
-                        )
                         .when_some(save, |bar, action| {
                             bar.child(
                                 div().debug_selector(|| "save-button".to_string()).child(
@@ -1451,10 +1433,10 @@ mod tests {
         assert!(view.read_with(cx, |view, cx| view.grid().read(cx).visible_row_count()) > 0);
     }
 
-    /// SEQ-1, SEQ-15, SEQ-16: a trace with an actor and a timestamp offers a Sequence tab, drawn
-    /// when first asked for, whose text can be copied; a trace without them says what is missing.
+    /// SEQ-1, SEQ-16: a trace with an actor and a timestamp offers a Sequence tab, drawn when first
+    /// asked for; a trace without them says what is missing.
     #[gpui::test]
-    async fn a_trace_offers_a_sequence_tab_and_copies_its_text(cx: &mut TestAppContext) {
+    async fn a_trace_offers_a_sequence_tab(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let settings_store = settings::SettingsStore::test(cx);
             cx.set_global(settings_store);
@@ -1552,17 +1534,7 @@ mod tests {
         let view = trace
             .read_with(cx, |viewer, _| viewer.sequence_view().cloned())
             .expect("the sequence view is built");
-        let mermaid = view.read_with(cx, |view, _| view.mermaid().clone());
-        assert!(mermaid.starts_with("sequenceDiagram"), "{mermaid}");
-
-        let copy = cx
-            .debug_bounds("copy-mermaid")
-            .map(|bounds| bounds.center())
-            .expect("the copy button shows");
-        cx.simulate_click(copy, gpui::Modifiers::default());
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some(mermaid.to_string())
-        );
+        let source = view.read_with(cx, |view, cx| view.source(cx));
+        assert!(source.contains("sequenceDiagram"), "{source}");
     }
 }
