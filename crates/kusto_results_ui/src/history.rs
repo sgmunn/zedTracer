@@ -12,8 +12,8 @@ use chrono::{DateTime, Local, TimeZone};
 use fs::{Fs, RemoveOptions};
 use futures::StreamExt as _;
 use gpui::{
-    App, AsyncWindowContext, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Task,
-    WeakEntity, actions,
+    Action as _, App, AsyncWindowContext, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, Task, WeakEntity, actions,
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
@@ -28,7 +28,7 @@ use workspace::{ModalView, OpenOptions, OpenVisible, Workspace};
 
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsViewer;
-use crate::run_query::{KustoSettings, display};
+use crate::run_query::{KustoSettings, RerunQuery, display};
 
 actions!(
     kusto,
@@ -238,6 +238,16 @@ where
         .join(" · ")
 }
 
+/// The action that runs an entry again, as it was run.
+fn rerun_action(entry: &HistoryEntry) -> RerunQuery {
+    RerunQuery {
+        query: entry.query.clone(),
+        cluster: entry.cluster.clone(),
+        database: entry.database.clone(),
+        parameters: entry.parameters.clone(),
+    }
+}
+
 /// A count with a comma between thousands, as the lenses show it.
 fn grouped(count: usize) -> String {
     let digits = count.to_string();
@@ -325,6 +335,16 @@ impl HistoryDelegate {
 
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(*self.matches.get(self.selected_index)?)
+    }
+
+    /// Closes the picker and runs the query of a row again.
+    fn rerun(&mut self, row_index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        let Some(row) = self.rows.get(row_index) else {
+            return;
+        };
+        let action = rerun_action(&row.entry);
+        self.dismissed(window, cx);
+        window.dispatch_action(action.boxed_clone(), cx);
     }
 
     fn delete(&mut self, row_index: usize, cx: &mut Context<Picker<Self>>) {
@@ -435,17 +455,32 @@ impl PickerDelegate for HistoryDelegate {
                             .truncate(),
                     ),
             );
-        if matches!(row.entry.outcome, HistoryOutcome::Finished { .. }) && row.available {
-            item = item.end_slot_on_hover(
-                IconButton::new(("delete-result", ix), IconName::Trash)
-                    .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::text("Delete this result"))
-                    .on_click(cx.listener(move |picker, _, _, cx| {
-                        cx.stop_propagation();
-                        picker.delegate.delete(row_index, cx);
-                    })),
-            );
-        }
+        let can_delete =
+            matches!(row.entry.outcome, HistoryOutcome::Finished { .. }) && row.available;
+        item = item.end_slot_on_hover(
+            h_flex()
+                .gap_0p5()
+                .child(
+                    IconButton::new(("rerun-query", ix), IconName::PlayFilled)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::text("Run this query again"))
+                        .on_click(cx.listener(move |picker, _, window, cx| {
+                            cx.stop_propagation();
+                            picker.delegate.rerun(row_index, window, cx);
+                        })),
+                )
+                .when(can_delete, |buttons| {
+                    buttons.child(
+                        IconButton::new(("delete-result", ix), IconName::Trash)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Delete this result"))
+                            .on_click(cx.listener(move |picker, _, _, cx| {
+                                cx.stop_propagation();
+                                picker.delegate.delete(row_index, cx);
+                            })),
+                    )
+                }),
+        );
         Some(item)
     }
 }
@@ -503,6 +538,8 @@ fn open_in_a_tab(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use chrono::FixedOffset;
 
     use super::*;
@@ -515,6 +552,7 @@ mod tests {
                 cluster: "help.kusto.windows.net".into(),
                 database: "Samples".into(),
                 at: "2026-10-01T14:30:05.000Z".into(),
+                parameters: BTreeMap::new(),
                 outcome,
             },
             available,
@@ -573,6 +611,20 @@ mod tests {
         assert_eq!(
             describe(&finished, at(2, 3, 9)),
             "Oct 1, 16:30 · 1,240 rows, 1.8 s · help.kusto.windows.net / Samples"
+        );
+    }
+
+    #[test]
+    fn rerunning_a_row_names_its_query_place_and_parameter_values() {
+        let mut row = row(finished(3, 10), true);
+        row.entry.parameters.insert("raid".into(), "abc".into());
+        let action = rerun_action(&row.entry);
+        assert_eq!(action.query, row.entry.query);
+        assert_eq!(action.cluster, "help.kusto.windows.net");
+        assert_eq!(action.database, "Samples");
+        assert_eq!(
+            action.parameters,
+            BTreeMap::from([("raid".to_string(), "abc".to_string())])
         );
     }
 

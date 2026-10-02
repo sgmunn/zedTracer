@@ -52,6 +52,19 @@ pub struct ShowResult {
     pub path: String,
 }
 
+/// Runs a query again, as it was run before: the same text, on the same cluster and database,
+/// with the same values for its parameters.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = kusto)]
+#[serde(deny_unknown_fields)]
+pub struct RerunQuery {
+    pub query: String,
+    pub cluster: String,
+    pub database: String,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+}
+
 /// Copies the client request id of a run, which names it to the service and to support.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = kusto)]
@@ -135,6 +148,12 @@ pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
     workspace.register_action({
         let runs = runs.clone();
         move |workspace, _: &RunQuery, window, cx| run_query(workspace, &runs, window, cx)
+    });
+    workspace.register_action({
+        let runs = runs.clone();
+        move |workspace, action: &RerunQuery, window, cx| {
+            rerun_query(workspace, &runs, action, window, cx)
+        }
     });
     workspace.register_action(move |workspace, _: &CancelQuery, _, cx| {
         cancel_query(workspace, &runs, cx)
@@ -309,6 +328,21 @@ fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<QueryTo
     })
 }
 
+/// Where the values of a run's query parameters come from.
+enum ParameterSource {
+    /// The active profile of the files that apply to the query's file.
+    Profiles(ParameterFiles),
+    /// The values an earlier run had, to repeat it.
+    Values(BTreeMap<String, String>),
+}
+
+/// Everything a run needs to start.
+struct RunSpec {
+    query: String,
+    connection: Connection,
+    parameters: ParameterSource,
+}
+
 fn start_run(
     workspace: &mut Workspace,
     runs: &Entity<QueryRuns>,
@@ -321,21 +355,56 @@ fn start_run(
     let query = editor
         .update(cx, |editor, cx| query_to_run(editor, cx))
         .context("There is no query at the cursor.")?;
-
-    let cluster = query.connection.cluster.as_deref().context(
-        "This query has no cluster. Add // :setDefaultCluster(\"https://…\") above it, or set `kusto.cluster` in your settings.",
-    )?;
-    let cluster = Cluster::parse(cluster)?;
-    let database = query.connection.database.clone().context(
-        "This query has no database. Add // :setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
-    )?;
-    let query = query.text;
     let parameter_files = {
         let project = workspace.project().clone();
         editor.update(cx, |editor, cx| {
             ParameterFiles::of_editor(editor, project.read(cx), cx)
         })
     };
+    let spec = RunSpec {
+        query: query.text,
+        connection: query.connection,
+        parameters: ParameterSource::Profiles(parameter_files),
+    };
+    launch_run(workspace, runs, spec, window, cx)
+}
+
+fn rerun_query(
+    workspace: &mut Workspace,
+    runs: &Entity<QueryRuns>,
+    action: &RerunQuery,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let spec = RunSpec {
+        query: action.query.clone(),
+        connection: Connection {
+            cluster: Some(action.cluster.clone()),
+            database: Some(action.database.clone()),
+        },
+        parameters: ParameterSource::Values(action.parameters.clone()),
+    };
+    if let Err(error) = launch_run(workspace, runs, spec, window, cx) {
+        workspace.show_error(error, cx);
+    }
+}
+
+fn launch_run(
+    workspace: &mut Workspace,
+    runs: &Entity<QueryRuns>,
+    spec: RunSpec,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Result<()> {
+    let cluster = spec.connection.cluster.as_deref().context(
+        "This query has no cluster. Add // :setDefaultCluster(\"https://…\") above it, or set `kusto.cluster` in your settings.",
+    )?;
+    let cluster = Cluster::parse(cluster)?;
+    let database = spec.connection.database.clone().context(
+        "This query has no database. Add // :setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
+    )?;
+    let query = spec.query;
+    let parameter_source = spec.parameters;
 
     let run_uuid = uuid::Uuid::new_v4();
     let request = QueryRequest {
@@ -405,14 +474,20 @@ fn start_run(
             runs.update(cx, |runs, _| runs.set_client(run_id, client.clone()))
                 .log_err();
 
+            let parameters = match &parameter_source {
+                ParameterSource::Profiles(files) => {
+                    parameters_of_run(fs.as_ref(), files, &request).await
+                }
+                ParameterSource::Values(values) => Ok(values.clone()),
+            };
+            let request = QueryRequest {
+                parameters: parameters.as_ref().cloned().unwrap_or_default(),
+                ..request
+            };
             let run_log = RunLog::of(&request, &started_at);
             log_run(fs.clone(), log_lock.clone(), run_log.started()).await;
-            let outcome = match parameters_of_run(fs.as_ref(), &parameter_files, &request).await {
-                Ok(parameters) => {
-                    let request = QueryRequest {
-                        parameters,
-                        ..request
-                    };
+            let outcome = match parameters {
+                Ok(_) => {
                     save_run(
                         client,
                         request,
@@ -638,6 +713,7 @@ struct RunLog {
     cluster: String,
     database: String,
     at: String,
+    parameters: BTreeMap<String, String>,
 }
 
 impl RunLog {
@@ -648,6 +724,7 @@ impl RunLog {
             cluster: request.cluster.host().to_string(),
             database: request.database.clone(),
             at: started_at.to_string(),
+            parameters: request.parameters.clone(),
         }
     }
 
@@ -658,6 +735,7 @@ impl RunLog {
             cluster: self.cluster.clone(),
             database: self.database.clone(),
             at: self.at.clone(),
+            parameters: self.parameters.clone(),
         }
     }
 
@@ -671,6 +749,7 @@ impl RunLog {
             duration_ms: saved.duration_ms,
             rows: saved.rows,
             path: saved.path.to_string_lossy().into_owned(),
+            parameters: self.parameters.clone(),
         }
     }
 
@@ -682,6 +761,7 @@ impl RunLog {
             database: self.database.clone(),
             at: self.at.clone(),
             message,
+            parameters: self.parameters.clone(),
         }
     }
 
@@ -1258,6 +1338,106 @@ pub(crate) mod tests {
             DECLARING.trim_end(),
             "the query is sent as written"
         );
+    }
+
+    #[gpui::test]
+    async fn a_run_records_the_parameter_values_it_used(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml":
+                "active: B\nprofiles:\n  B:\n    raid: from-b\n    other: unused\n" } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(records[0]["parameters"], json!({ "raid": "from-b" }));
+        assert_eq!(records[1]["parameters"], json!({ "raid": "from-b" }));
+    }
+
+    #[gpui::test]
+    async fn a_rerun_repeats_the_run_with_the_values_it_had_not_the_profile_of_today(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml":
+                "active: A\nprofiles:\n  A:\n    raid: from-a\n  B:\n    raid: from-b\n" } }),
+        )
+        .await;
+        let runs = cx.new(|_| QueryRuns::default());
+        start(&workspace, &runs, cx);
+
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        fs.write(
+            std::path::Path::new("/root/.kusto/parameters.yaml"),
+            b"active: B\nprofiles:\n  B:\n    raid: from-b\n",
+        )
+        .await
+        .expect("the profile changes");
+
+        let log = fs
+            .load(&crate::history::history_folder().join(RUN_LOG_FILE))
+            .await
+            .expect("the run log");
+        let entry = kusto_client::history_entries(&log)
+            .into_iter()
+            .next()
+            .expect("the first run is listed");
+        let action = RerunQuery {
+            query: entry.query,
+            cluster: entry.cluster,
+            database: entry.database,
+            parameters: entry.parameters,
+        };
+        workspace.update_in(cx, |workspace, window, cx| {
+            rerun_query(workspace, &runs, &action, window, cx)
+        });
+        cx.run_until_parked();
+
+        let sent = bodies(&sent, "/v2/rest/query");
+        assert_eq!(sent.len(), 2);
+        let bodies: Vec<serde_json::Value> = sent
+            .iter()
+            .map(|body| serde_json::from_str(body).expect("a JSON body"))
+            .collect();
+        assert_eq!(bodies[1]["csl"], bodies[0]["csl"]);
+        assert_eq!(bodies[1]["db"], "Samples");
+        assert_eq!(
+            bodies[0]["properties"],
+            json!({ "Parameters": { "raid": "from-a" } })
+        );
+        assert_eq!(bodies[1]["properties"], bodies[0]["properties"]);
+
+        let finished = run_log(&workspace, cx)
+            .await
+            .into_iter()
+            .filter(|record| record["event"] == "finished")
+            .count();
+        assert_eq!(finished, 2, "the rerun is a run like any other");
+    }
+
+    #[gpui::test]
+    async fn a_rerun_with_no_cluster_says_so_instead_of_running(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        let runs = cx.new(|_| QueryRuns::default());
+        let action = RerunQuery {
+            query: "print 1".into(),
+            cluster: String::new(),
+            database: "Samples".into(),
+            parameters: BTreeMap::new(),
+        };
+        workspace.update_in(cx, |workspace, window, cx| {
+            rerun_query(workspace, &runs, &action, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(bodies(&sent, "/v2/rest/query").is_empty());
     }
 
     #[gpui::test]

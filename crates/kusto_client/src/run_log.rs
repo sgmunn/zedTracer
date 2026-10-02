@@ -4,6 +4,8 @@
 //! the history folder. The language server only reads the file, so nothing connects the two
 //! processes but the file itself.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +30,9 @@ pub enum RunRecord {
         database: String,
         /// When the run started, as an RFC 3339 time.
         at: String,
+        /// The values the run's declared query parameters had, so that the run can be repeated.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        parameters: BTreeMap<String, String>,
     },
     Finished {
         cid: String,
@@ -39,6 +44,9 @@ pub enum RunRecord {
         rows: usize,
         /// The history file holding the result.
         path: String,
+        /// The values the run's declared query parameters had, so that the run can be repeated.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        parameters: BTreeMap<String, String>,
     },
     Failed {
         cid: String,
@@ -47,6 +55,9 @@ pub enum RunRecord {
         database: String,
         at: String,
         message: String,
+        /// The values the run's declared query parameters had, so that the run can be repeated.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        parameters: BTreeMap<String, String>,
     },
     Cancelled {
         cid: String,
@@ -82,6 +93,7 @@ mod tests {
             cluster: "help.kusto.windows.net".into(),
             database: "Samples".into(),
             at: "2026-10-01T14:00:00.000Z".into(),
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -103,6 +115,7 @@ mod tests {
             duration_ms: 1840,
             rows: 1240,
             path: "/history/a.ktt".into(),
+            parameters: BTreeMap::new(),
         };
         let value: serde_json::Value =
             serde_json::from_str(append_record("", &finished).unwrap().trim()).unwrap();
@@ -113,6 +126,28 @@ mod tests {
     }
 
     #[test]
+    fn parameters_are_kept_when_there_are_some_and_left_out_when_there_are_none() {
+        let mut record = started("id");
+        let plain = append_record("", &record).unwrap();
+        assert!(!plain.contains("parameters"), "{plain}");
+
+        if let RunRecord::Started { parameters, .. } = &mut record {
+            parameters.insert("raid".into(), "abc".into());
+        }
+        let text = append_record("", &record).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(value["parameters"], serde_json::json!({ "raid": "abc" }));
+        assert_eq!(
+            serde_json::from_str::<RunRecord>(text.trim()).unwrap(),
+            record
+        );
+        assert_eq!(
+            serde_json::from_str::<RunRecord>(plain.trim()).unwrap(),
+            started("id")
+        );
+    }
+
+    #[test]
     fn a_query_with_line_breaks_stays_on_one_line() {
         let record = RunRecord::Started {
             cid: "id".into(),
@@ -120,6 +155,7 @@ mod tests {
             cluster: "c".into(),
             database: "d".into(),
             at: "x".into(),
+            parameters: BTreeMap::new(),
         };
         assert_eq!(append_record("", &record).unwrap().lines().count(), 1);
     }
