@@ -13,6 +13,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private SchemaManager schema = new(new KustoRestClient(), GlobalState.Default, new SchemaCache(null));
     private RunLog runLog = new(null);
     private DefaultsFile defaultsFile = new(null);
+    private IReadOnlyList<string> workspaceFolders = [];
+    private readonly Dictionary<string, FileChangeWatcher> parameterWatchers = new(StringComparer.Ordinal);
     private int nextRequestId;
     private Timer? spinner;
     private readonly object spinnerGate = new();
@@ -64,6 +66,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 var dataDirectory = ResolveDataDirectory(parameters);
                 schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters), new SchemaCache(dataDirectory));
                 ApplyInitializationOptions(parameters);
+                workspaceFolders = WorkspaceFolders(parameters);
                 StartRunLog(dataDirectory);
                 StartDefaultsFile(dataDirectory);
                 return new
@@ -89,6 +92,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 var uri = textDocument.GetProperty("uri").GetString()!;
                 var document = new DocumentSnapshot(textDocument.GetProperty("text").GetString() ?? "");
                 documents[uri] = document;
+                WatchParameterFiles();
                 await PublishDiagnosticsAsync(uri, document);
                 LoadReferencedSchema(document);
                 return null;
@@ -111,6 +115,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             {
                 var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString()!;
                 documents.TryRemove(uri, out _);
+                WatchParameterFiles();
                 await SendAsync(new
                 {
                     jsonrpc = "2.0",
@@ -196,9 +201,60 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private object[] GetCodeLenses(JsonElement parameters)
     {
         var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
-        return uri is not null && documents.TryGetValue(uri, out var document)
-            ? CodeLenses.For(document, runLog.Read(), DateTimeOffset.UtcNow, schema.Defaults)
-            : [];
+        if (uri is null || !documents.TryGetValue(uri, out var document))
+            return [];
+        // A project's .kusto folder may have appeared since the file was opened.
+        WatchParameterFiles();
+        var profiles = QueryParameters.Load(QueryParameters.FilesFor(uri, workspaceFolders));
+        return CodeLenses.For(
+            document,
+            runLog.Read(),
+            DateTimeOffset.UtcNow,
+            schema.Defaults,
+            query => QueryParameters.Describe(query, profiles));
+    }
+
+    private static IReadOnlyList<string> WorkspaceFolders(JsonElement parameters)
+    {
+        var uris = new List<string?>();
+        if (parameters.TryGetProperty("workspaceFolders", out var folders) && folders.ValueKind == JsonValueKind.Array)
+            uris.AddRange(folders.EnumerateArray().Select(folder =>
+                folder.TryGetProperty("uri", out var uri) && uri.ValueKind == JsonValueKind.String ? uri.GetString() : null));
+        if (parameters.TryGetProperty("rootUri", out var root) && root.ValueKind == JsonValueKind.String)
+            uris.Add(root.GetString());
+        return uris
+            .Select(uri => Uri.TryCreate(uri, UriKind.Absolute, out var parsed) && parsed.IsFile ? parsed.LocalPath : null)
+            .OfType<string>()
+            .Distinct()
+            .ToList();
+    }
+
+    /// <summary>
+    /// Follows the profile files of the open documents, so choosing another active profile, or
+    /// editing a value, changes the lenses. Files nothing open uses are let go.
+    /// </summary>
+    private void WatchParameterFiles()
+    {
+        var wanted = documents.Keys
+            .SelectMany(uri => QueryParameters.FilesFor(uri, workspaceFolders))
+            .ToHashSet(StringComparer.Ordinal);
+        lock (parameterWatchers)
+        {
+            foreach (var path in parameterWatchers.Keys.Where(path => !wanted.Contains(path)).ToList())
+            {
+                parameterWatchers[path].Dispose();
+                parameterWatchers.Remove(path);
+            }
+            foreach (var path in wanted.Where(path => !parameterWatchers.ContainsKey(path)))
+            {
+                var watcher = new FileChangeWatcher(path);
+                watcher.Changed += () => _ = RequestCodeLensRefreshAsync();
+                if (watcher.Start(createDirectory: false))
+                    parameterWatchers[path] = watcher;
+                else
+                    watcher.Dispose();
+            }
+        }
     }
 
     /// <summary>

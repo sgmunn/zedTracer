@@ -77,6 +77,16 @@ fn passes_values_for_declared_query_parameters() -> Result<()> {
 
 #[test]
 #[ignore = "needs a network and an Azure CLI sign-in"]
+fn reports_a_declared_parameter_that_was_given_no_value() -> Result<()> {
+    let error = block_on(client().execute(&request("declare query_parameters(raid:string); print raid")?))
+        .expect_err("raid has no value");
+    println!("{error}");
+    assert!(error.to_string().contains("raid"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs a network and an Azure CLI sign-in"]
 fn reports_why_a_query_failed() -> Result<()> {
     let error = block_on(client().execute(&request("NoSuchTable | take 1")?))
         .expect_err("the table does not exist");
