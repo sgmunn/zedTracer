@@ -633,9 +633,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         var globals = schema.GlobalsFor(connection);
         var checkNames = schemaDiagnostics && !QueryBlocks.IsControlCommand(block.Text) && SchemaIsLoaded(block, connection, globals);
         var code = checkNames ? KustoCode.ParseAndAnalyze(block.Text, globals) : KustoCode.Parse(block.Text);
-        var found = checkNames ? code.GetDiagnostics() : code.GetSyntaxDiagnostics();
-        return found
+        var found = (checkNames ? code.GetDiagnostics() : code.GetSyntaxDiagnostics())
             .Where(diagnostic => diagnostic.HasLocation)
+            .ToList();
+        if (checkNames)
+            found = KnockOnErrors.Without(code, found);
+        return found
             .Select(diagnostic => (object)new
             {
                 range = new

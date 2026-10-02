@@ -260,6 +260,11 @@ Kusto's own analysis finds, such as a wrong argument type. Some rules keep this 
   is new: click the `↻ Schema` lens to fetch it again, and the file is checked again when it arrives.
 - Each query is checked against the cluster and database its own directives name, so queries on different
   clusters in one file are each checked against their own.
+- When the table or function a query starts from is not in the schema, that is the one error shown for the
+  query. The analysis cannot say what the columns of an unknown source are, so it would otherwise also report
+  every column the rest of the query uses and every argument whose type depends on one; those are left out.
+  A wrong name in a different statement, or in a query whose source is known, is still reported. (Names after an
+  unknown source also stay in the default text colour, since nothing can say what they are.)
 - Control commands (`.show ...`) are only checked for syntax.
 - The files are checked again whenever a schema arrives or is refreshed, with no keystroke needed.
 - If a name the service accepts is reported wrong, for example a function newer than the analysis library
