@@ -1,5 +1,6 @@
 use gpui::{Hsla, Rgba};
 use kusto_results::Table;
+use kusto_results::sequence::SequenceOptions;
 use kusto_results::trace_schema::{TraceColumns, TraceSchema};
 use settings::{DockSide, RegisterSetting, Settings};
 
@@ -13,6 +14,8 @@ pub struct ResultsSettings {
     pub dock: DockSide,
     /// The user's trace schemas, tried in order before the built-in column names.
     pub trace_schemas: Vec<TraceSchema>,
+    /// How the sequence diagram of a trace is drawn.
+    pub sequence: SequenceOptions,
 }
 
 impl ResultsSettings {
@@ -25,6 +28,35 @@ impl ResultsSettings {
     /// The columns of `table` that play each part of a trace.
     pub fn trace_columns(&self, table: &Table) -> TraceColumns {
         TraceColumns::resolve(table, &self.trace_schemas)
+    }
+}
+
+fn sequence_options(content: Option<&settings::KustoSequenceSettingsContent>) -> SequenceOptions {
+    let defaults = SequenceOptions::default();
+    let Some(content) = content else {
+        return defaults;
+    };
+    SequenceOptions {
+        step_depth: match content.step_depth {
+            Some(0) => None,
+            Some(depth) => Some(depth),
+            None => defaults.step_depth,
+        },
+        collapse_repeats: content.collapse_repeats.unwrap_or(defaults.collapse_repeats),
+        wrapper_markers: content
+            .wrapper_markers
+            .clone()
+            .unwrap_or(defaults.wrapper_markers),
+        routine_warnings: content
+            .routine_warnings
+            .clone()
+            .unwrap_or(defaults.routine_warnings),
+        generic_actor_suffixes: content
+            .generic_actor_suffixes
+            .clone()
+            .unwrap_or(defaults.generic_actor_suffixes),
+        max_arrows: content.max_arrows.unwrap_or(defaults.max_arrows),
+        ..defaults
     }
 }
 
@@ -82,6 +114,12 @@ impl Settings for ResultsSettings {
                 .iter()
                 .map(trace_schema)
                 .collect(),
+            sequence: sequence_options(
+                content
+                    .kusto_results
+                    .as_ref()
+                    .and_then(|results| results.sequence.as_ref()),
+            ),
             severity_tints: [
                 tint(|colours| &colours.critical),
                 tint(|colours| &colours.error),
@@ -127,6 +165,7 @@ mod tests {
                 verbose: Some("  #00ff0040  ".into()),
             }),
             trace_schemas: None,
+            sequence: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -167,6 +206,35 @@ mod tests {
             assert!(columns.supports_sequence());
             assert_eq!(columns.activity_id, Some(0));
             assert_eq!(columns.actor, Some(2));
+        });
+    }
+
+    #[gpui::test]
+    fn the_sequence_settings_start_from_the_defaults_and_can_turn_steps_off(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            let defaults = ResultsSettings::get_global(cx).sequence.clone();
+            assert_eq!(defaults, SequenceOptions::default());
+
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "sequence": {
+                            "step_depth": 0, "max_arrows": 50, "wrapper_markers": ["*Entry"]
+                        } } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            let changed = ResultsSettings::get_global(cx).sequence.clone();
+            assert_eq!(changed.step_depth, None);
+            assert_eq!(changed.max_arrows, 50);
+            assert_eq!(changed.wrapper_markers, vec!["*Entry".to_string()]);
+            assert_eq!(changed.collapse_repeats, defaults.collapse_repeats);
+            assert_eq!(changed.routine_warnings, defaults.routine_warnings);
         });
     }
 
