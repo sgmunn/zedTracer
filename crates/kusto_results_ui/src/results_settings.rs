@@ -1,4 +1,6 @@
 use gpui::{Hsla, Rgba};
+use kusto_results::Table;
+use kusto_results::trace_schema::{TraceColumns, TraceSchema};
 use settings::{DockSide, RegisterSetting, Settings};
 
 /// The settings for the Kusto results grid.
@@ -9,6 +11,8 @@ pub struct ResultsSettings {
     pub severity_tints: [Option<Hsla>; 5],
     /// The side the Row Details panel docks on.
     pub dock: DockSide,
+    /// The user's trace schemas, tried in order before the built-in column names.
+    pub trace_schemas: Vec<TraceSchema>,
 }
 
 impl ResultsSettings {
@@ -16,6 +20,25 @@ impl ResultsSettings {
     pub fn severity_tint(&self, level: u8) -> Option<Hsla> {
         let index = usize::from(level).checked_sub(1)?;
         self.severity_tints.get(index).copied().flatten()
+    }
+
+    /// The columns of `table` that play each part of a trace.
+    pub fn trace_columns(&self, table: &Table) -> TraceColumns {
+        TraceColumns::resolve(table, &self.trace_schemas)
+    }
+}
+
+fn trace_schema(content: &settings::KustoTraceSchemaContent) -> TraceSchema {
+    TraceSchema {
+        name: content.name.clone().unwrap_or_default(),
+        requires: content.requires.clone().unwrap_or_default(),
+        activity_id: content.activity_id.clone(),
+        parent_activity_id: content.parent_activity_id.clone(),
+        marker: content.marker.clone(),
+        actor: content.actor.clone(),
+        timestamp: content.timestamp.clone(),
+        severity: content.severity.clone(),
+        message: content.message.clone(),
     }
 }
 
@@ -51,6 +74,14 @@ impl Settings for ResultsSettings {
                 .as_ref()
                 .and_then(|results| results.dock)
                 .unwrap_or(DockSide::Right),
+            trace_schemas: content
+                .kusto_results
+                .as_ref()
+                .and_then(|results| results.trace_schemas.as_deref())
+                .unwrap_or_default()
+                .iter()
+                .map(trace_schema)
+                .collect(),
             severity_tints: [
                 tint(|colours| &colours.critical),
                 tint(|colours| &colours.error),
@@ -95,6 +126,7 @@ mod tests {
                 normal: None,
                 verbose: Some("  #00ff0040  ".into()),
             }),
+            trace_schemas: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -102,6 +134,40 @@ mod tests {
         assert_eq!(settings.severity_tint(3), None);
         assert_eq!(settings.severity_tint(4), None);
         assert!(settings.severity_tint(5).is_some());
+    }
+
+    #[gpui::test]
+    fn trace_schemas_in_the_user_settings_rename_the_columns_of_a_trace(cx: &mut TestAppContext) {
+        use kusto_results::Column;
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            let table = Table {
+                name: "t".into(),
+                columns: ["SpanId", "ParentSpanId", "Service", "TIMESTAMP"]
+                    .into_iter()
+                    .map(|name| Column::new(name, "string"))
+                    .collect(),
+                rows: Vec::new(),
+            };
+            assert!(!ResultsSettings::get_global(cx).trace_columns(&table).supports_activity());
+
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "trace_schemas": [
+                            { "name": "spans", "activity_id": "SpanId",
+                              "parent_activity_id": "ParentSpanId", "actor": "Service" }
+                        ] } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            let columns = ResultsSettings::get_global(cx).trace_columns(&table);
+            assert!(columns.supports_sequence());
+            assert_eq!(columns.activity_id, Some(0));
+            assert_eq!(columns.actor, Some(2));
+        });
     }
 
     /// A user's `""` has to win over the default colour when the settings are merged, not only

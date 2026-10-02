@@ -18,7 +18,7 @@ use kusto_results::export::{copy_text, datatable, html, markdown};
 use kusto_results::filter::ColumnFilter;
 use kusto_results::view::{
     CellSelection, SortColumn, SortDirection, ViewState, display_column_order, selected_positions,
-    severity_column, severity_level, toggle_row, visible_rows,
+    severity_level, toggle_row, visible_rows,
 };
 use kusto_results::{ColumnLayout, ResultSet, TableView};
 use ui::{
@@ -1171,8 +1171,8 @@ impl ResultGrid {
             return Vec::new();
         };
         let selected_color = cx.theme().colors().element_selected;
-        let severity_column = severity_column(table);
         let settings = ResultsSettings::get_global(cx).clone();
+        let severity_column = settings.trace_columns(table).severity;
         let rows: Vec<Vec<AnyElement>> = range
             .filter_map(|display_row| {
                 let source_row = *self.visible_rows.get(display_row)?;
