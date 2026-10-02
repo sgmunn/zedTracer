@@ -103,6 +103,28 @@ active profile lacks a declared parameter. These actions are also in the command
 The editor and the language server read the declarations and the files with the same rules, and agree on the declared names
 through `fork-docs/samples/query-parameters.json`.
 
+## History
+
+Every run is saved as a result file in the `kusto/history` folder of Zed's data folder. **kusto: show history**
+(in the command palette) lists the queries that were run, newest first, with the time, the number of rows, how
+long it took, where it ran and the first line of the query. Type to search the query text, the cluster, the
+database or an error message. Enter shows that result in the Results panel, and Cmd-Enter on macOS (Ctrl-Enter elsewhere)
+opens it in a tab. A failed run shows its error. The trash button that appears when you hover a row
+deletes that result's file; the row stays in the list, marked `result deleted`.
+
+The list comes from the run log, `runs.jsonl`, which keeps the last 200 or so runs, so older results are still
+on disk but no longer listed.
+
+The history cannot grow without limit. After a run, and when Zed starts, the oldest result files beyond these
+settings are deleted (a limit of 0 means no limit):
+
+```json
+{ "kusto": { "history_max_results": 50, "history_max_megabytes": 1024 } }
+```
+
+Only files named like a run's result (`20261001-203917-<uuid>.ktt`) are ever deleted, so a result you saved into
+that folder yourself is safe, and so is any result open in a tab or in the panel of the window that ran the query.
+
 ## Schema from your clusters
 
 The server signs in with `az account get-access-token`, so run `az login`
