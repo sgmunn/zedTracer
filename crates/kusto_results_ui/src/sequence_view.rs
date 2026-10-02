@@ -1,7 +1,8 @@
 //! The sequence diagram of a trace. The markdown view already draws Mermaid with zoom, scrolling,
-//! the theme and a button that copies the source, so this view hands it the text in a code block.
+//! the theme, a code view of the source and a button that copies it, so this view hands it the
+//! text in a code block.
 
-use gpui::{AppContext as _, Context, Entity, IntoElement, Render, SharedString, Window};
+use gpui::{AppContext as _, Context, Entity, IntoElement, Render, Window};
 use markdown::{
     CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownFont,
     MarkdownOptions, MarkdownStyle, WrapButtonVisibility,
@@ -10,7 +11,6 @@ use ui::prelude::*;
 
 pub(crate) struct SequenceView {
     markdown: Entity<Markdown>,
-    mermaid: SharedString,
 }
 
 impl SequenceView {
@@ -28,15 +28,12 @@ impl SequenceView {
                 cx,
             )
         });
-        Self {
-            markdown,
-            mermaid: mermaid.into(),
-        }
+        Self { markdown }
     }
 
-    /// The Mermaid text, for the Copy action.
-    pub(crate) fn mermaid(&self) -> &SharedString {
-        &self.mermaid
+    #[cfg(test)]
+    pub(crate) fn source(&self, cx: &gpui::App) -> gpui::SharedString {
+        self.markdown.read(cx).source().clone()
     }
 }
 
