@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use directives::{
-    Connection, ResolvedQuery, connection_for_selection, connection_up_to, connections_of_queries,
+    Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to, connections_of_queries,
     resolve_query_at,
 };
 pub use query_text::{query_blocks, query_range_at};

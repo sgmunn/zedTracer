@@ -17,14 +17,15 @@ use gpui::{
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
-    AzureCliTokenProvider, Cluster, Connection, KustoClient, QueryRequest, RUN_LOG_FILE,
+    AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, KustoClient, QueryRequest,
+    RUN_LOG_FILE,
     RunRecord, TokenProvider, append_record, connection_for_selection, resolve_query_at,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
-use settings::{KustoResultsLocation, RegisterSetting, Settings};
+use settings::{KustoResultsLocation, RegisterSetting, Settings, SettingsStore};
 use workspace::notifications::{DetachAndPromptErr as _, NotificationId};
 use workspace::{OpenOptions, OpenVisible, Toast, Workspace};
 
@@ -83,6 +84,38 @@ impl Settings for KustoSettings {
                 .unwrap_or(KustoResultsLocation::Panel),
         }
     }
+}
+
+/// Keeps the language server's idea of the default cluster and database the same as the one runs
+/// use, so the settings are the only place they are written.
+pub(crate) fn share_defaults_with_language_server(cx: &mut App) {
+    let fs = <dyn Fs>::global(cx);
+    let mut shared: Option<Connection> = None;
+    let mut share = move |cx: &mut App| {
+        let connection = default_connection(cx);
+        if shared.as_ref() == Some(&connection) {
+            return;
+        }
+        shared = Some(connection.clone());
+        cx.spawn({
+            let fs = fs.clone();
+            async move |_| write_defaults(fs, &connection).await.log_err()
+        })
+        .detach();
+    };
+    share(cx);
+    cx.observe_global::<SettingsStore>(share).detach();
+}
+
+async fn write_defaults(fs: Arc<dyn Fs>, connection: &Connection) -> Result<()> {
+    let folder = paths::data_dir().join("kusto");
+    fs.create_dir(&folder).await?;
+    fs.write(
+        &folder.join(DEFAULTS_FILE),
+        connection.to_defaults_file().as_bytes(),
+    )
+    .await
+    .context("could not tell the language server the default cluster and database")
 }
 
 pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
@@ -1049,6 +1082,46 @@ mod tests {
         assert!(path.ends_with(".ktt"), "{path}");
         let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
         assert!(fs.is_file(std::path::Path::new(path)).await, "the file is on disk");
+    }
+
+    #[gpui::test]
+    async fn the_default_cluster_and_database_are_shared_with_the_language_server(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let fs = cx.update(|_, cx| <dyn Fs>::global(cx));
+        let path = paths::data_dir().join("kusto").join(DEFAULTS_FILE);
+        let change_settings = |settings: &'static str, cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                cx.update_global::<SettingsStore, _>(|store, cx| {
+                    store
+                        .set_user_settings(settings, cx)
+                        .expect("the user settings parse");
+                });
+            });
+            cx.run_until_parked();
+        };
+        let shared = async |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            let text = fs.load(&path).await.expect("the defaults are written");
+            serde_json::from_str::<serde_json::Value>(&text).expect("the defaults are JSON")
+        };
+
+        change_settings(
+            r#"{ "kusto": { "cluster": "https://help.kusto.windows.net", "database": "Samples" } }"#,
+            cx,
+        );
+        assert_eq!(
+            shared(cx).await,
+            json!({ "cluster": "https://help.kusto.windows.net", "database": "Samples" })
+        );
+
+        change_settings(r#"{ "kusto": { "database": "Other" } }"#, cx);
+        assert_eq!(
+            shared(cx).await,
+            json!({ "cluster": null, "database": "Other" }),
+            "removing a setting removes it for the language server too"
+        );
     }
 
     #[gpui::test]
