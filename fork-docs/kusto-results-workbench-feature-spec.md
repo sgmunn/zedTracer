@@ -20,6 +20,8 @@ The KustoTraceTools VS Code extension (fork `dev/gregm` of `Kusto-Explorer-VsCod
 | History list (browse, delete, clear, reveal, copy to workspace) | Out, except the stored data (PER-5) | The list UI can follow later (P2). |
 | Query parameter profiles | Deferred (section 5) | Requirements recorded so they are not lost. |
 | Agent access to results | Deferred (section 5) | Requirements recorded so they are not lost. |
+| Sequence diagram view | Deferred (section 5.3) | A Zed addition. Requirements come from a prototype on two real traces. |
+| Trace schema (configurable column roles) | Deferred (section 5.4) | Needed by the sequence view and wanted by the activity view. |
 | Charts, `render`, graph and pivot views | Out | To be specified later. |
 | Connections explorer, scratch pads, formatting settings, Copilot schema tools | Out | Not part of this effort. |
 | Query editing (highlighting, completion, diagnostics) | Out | Covered by the Kusto extension spike in `extensions/kusto`. |
@@ -452,6 +454,84 @@ Source: `docs/FORK_DESIGN.md`, `src/Client/features/savedQueryResults.ts`.
 - AGT-3. Handoff is context transfer only. It gives the agent no connection and no permission to re-run the query. New queries run through the normal user-initiated flow.
 - AGT-4. **What VS Code actually implements today** is narrower than AGT-1 to AGT-3: a Copilot tool that takes a full client request id (CID), reads the matching stored History result, and returns it as markdown (optionally for one table), at most 100 rows by default and 1000 at most, with a note stating how many rows were shown. There is no selected-rows handoff or pre-share disclosure yet. The CID comes from the **Copy CID** action (RUN-9).
 
+### 5.3 Sequence diagram view (SEQ)
+
+A Zed addition; VS Code has nothing like it. It shows a structured trace as a sequence diagram: the actors are the processes that logged the trace, and an arrow is a call from one process to another. The point is to answer "which service called which, in what order, and where did it fail" without reading the activity tree.
+
+**Where the rules come from.** They were found by building a prototype (a throwaway script, not in the repo) and running it on two real traces, then fixing what went wrong. Both traces have the columns `CurrentActivityId`, `ParentActivityId`, `MarkerName`, `ProcessName`, `TIMESTAMP`, `Severity` and `MessageText`.
+
+| Trace | Rows | Activities | Actors | Parent-to-child edges that cross actors | Calls after merging | Items drawn |
+| --- | --- | --- | --- | --- | --- | --- |
+| Sample 1 | 1,002 | 164 | 4 | 4 of 163 | 4 | 4 |
+| Sample 2 | 6,413 | 1,314 | 5 | 56 of 1,312 | 31 | 7 (6 arrows and 1 loop) |
+
+No activity in either trace has events from more than one actor. Sample 2 has one root with 1,312 of the 1,314 activities and a caller that is not in the result.
+
+Every requirement is a Zed addition. The projection (SEQ-2 to SEQ-14) is UI-free and lives with the other projections in `kusto_results`; Mermaid text is one output of it (SEQ-15).
+
+**Projection**
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| SEQ-1 | P1 | The **Sequence** tab is offered for a table that has the activity columns (ACT) and resolves the *actor* and *timestamp* roles (TRC-1). It is available in the same places as the structured tab (ACT-16). When a role is missing the tab is not offered. |
+| SEQ-2 | P1 | An activity's **actor** is the actor-column value of its first event. Blank values form one actor labelled `(unknown)`. Actor names are shortened for display (common namespace prefix and generic suffix removed, so `Microsoft.ASPaaS.FrontEnd.Service` reads `FrontEnd`); the full name is the tooltip. Two actors that shorten to the same name keep their full names. |
+| SEQ-3 | P1 | A **call** exists where a child activity's actor differs from its parent's actor (ACT-2). Child activities of one parent that are in the same callee actor and overlap in time (from first to last event) are one call; non-overlapping ones are separate calls. This matters because one request often leaves two sibling activities in the callee, and one parent activity can make dozens of calls (Sample 2: 25 calls under one parent). |
+| SEQ-4 | P1 | **Nesting follows the activity tree, never the timestamps.** A call made inside another call's callee is drawn inside it. Timestamps only order siblings and give durations (first to last event of the callee activities). The first logged event of an activity can be later than its children's, and process clocks differ, so a timestamp-ordered diagram shows overlapping activations. |
+| SEQ-5 | P1 | **Framing.** The root activity (no parent in the result) with the largest branch frames the diagram: an arrow from a pseudo-actor `(caller not in result)` into the root's actor opens it and the matching return, with total duration and an error mark when one applies, closes it. Other roots that contain calls are drawn the same way after it. Roots with no calls are not drawn but counted in a footer note (`N activities not shown`), so nothing is dropped silently (ACT-3). |
+| SEQ-6 | P1 | **Collapsing.** Consecutive sibling calls with the same caller actor, callee actor and label, and with no nested calls and no errors, become one `loop` block showing the count, the time span from the first to the last call, and the shortest and longest duration. Collapsing can be switched off (SEQ-19). |
+| SEQ-7 | P1 | The **arrow label** is the `MarkerName` of the calling activity (its first event), with a configurable namespace prefix removed. A callee's marker is not drawn by default, because it is usually a generic entry marker (`...IncomingRequest`); it is shown in the details (SEQ-10). |
+| SEQ-8 | P1 | **Steps explain why.** Calls are grouped under the **step** that caused them: the in-process ancestor of the calling activity that sits a configurable number of levels below the framing root (default 1). A step is drawn as a labelled block around its calls. In Sample 2 the token call and the 25-call loop fall under one step and the failing request under another, which says more than the root alone. |
+| SEQ-9 | P1 | **Wrapper markers** (default: names ending `IncomingRequest`; a list the user can change, with `*` at either end as a wildcard) are skipped when choosing a step label, and an arrow whose own label would be one is drawn `caller marker → callee marker` instead. The default is narrow on purpose: a prefix such as `WCL-` also matches informative markers like `WCL-MwcAccessInfoProvider-GetAzureSqlS2SAccessTokenAsync`. |
+| SEQ-10 | P1 | **Details for an arrow** show the callee marker, the activity ids, the source rows, the start offset from the trace start, the duration, and the chain of in-process ancestor markers from the calling activity up to the root. |
+
+**Errors and warnings**
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| SEQ-11 | P1 | A call whose callee branch contains an event of severity 2 or worse has its return arrow marked as an error, and so does the frame. A note is drawn only for an **origin**: an activity with an error of its own and no activity below it (in any actor) with an error. An error that each caller logs again on the way up is therefore told once, where it began, and the callers show only the error mark. The note sits on the call in whose scope the origin ran. Notes with the same actor, marker and message merge into one with `×N`; at most 3 per scope, the rest summarised as `+N more distinct errors`. Rows that say nothing about the failure (later parts of a split message, split notices, scope-end markers) are never the note text; the first part of a split message is allowed, and when the message is JSON its `message` property is used, even when the JSON is cut off. Using the assembled multipart text (MPM) is not done yet. |
+| SEQ-12 | P1 | Note text is cut at about 60 characters with an ellipsis; the full text is in the details. |
+| SEQ-13 | P2 | **Off-path errors.** An error that is not on a path from a failing call to the root is not drawn as a note; it is counted in a badge on its actor. In Sample 2 a handled authentication warning currently appears as noise next to the real failure. |
+| SEQ-14 | P2 | **Warning summary in a loop.** A collapsed loop shows its most frequent non-routine warning with a count. Routine events (for example a request-completed message logged at warning level) are excluded through a noise list, like SET-5. |
+
+**Output and presentation**
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| SEQ-15 | P1 | The projection renders to **Mermaid** `sequenceDiagram` text, which the tab draws with the existing `mermaid_render` crate using the active theme (NFR-3). `Copy as Mermaid` copies the text for use in a wiki, a pull request or a ticket. The text is always valid: `;`, `#`, `%`, quotes and backslashes in values are removed or replaced, and values are never interpreted as markup (NFR-4). |
+| SEQ-16 | P1 | The diagram is built when the tab is first shown, in a background task that is superseded by a newer request (NFR-2). Until it is ready the tab shows a busy state. It reads the rows of the ordinary view and does not copy them (NFR-8). |
+| SEQ-17 | P1 | Width is bounded: shortened actor names (SEQ-2), labels and notes cut to a set length (SEQ-12), and a tab that scrolls in both directions and can zoom. Measured on Sample 2 the unbounded diagram is 3,370 by 1,183 px at 1x. |
+| SEQ-18 | P1 | A limit on arrows drawn (number to be set from measurement, NFR-1). Beyond it the diagram says how many calls are not shown and offers more collapsing. |
+| SEQ-19 | P1 | **Options**: step depth (SEQ-8), wrapper list (SEQ-9), collapsing on or off, include in-process activities that have an error or last longer than a set time, and marker include and exclude patterns. Changing an option rebuilds the diagram. |
+| SEQ-20 | P2 | **Click-through.** Selecting an arrow selects the callee activity in the structured tab and its rows in the grid. A picture cannot do this; it needs either a hit map over the rendered image or a native renderer. The projection already keeps the activity ids and source rows of every call (SEQ-10), so nothing here blocks it. |
+| SEQ-21 | P2 | **Saved diagram.** The diagram is built on demand and not stored (Q-17). Only a diagram the user has edited (SEQ-22) is stored in the result file, per table, as the extra property `sequenceDiagrams`: the text, a generator version and the options used. A missing or invalid stored diagram is never an error. The property is an unknown property to every other reader and must survive their round trip (PER-2). |
+| SEQ-22 | P2 | **Edited diagram.** If the user edits the text, it is stored as edited and never replaced by a rebuild; a `Regenerate` action discards the edit after confirmation. The stored text is a derived display and never changes the table data (PER-6). |
+
+**Acceptance vectors (spec).** Measured on the two real traces, which are git-ignored and cannot be committed, so a synthetic trace with the same shape must be added to `fork-docs/samples/` (`generate_samples.py`) before tests are written.
+
+- SEQ-V1. Sample 1 gives 4 calls in one frame; the failing one is marked, and its note names the deepest error.
+- SEQ-V2. Sample 2 gives 31 calls, drawn as 6 arrows and 1 loop of 25 (SEQ-6), inside one frame whose root is the activity with 1,312 of the 1,314 activities (SEQ-5).
+- SEQ-V3. In Sample 2 each of the 25 loop calls has two sibling activities in the callee that merge into one call (SEQ-3).
+- SEQ-V4. A trace in which an activity's first logged event is later than the first event of one of its child activities, or in which two actors' clocks disagree, still draws every call inside its parent's call, with no overlapping activations (SEQ-4).
+- SEQ-V5. A trace with a message containing `;`, `#`, `%` and a quote produces text that Mermaid accepts (SEQ-15).
+- SEQ-V6. A trace with one root and no cross-actor edges produces the frame and a footer line, not an empty diagram.
+
+**Spike result (rendering).** The Mermaid text for Sample 2 was rendered with merman 0.8.0-alpha.5, the engine inside `mermaid_render`, through its raster-safe pipeline and then rasterised with resvg 0.46. Participants, numbering, activation bars, dashed returns, `loop`, notes and the symbols `×`, `✗` and `⚠` all rendered, in about 0.6 s. A `rect` block, used for steps (SEQ-8), also renders: a shaded band across the actors it touches, with the step label as a note. Not yet checked: Zed's own theme and accent styling, and a diagram with hundreds of calls.
+
+### 5.4 Trace schema (TRC)
+
+The activity view and the severity colours look for fixed column names (`CurrentActivityId`, `ParentActivityId`, `MarkerName`, `level` or `severity`), and the sequence view needs two more roles. Other schemas will use other names, so the roles should be mapped in one place.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| TRC-1 | P1 | A **trace schema** maps roles to column names. Roles: activity id, parent activity id, marker, actor, timestamp, severity, message. The activity view needs the first two; the others are optional for it. The sequence view needs activity id, parent, actor and timestamp. |
+| TRC-2 | P1 | Resolution order: a schema named in a setting, then the built-in names matched exactly and then case-insensitively (as ACT does today). The first schema whose required roles all resolve wins. |
+| TRC-3 | P1 | A setting holds a list of schemas, each with a name and a column name per role, and optionally the column names that must be present for it to apply, so one setting can serve several clusters. Names follow the existing `kusto` settings. |
+| TRC-4 | P1 | Every feature that reads a trace column (ACT, SEV, SEQ, and any later analysis such as AGT) uses the resolved schema. No feature keeps its own fixed names. |
+| TRC-5 | P2 | A schema can be set for a single query or file, for example in a connection-style comment like `// :setDefaultCluster(...)`. Not decided. |
+| TRC-6 | P1 | When a tab is not offered because a role is missing, the tab bar says which role could not be resolved, so the user knows what to configure. |
+
+**Status.** TRC-1, TRC-2 and TRC-4 for the activity view and severity colours, and SEQ-2 to SEQ-12, SEQ-15 (text) and the nesting limit are built in `crates/kusto_results` (`trace_schema.rs`, `sequence.rs`), with tests. Not built yet: the settings for TRC-3, the tab and the Copy action (SEQ-1, SEQ-15, SEQ-16), SEQ-13, SEQ-14, SEQ-18 to SEQ-22, TRC-5 and TRC-6. The existing UI still uses the built-in column names.
+
 ## 6. Acceptance vectors
 
 Concrete cases each implementation must satisfy. Vectors marked **(VSC test)** come from the VS Code unit tests. Vectors marked **(spec)** are defined by this spec from reading the code, because VS Code has no test for them. Automated tests should reproduce all of them. Fixture files that exercise these cases, with expected results, are in `fork-docs/samples/` (see its README). Wire formats follow what the VS Code server emits: datetimes as ISO 8601 with seven fractional digits, timespans as `[-][d.]hh:mm:ss[.fffffff]`.
@@ -562,7 +642,7 @@ Every deliberate difference in one place. "Fix" means Zed does not reproduce the
 
 ## 8. Questions and decisions
 
-Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written.
+Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open.
 
 | # | Question | Decision |
 | --- | --- | --- |
@@ -580,3 +660,9 @@ Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are
 | Q-12 | String sort: natural numeric ordering, and whether to ignore punctuation? | Natural ordering yes, ignoring punctuation no. |
 | Q-13 | Call-stack frame joining: keep VS Code's joined form (documented, tested) or one frame per line? | One frame per line. It is what the design doc's first call-stack bullet asks for. Two VS Code unit tests expect the joined form and would need rewriting if the VS Code fork is kept in step. |
 | Q-14 | Should the existing `tabular_data_preview` crate's sort and checklist filters be reused for this grid? | Assess in phase A (design doc section 3). It solves the popover and header regions, but it has string-only sort and distinct-value filters, not the typed operators required here. |
+| Q-15 | How is a step (SEQ-8) drawn, and what is the right default step depth? | Open, partly answered. A `rect` block with the label as a note renders in merman and reads well on Sample 2: depth 1 gives one step for the token call and the loop, and one for the failing request. Still to try on more traces, and to see in Zed's theme. |
+| Q-16 | Does the VS Code extension accept an unknown top-level property in a `.ktt` file (needed for SEQ-21)? | Open. Zed's reader keeps unknown properties (PER-2); the VS Code reader has not been checked. |
+| Q-17 | Store a generated diagram in the result file, in a side file, or not at all (SEQ-21)? | Decided: build it on demand and do not store it. A diagram builds in milliseconds, and `Copy as Mermaid` (SEQ-15) covers sharing. Only an edited diagram is stored (SEQ-22, P2). |
+| Q-18 | Is an actor the process name alone, or the process name plus the process id? | Decided: the name alone. The actor column is configurable (TRC-1) for traces where another column is the better actor. |
+| Q-19 | Draw the diagram as a Mermaid picture, or build a native renderer so arrows can be clicked (SEQ-20)? | Open. The picture is enough for the first version; the projection is kept separate so a native view can follow. |
+| Q-20 | What if one activity has events from more than one actor? | Open. Neither sample does this. SEQ-2 takes the first event's actor; a trace that mixes them may need splitting the activity. |
