@@ -368,6 +368,8 @@ pub struct ResultsViewer {
     /// For a trace the sequence view cannot draw: the parts of a trace it could not find.
     sequence_missing: Option<SharedString>,
     sequence: Option<Sequence>,
+    /// How the diagram is drawn: the settings, changed by the controls of this tab.
+    sequence_options: SequenceOptions,
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
@@ -454,6 +456,7 @@ impl ResultsViewer {
             can_show_sequence: false,
             sequence_missing: None,
             sequence: None,
+            sequence_options: SequenceOptions::default(),
             can_show_query: false,
             query_view: None,
             _grid_subscription: None,
@@ -496,6 +499,7 @@ impl ResultsViewer {
                     .collect();
                 SharedString::from(format!("Sequence needs: {}", roles.join(", ")))
             });
+        self.sequence_options = settings.sequence.clone();
         // What the structured and sequence views were built from has changed.
         self.structured = None;
         self._structured_subscription = None;
@@ -615,6 +619,26 @@ impl ResultsViewer {
         cx.notify();
     }
 
+    /// Steps off, then 1, 2 and 3 levels below the root, then off again.
+    fn cycle_step_depth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sequence_options.step_depth = match self.sequence_options.step_depth {
+            None => Some(1),
+            Some(depth) if depth < 3 => Some(depth + 1),
+            Some(_) => None,
+        };
+        self.draw_sequence_again(window, cx);
+    }
+
+    fn toggle_collapsed_loops(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sequence_options.collapse_repeats = !self.sequence_options.collapse_repeats;
+        self.draw_sequence_again(window, cx);
+    }
+
+    fn draw_sequence_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.build_sequence(window, cx);
+        cx.notify();
+    }
+
     /// Builds the sequence diagram away from the window, then the view.
     fn build_sequence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
@@ -623,6 +647,7 @@ impl ResultsViewer {
             .tables
             .first()
             .map(|table| settings.trace_columns(table));
+        let options = self.sequence_options.clone();
         self.sequence = Some(Sequence::Building {
             _task: cx.spawn_in(window, async move |this, cx| {
                 let mermaid = cx
@@ -630,7 +655,7 @@ impl ResultsViewer {
                         let table = result.tables.first()?;
                         let columns = columns?;
                         let projection = build_projection_with(table, &columns)?;
-                        build_sequence(table, &projection, &columns, &SequenceOptions::default())
+                        build_sequence(table, &projection, &columns, &options)
                             .map(|diagram| diagram.to_mermaid())
                     })
                     .await;
@@ -717,6 +742,8 @@ impl Render for ResultsViewer {
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
         let mode = self.mode;
+        let steps = self.sequence_options.step_depth;
+        let collapse = self.sequence_options.collapse_repeats;
         let rerun = self.rerun_action(cx);
         let save = self.save_action(cx);
         v_flex()
@@ -757,6 +784,35 @@ impl Render for ResultsViewer {
                                         .toggle_state(mode == ViewMode::Sequence)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.set_mode(ViewMode::Sequence, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .when(mode == ViewMode::Sequence, |bar| {
+                            let steps = match steps {
+                                Some(depth) => depth.to_string(),
+                                None => "off".to_string(),
+                            };
+                            bar.child(
+                                div().debug_selector(|| "sequence-steps".to_string()).child(
+                                    Button::new("results-sequence-steps", format!("Steps: {steps}"))
+                                        .tooltip(ui::Tooltip::text(
+                                            "Group the calls under the activity this many levels below the root",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cycle_step_depth(window, cx)
+                                        })),
+                                ),
+                            )
+                            .child(
+                                div().debug_selector(|| "sequence-collapse".to_string()).child(
+                                    Button::new("results-sequence-collapse", "Collapse loops")
+                                        .toggle_state(collapse)
+                                        .tooltip(ui::Tooltip::text(
+                                            "Draw calls that repeat as one loop with a count",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_collapsed_loops(window, cx)
                                         })),
                                 ),
                             )
@@ -1536,5 +1592,97 @@ mod tests {
             .expect("the sequence view is built");
         let source = view.read_with(cx, |view, cx| view.source(cx));
         assert!(source.contains("sequenceDiagram"), "{source}");
+    }
+
+    /// SEQ-19: the step depth and loop collapsing can be changed from the tab, and the diagram is
+    /// drawn again.
+    #[gpui::test]
+    async fn the_sequence_tab_draws_again_when_its_options_change(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = "2026-01-01T00:00:00.0000000Z";
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "MarkerName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                ],
+                "rows": [
+                    ["r", "", "A", "Run", time],
+                    ["s", "r", "A", "Phase", time],
+                    ["c", "s", "A", "Ask", time],
+                    ["k", "c", "B", "Entry", time],
+                ],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace })).await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let path = ProjectPath {
+            worktree_id,
+            path: RelPath::new(Path::new("trace.ktt"), util::paths::PathStyle::Unix)
+                .expect("relative path")
+                .into_arc(),
+        };
+        let viewer = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Sequence, window, cx)
+        });
+        cx.run_until_parked();
+
+        let drawn_with_steps = |cx: &mut gpui::VisualTestContext| {
+            let view = viewer
+                .read_with(cx, |viewer, _| viewer.sequence_view().cloned())
+                .expect("the sequence view is built");
+            view.read_with(cx, |view, cx| view.source(cx).contains("rect"))
+        };
+        assert!(drawn_with_steps(cx), "one level below the root is the default");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            viewer.update_in(cx, |viewer, window, cx| viewer.cycle_step_depth(window, cx));
+            cx.run_until_parked();
+            seen.push(drawn_with_steps(cx));
+        }
+        assert_eq!(
+            seen,
+            vec![true, false, false],
+            "two levels still groups under Ask, three has no ancestor that deep, and off draws none"
+        );
+        viewer.update_in(cx, |viewer, window, cx| viewer.cycle_step_depth(window, cx));
+        cx.run_until_parked();
+        assert!(drawn_with_steps(cx), "the cycle comes back to one level");
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.toggle_collapsed_loops(window, cx)
+        });
+        assert!(!viewer.read_with(cx, |viewer, _| viewer.sequence_options.collapse_repeats));
     }
 }

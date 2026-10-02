@@ -147,6 +147,22 @@
     // "timestamp", "severity", "message" and may list "requires" columns. The first entry whose
     // columns are all in the table is used.
     "trace_schemas": [],
+    // How the sequence diagram of a trace is drawn.
+    "sequence": {
+      // Levels below the root at which an activity groups the calls it caused into a step.
+      // 0 draws no steps.
+      "step_depth": 1,
+      // Draw calls that repeat as one loop with a count.
+      "collapse_repeats": true,
+      // Markers that say what kind of request an activity is, not why it was made.
+      "wrapper_markers": ["*IncomingRequest"],
+      // Warnings that are routine and left out of a loop's warning summary.
+      "routine_warnings": ["*request completed*"],
+      // Trailing parts of a process name dropped when it is shortened.
+      "generic_actor_suffixes": ["EntryPoint", "Service"],
+      // Arrows drawn before the rest are left out. A loop counts as one.
+      "max_arrows": 300,
+    },
   },
   // Markdown preview settings
   "markdown_preview": {

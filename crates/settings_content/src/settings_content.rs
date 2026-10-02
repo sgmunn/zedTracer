@@ -1441,6 +1441,44 @@ pub struct KustoResultsSettingsContent {
     ///
     /// Default: []
     pub trace_schemas: Option<Vec<KustoTraceSchemaContent>>,
+
+    /// How the sequence diagram of a trace is drawn.
+    pub sequence: Option<KustoSequenceSettingsContent>,
+}
+
+/// How the sequence diagram of a trace is drawn. The Sequence tab also lets you change the step
+/// depth and loop collapsing for the tab you are looking at.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoSequenceSettingsContent {
+    /// How many levels below the root of the trace an activity groups the calls it caused into
+    /// a labelled step. 0 draws no steps.
+    ///
+    /// Default: 1
+    pub step_depth: Option<usize>,
+    /// Draw calls that repeat as one loop with a count.
+    ///
+    /// Default: true
+    pub collapse_repeats: Option<bool>,
+    /// Markers that say what kind of request an activity is and not why it was made, so they
+    /// are not used to name a step. A `*` at either end matches any text.
+    ///
+    /// Default: ["*IncomingRequest"]
+    pub wrapper_markers: Option<Vec<String>>,
+    /// Warning messages that are routine, such as a request-completed line logged as a warning.
+    /// A loop's warning summary skips them. A `*` at either end matches any text.
+    ///
+    /// Default: ["*request completed*"]
+    pub routine_warnings: Option<Vec<String>>,
+    /// Trailing parts of a process name that tell processes apart badly, dropped when the name
+    /// is shortened to label the diagram.
+    ///
+    /// Default: ["EntryPoint", "Service"]
+    pub generic_actor_suffixes: Option<Vec<String>>,
+    /// How many arrows are drawn before the rest are left out. A loop counts as one.
+    ///
+    /// Default: 300
+    pub max_arrows: Option<usize>,
 }
 
 /// The column names one kind of trace uses for the parts the activity and sequence views read.
