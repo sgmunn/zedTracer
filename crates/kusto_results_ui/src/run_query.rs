@@ -832,6 +832,16 @@ pub(crate) mod tests {
         "Columns":[{"ColumnName":"n","ColumnType":"long"}],"Rows":[[1],[2]]},
         {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}]"#;
 
+    /// What the service answers a control command with: the result, a status table and the
+    /// table of contents that says which is which.
+    pub(crate) const MANAGEMENT_ANSWER: &str = r#"{"Tables":[
+        {"TableName":"Table_0","Columns":[{"ColumnName":"Name","DataType":"String","ColumnType":"string"}],
+         "Rows":[["ASAz"],["ASEdog"]]},
+        {"TableName":"Table_1","Columns":[{"ColumnName":"Severity","DataType":"Int32"}],"Rows":[[4]]},
+        {"TableName":"Table_2","Columns":[{"ColumnName":"Ordinal","DataType":"Int64"},
+            {"ColumnName":"Kind","DataType":"String"},{"ColumnName":"Name","DataType":"String"}],
+         "Rows":[[0,"QueryResult","PrimaryResult"],[1,"QueryStatus","QueryStatus"]]}]}"#;
+
     /// Every request the fake service received, as its path and body.
     type Sent = Arc<Mutex<Vec<(String, String)>>>;
 
@@ -922,6 +932,8 @@ pub(crate) mod tests {
                     }
                     let body = if path.starts_with("/v1/rest/auth") {
                         r#"{"AzureAD":{"KustoServiceResourceId":"https://kusto.kusto.windows.net"}}"#
+                    } else if path == "/v1/rest/mgmt" {
+                        MANAGEMENT_ANSWER
                     } else {
                         answer
                     };
@@ -1339,6 +1351,41 @@ pub(crate) mod tests {
             DECLARING.trim_end(),
             "the query is sent as written"
         );
+    }
+
+    const COMMANDS: &str = "// the functions here\n.show functions\n\nStormEvents\n| take 1\n";
+
+    #[gpui::test]
+    async fn a_control_command_runs_without_its_label_and_shows_its_table(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, COMMANDS).await;
+        run(&workspace, cx);
+
+        assert!(
+            bodies(&sent, "/v2/rest/query").is_empty(),
+            "a command is not a query"
+        );
+        let sent = bodies(&sent, "/v1/rest/mgmt");
+        assert_eq!(sent.len(), 1);
+        let body: serde_json::Value = serde_json::from_str(&sent[0]).expect("a JSON body");
+        assert_eq!(body["csl"], ".show functions");
+        assert_eq!(body["db"], "Samples");
+
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        let rows = panel.read_with(cx, |panel, cx| {
+            panel
+                .shown_viewer()
+                .map(|viewer| viewer.read(cx).result(cx).total_rows())
+        });
+        assert_eq!(rows, Some(2), "only the result table, not the status table");
+
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(
+            records[0]["query"], "// the functions here\n.show functions",
+            "the log, the history and the saved result keep the label"
+        );
+        assert_eq!(records[1]["event"], "finished");
     }
 
     #[gpui::test]

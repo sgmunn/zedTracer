@@ -39,7 +39,7 @@ pub use parameters::{
     ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters,
     parameters_for_query, sidecar_path, template, with_active_profile,
 };
-pub use query_text::{query_blocks, query_range_at};
+pub use query_text::{command_text, is_control_command, query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
 pub use token::{AccessToken, AzureCliTokenProvider, TokenProvider};
 
@@ -122,20 +122,37 @@ impl KustoClient {
         let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let timer = Instant::now();
 
-        let mut body = json!({ "db": request.database, "csl": request.query });
+        // The service answers a control command at another endpoint, in another format, and does
+        // not take a comment before it.
+        let is_command = is_control_command(&request.query);
+        let text = if is_command {
+            command_text(&request.query)
+        } else {
+            request.query.as_str()
+        };
+        let mut body = json!({ "db": request.database, "csl": text });
         if !request.parameters.is_empty() {
             body["properties"] = json!({ "Parameters": request.parameters });
         }
+        let path = if is_command {
+            "/v1/rest/mgmt"
+        } else {
+            "/v2/rest/query"
+        };
         let body = self
             .post(
                 &request.cluster,
-                "/v2/rest/query",
+                path,
                 &request.client_request_id,
                 body.to_string(),
             )
             .await?;
         let parsing = Instant::now();
-        let tables = response::parse_query_response(&body)?;
+        let tables = if is_command {
+            response::parse_management_response(&body)?
+        } else {
+            response::parse_query_response(&body)?
+        };
         log::info!(
             "kusto: parsed {:.1} MB in {:?}; the whole run took {:?}",
             body.len() as f64 / 1e6,
@@ -570,6 +587,64 @@ mod tests {
         });
         let error = block_on(client.execute(&request())).expect_err("error");
         assert_eq!(error.to_string(), "Semantic error: SEM0100");
+    }
+
+    const MANAGEMENT_ANSWER: &str = r#"{"Tables":[{"TableName":"Table_0",
+        "Columns":[{"ColumnName":"Name","DataType":"String","ColumnType":"string"}],
+        "Rows":[["StormEvents"],["Other"]]},
+        {"TableName":"Table_1","Columns":[{"ColumnName":"Value","DataType":"String"}],"Rows":[["{}"]]},
+        {"TableName":"Table_2","Columns":[{"ColumnName":"Ordinal","DataType":"Int64"},
+            {"ColumnName":"Kind","DataType":"String"},{"ColumnName":"Name","DataType":"String"}],
+         "Rows":[[0,"QueryResult","PrimaryResult"],[1,"QueryProperties","@ExtendedProperties"]]}]}"#;
+
+    #[test]
+    fn a_control_command_goes_to_the_management_endpoint_and_comes_back_as_a_table() {
+        let (client, seen, _) = client(|path| match path {
+            "/v1/rest/auth/metadata" => (200, METADATA.into()),
+            "/v1/rest/mgmt" => (200, MANAGEMENT_ANSWER.into()),
+            _ => (400, "the command was sent to the query endpoint".into()),
+        });
+        let mut command = request();
+        command.query = "// what is there\n.show tables".into();
+        let result = block_on(client.execute(&command)).expect("result");
+
+        let seen = seen.lock().expect("test lock");
+        let (path, _, request_id, body) = &seen[1];
+        assert_eq!(path, "/v1/rest/mgmt");
+        assert_eq!(request_id, "ZedTracer;1");
+        let body: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+        assert_eq!(
+            body,
+            json!({ "db": "Samples", "csl": ".show tables" }),
+            "the service rejects a comment before the dot"
+        );
+
+        assert_eq!(result.tables.len(), 1);
+        assert_eq!(result.tables[0].name, "PrimaryResult");
+        assert_eq!(result.tables[0].rows.len(), 2);
+        assert_eq!(
+            result.query.as_deref(),
+            Some("// what is there\n.show tables")
+        );
+        assert_eq!(result.database.as_deref(), Some("Samples"));
+        assert!(result.execution_started_at.is_some());
+    }
+
+    #[test]
+    fn a_control_command_that_fails_reports_the_services_reason() {
+        let (client, _, _) = client(|path| {
+            match path {
+            "/v1/rest/auth/metadata" => (200, METADATA.into()),
+            _ => (
+                400,
+                r#"{"error":{"message":"outer","innererror":{"@message":"Function 'Nope' not found"}}}"#.into(),
+            ),
+        }
+        });
+        let mut command = request();
+        command.query = ".show function Nope".into();
+        let error = block_on(client.execute(&command)).expect_err("error");
+        assert_eq!(error.to_string(), "Function 'Nope' not found");
     }
 
     #[test]

@@ -1,5 +1,30 @@
 use std::ops::Range;
 
+/// A control command as the service wants it: from its first line that is not blank or a comment,
+/// because the service rejects a command with a comment before the dot. The text of the query, which
+/// people label with such comments, is kept as it is everywhere else.
+pub fn command_text(query: &str) -> &str {
+    let mut start = 0;
+    for line in query.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            return &query[start..];
+        }
+        start += line.len();
+    }
+    query
+}
+
+/// Whether a query is a control command such as `.show tables`: its first line that is not blank
+/// or a comment starts with a dot. Commands go to a different endpoint than queries.
+pub fn is_control_command(query: &str) -> bool {
+    query
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("//"))
+        .is_some_and(|line| line.starts_with('.'))
+}
+
 /// A run of non-blank lines.
 struct Block {
     range: Range<usize>,
@@ -149,5 +174,30 @@ mod tests {
         assert_eq!(query_range_at("", 0), None);
         assert_eq!(query_range_at("\n  \n", 1), None);
         assert_eq!(query_range_at("// only a note", 3), None);
+    }
+
+    #[test]
+    fn a_command_is_sent_from_its_first_line_of_code() {
+        assert_eq!(command_text(".show tables"), ".show tables");
+        assert_eq!(
+            command_text("// the tables\n\n  // more\n.show tables\n// after"),
+            ".show tables\n// after"
+        );
+        assert_eq!(command_text("// only a comment"), "// only a comment");
+        assert_eq!(command_text(""), "");
+    }
+
+    #[test]
+    fn a_query_is_a_control_command_when_its_first_real_line_starts_with_a_dot() {
+        assert!(is_control_command(".show tables"));
+        assert!(is_control_command("  .show function ASAz  \n| take 1"));
+        assert!(is_control_command(
+            "// the functions\n\n// of the database\n.show functions"
+        ));
+        assert!(!is_control_command("T | where Value == 1.5"));
+        assert!(!is_control_command("// .show tables\nT"));
+        assert!(!is_control_command("let a = 1;\n.show tables"));
+        assert!(!is_control_command(""));
+        assert!(!is_control_command("// only a comment"));
     }
 }

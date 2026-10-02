@@ -90,6 +90,35 @@ fn reports_a_declared_parameter_that_was_given_no_value() -> Result<()> {
 
 #[test]
 #[ignore = "needs a network and an Azure CLI sign-in"]
+fn runs_control_commands() -> Result<()> {
+    let tables = block_on(client().execute(&request(".show tables | take 3")?))?;
+    for table in &tables.tables {
+        let columns: Vec<String> = table
+            .columns
+            .iter()
+            .map(|column| format!("{}:{}", column.name, column.type_name))
+            .collect();
+        println!("{}: {} rows, {columns:?}", table.name, table.rows.len());
+    }
+    assert_eq!(
+        tables.tables.len(),
+        1,
+        "only the result, not the status tables"
+    );
+    assert!(!tables.tables[0].columns.is_empty());
+
+    let functions = block_on(client().execute(&request("// the functions\n.show functions")?))?;
+    println!("functions: {} rows", functions.tables[0].rows.len());
+
+    let error = block_on(client().execute(&request(".show function NoSuchFunction")?))
+        .expect_err("there is no such function");
+    println!("{error}");
+    assert!(error.to_string().contains("NoSuchFunction"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs a network and an Azure CLI sign-in"]
 fn reports_why_a_query_failed() -> Result<()> {
     let error = block_on(client().execute(&request("NoSuchTable | take 1")?))
         .expect_err("the table does not exist");
