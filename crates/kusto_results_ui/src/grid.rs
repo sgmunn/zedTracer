@@ -2754,10 +2754,16 @@ mod tests {
 
         let started = std::time::Instant::now();
         let rope = rope::Rope::from(text.as_str());
-        println!("Rope::from: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "Rope::from: {:.0} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         let started = std::time::Instant::now();
         let again = rope.to_string();
-        println!("Rope::to_string: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "Rope::to_string: {:.0} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         assert_eq!(again.len(), text.len());
 
         let started = std::time::Instant::now();
@@ -2772,7 +2778,10 @@ mod tests {
         let result = Arc::new(result);
         let started = std::time::Instant::now();
         let (_grid, cx) = cx.add_window_view(|window, cx| ResultGrid::new(result, 0, window, cx));
-        println!("grid built: {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "grid built: {:.0} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         cx.simulate_resize(size(px(1600.), px(900.)));
         println!("first frame: {:.0} ms", draw(cx).as_secs_f64() * 1000.0);
         println!("second frame: {:.0} ms", draw(cx).as_secs_f64() * 1000.0);

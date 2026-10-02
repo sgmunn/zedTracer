@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use chrono::{SecondsFormat, Utc};
 use async_compression::futures::bufread::GzipDecoder;
+use chrono::{SecondsFormat, Utc};
 use futures::AsyncReadExt as _;
 use futures::io::BufReader;
 use http_client::{AsyncBody, HttpClient, Method, Request};
@@ -27,12 +27,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use directives::{
-    Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to, connections_of_queries,
-    resolve_query_at,
+    Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to,
+    connections_of_queries, resolve_query_at,
 };
 pub use parameters::{
-    ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters, parameters_for_query,
-    sidecar_path, template, with_active_profile,
+    ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters,
+    parameters_for_query, sidecar_path, template, with_active_profile,
 };
 pub use query_text::{query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
@@ -55,7 +55,9 @@ impl Cluster {
             None => text,
         };
         let host = host.trim_end_matches('/');
-        if host.is_empty() || host.contains(|character: char| character == '/' || character.is_whitespace()) {
+        if host.is_empty()
+            || host.contains(|character: char| character == '/' || character.is_whitespace())
+        {
             bail!(
                 "The cluster {text:?} is not a cluster address such as https://help.kusto.windows.net."
             );
@@ -455,7 +457,8 @@ mod tests {
         }
     }
 
-    const METADATA: &str = r#"{"AzureAD":{"KustoServiceResourceId":"https://kusto.kusto.windows.net"}}"#;
+    const METADATA: &str =
+        r#"{"AzureAD":{"KustoServiceResourceId":"https://kusto.kusto.windows.net"}}"#;
     const ANSWER: &str = r#"[{"FrameType":"DataTable","TableKind":"PrimaryResult","TableName":"PrimaryResult",
         "Columns":[{"ColumnName":"a","ColumnType":"long"}],"Rows":[[1]]},
         {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}]"#;
@@ -526,12 +529,14 @@ mod tests {
 
     #[test]
     fn reports_the_message_of_a_failed_query() {
-        let (client, _, _) = client(|path| match path {
+        let (client, _, _) = client(|path| {
+            match path {
             "/v1/rest/auth/metadata" => (200, METADATA.into()),
             _ => (
                 400,
                 r#"{"error":{"message":"outer","innererror":{"@message":"Semantic error: SEM0100"}}}"#.into(),
             ),
+        }
         });
         let error = block_on(client.execute(&request())).expect_err("error");
         assert_eq!(error.to_string(), "Semantic error: SEM0100");
@@ -574,9 +579,11 @@ mod tests {
         assert_eq!(tokens.resources.lock().expect("test lock").len(), 1);
         assert_eq!(count(&seen, "/v2/rest/query"), 2);
         let seen = seen.lock().expect("test lock");
-        assert!(seen.iter().filter(|(path, ..)| path == "/v2/rest/query").all(
-            |(_, authorization, ..)| authorization == "Bearer secret-1"
-        ));
+        assert!(
+            seen.iter()
+                .filter(|(path, ..)| path == "/v2/rest/query")
+                .all(|(_, authorization, ..)| authorization == "Bearer secret-1")
+        );
     }
 
     #[test]
@@ -662,15 +669,25 @@ mod tests {
     #[test]
     fn cluster_accepts_a_url_or_a_host_and_refuses_plain_http() {
         let expected = Cluster::parse("help.kusto.windows.net").expect("host");
-        assert_eq!(Cluster::parse(" https://HELP.kusto.windows.net/ ").expect("url"), expected);
-        assert_eq!(expected.url(), "https://help.kusto.windows.net");
-        assert_eq!(Cluster::parse("help").expect("short name").host(), "help.kusto.windows.net");
         assert_eq!(
-            Cluster::parse("mycluster.westus").expect("short name with a region").host(),
+            Cluster::parse(" https://HELP.kusto.windows.net/ ").expect("url"),
+            expected
+        );
+        assert_eq!(expected.url(), "https://help.kusto.windows.net");
+        assert_eq!(
+            Cluster::parse("help").expect("short name").host(),
+            "help.kusto.windows.net"
+        );
+        assert_eq!(
+            Cluster::parse("mycluster.westus")
+                .expect("short name with a region")
+                .host(),
             "mycluster.westus.kusto.windows.net"
         );
         assert_eq!(
-            Cluster::parse("https://x.z9.kusto.fabric.microsoft.com/").expect("fabric").host(),
+            Cluster::parse("https://x.z9.kusto.fabric.microsoft.com/")
+                .expect("fabric")
+                .host(),
             "x.z9.kusto.fabric.microsoft.com"
         );
         assert!(Cluster::parse("http://help.kusto.windows.net").is_err());

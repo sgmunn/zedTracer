@@ -55,7 +55,11 @@ impl ParameterProfiles {
         let root = match document {
             Value::Null => return Ok(Self::default()),
             Value::Mapping(root) => root,
-            _ => return Err(anyhow!("expected an `active` profile and a `profiles` mapping")),
+            _ => {
+                return Err(anyhow!(
+                    "expected an `active` profile and a `profiles` mapping"
+                ));
+            }
         };
 
         let profiles: Vec<Profile> = match root.get("profiles") {
@@ -120,7 +124,9 @@ pub fn with_active_profile(text: &str, name: Option<&str>) -> Option<String> {
         None => "active: null".to_string(),
     };
     Some(if ACTIVE_LINE.is_match(text) {
-        ACTIVE_LINE.replace(text, regex::NoExpand(&line)).into_owned()
+        ACTIVE_LINE
+            .replace(text, regex::NoExpand(&line))
+            .into_owned()
     } else {
         format!("{line}\n{text}")
     })
@@ -128,7 +134,9 @@ pub fn with_active_profile(text: &str, name: Option<&str>) -> Option<String> {
 
 /// A starting point for a profiles file: the profiles it was made from, or one example.
 pub fn template(from: &ParameterProfiles) -> String {
-    let mut text = String::from("# Values for the parameters that queries declare with\n# declare query_parameters(name:type);\n");
+    let mut text = String::from(
+        "# Values for the parameters that queries declare with\n# declare query_parameters(name:type);\n",
+    );
     if from.profiles.is_empty() {
         text.push_str("active: Example\nprofiles:\n  Example:\n    name: value\n");
         return text;
@@ -267,12 +275,23 @@ mod tests {
         assert_eq!(
             profiles.profiles,
             [
-                profile("Incident A", &[("raid", "abc-123"), ("environment", "prod")]),
-                profile("Incident B", &[("raid", "def-456"), ("count", "5"), ("verbose", "true")]),
+                profile(
+                    "Incident A",
+                    &[("raid", "abc-123"), ("environment", "prod")]
+                ),
+                profile(
+                    "Incident B",
+                    &[("raid", "def-456"), ("count", "5"), ("verbose", "true")]
+                ),
             ]
         );
         assert_eq!(profiles.active.as_deref(), Some("Incident B"));
-        assert_eq!(profiles.active_profile().map(|profile| profile.name.as_str()), Some("Incident B"));
+        assert_eq!(
+            profiles
+                .active_profile()
+                .map(|profile| profile.name.as_str()),
+            Some("Incident B")
+        );
     }
 
     #[test]
@@ -285,8 +304,14 @@ mod tests {
 
     #[test]
     fn an_empty_file_has_no_profiles_and_a_broken_one_says_why() {
-        assert_eq!(ParameterProfiles::parse("").expect("empty"), ParameterProfiles::default());
-        assert_eq!(ParameterProfiles::parse("# only a note\n").expect("empty"), ParameterProfiles::default());
+        assert_eq!(
+            ParameterProfiles::parse("").expect("empty"),
+            ParameterProfiles::default()
+        );
+        assert_eq!(
+            ParameterProfiles::parse("# only a note\n").expect("empty"),
+            ParameterProfiles::default()
+        );
         assert!(ParameterProfiles::parse("profiles: [a, b]").is_err());
         assert!(ParameterProfiles::parse("- a\n- b").is_err());
         assert!(ParameterProfiles::parse("active: [").is_err());
@@ -295,9 +320,15 @@ mod tests {
     #[test]
     fn making_a_profile_active_changes_only_the_active_line() {
         let changed = with_active_profile(FILE, Some("Incident A")).expect("the profile exists");
-        assert_eq!(changed, FILE.replace("active: Incident B", "active: \"Incident A\""));
         assert_eq!(
-            ParameterProfiles::parse(&changed).expect("still valid").active.as_deref(),
+            changed,
+            FILE.replace("active: Incident B", "active: \"Incident A\"")
+        );
+        assert_eq!(
+            ParameterProfiles::parse(&changed)
+                .expect("still valid")
+                .active
+                .as_deref(),
             Some("Incident A")
         );
     }
@@ -315,7 +346,12 @@ mod tests {
     fn no_profile_can_be_made_active() {
         let changed = with_active_profile(FILE, None).expect("a valid file");
         assert_eq!(changed, FILE.replace("active: Incident B", "active: null"));
-        assert_eq!(ParameterProfiles::parse(&changed).expect("still valid").active, None);
+        assert_eq!(
+            ParameterProfiles::parse(&changed)
+                .expect("still valid")
+                .active,
+            None
+        );
     }
 
     #[test]
@@ -378,7 +414,12 @@ mod tests {
                 .expect("the cases file parses");
         assert!(!cases.is_empty());
         for case in cases {
-            assert_eq!(declared_parameters(&case.query), case.names, "{}", case.name);
+            assert_eq!(
+                declared_parameters(&case.query),
+                case.names,
+                "{}",
+                case.name
+            );
         }
     }
 

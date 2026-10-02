@@ -15,7 +15,11 @@ const KEPT_RECORDS: usize = 400;
 /// Every record names its run by client request id and carries the query, so a record is
 /// meaningful on its own when the start of the run has been trimmed from the log.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "event",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RunRecord {
     Started {
         cid: String,
@@ -139,7 +143,12 @@ mod tests {
         }
         assert_eq!(text.lines().count(), KEPT_RECORDS);
         assert!(text.lines().next().unwrap().contains("\"cid\":\"25\""));
-        assert!(text.lines().last().unwrap().contains(&format!("\"cid\":\"{}\"", KEPT_RECORDS + 24)));
+        assert!(
+            text.lines()
+                .last()
+                .unwrap()
+                .contains(&format!("\"cid\":\"{}\"", KEPT_RECORDS + 24))
+        );
     }
 
     #[test]
