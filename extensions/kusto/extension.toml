@@ -1,14 +1,9 @@
 id = "kusto"
 name = "Kusto"
-description = "Kusto Query Language highlighting, completion, hover, and syntax diagnostics."
+description = "Kusto Query Language support: colours, completion, hover, diagnostics and schema from your clusters, from a language server."
 version = "0.1.0"
 schema_version = 1
 authors = ["zedTracer contributors"]
-repository = "https://github.com/Willem-J-an/tree-sitter-kusto"
-
-[grammars.kusto]
-repository = "https://github.com/Willem-J-an/tree-sitter-kusto"
-commit = "8353a1296607d6ba33db7c7e312226e5fc83e8ce"
 
 [language_servers.kusto-lsp]
 name = "Kusto Language Server"
