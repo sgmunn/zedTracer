@@ -579,9 +579,8 @@ pub(crate) async fn display(
                 let Some(panel) = workspace.panel::<ResultsPanel>(cx) else {
                     return;
                 };
-                let languages = Some(workspace.project().read(cx).languages().clone());
                 panel.update(cx, |panel, cx| match loaded {
-                    Ok(file) => panel.show_result(file, languages, window, cx),
+                    Ok(file) => panel.show_result(file, window, cx),
                     Err(error) => panel.show_error(format!("{error:#}"), cx),
                 });
                 workspace.open_panel::<ResultsPanel>(window, cx);

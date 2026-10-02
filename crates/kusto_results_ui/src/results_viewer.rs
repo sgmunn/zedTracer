@@ -15,7 +15,6 @@ use gpui::{
 use gpui_util::ResultExt as _;
 use kusto_results::activity::{build_projection, has_activity_columns};
 use kusto_results::{NoResultData, ResultSet, TableView};
-use language::LanguageRegistry;
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use text::LineEnding;
@@ -354,7 +353,6 @@ pub struct ResultsViewer {
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
-    languages: Option<Arc<LanguageRegistry>>,
     _grid_subscription: Option<Subscription>,
     _structured_subscription: Option<Subscription>,
     _reload_subscription: Subscription,
@@ -402,14 +400,13 @@ impl WorkspaceProjectItem for ResultsViewer {
     type Item = ResultsFile;
 
     fn for_project_item(
-        project: Entity<Project>,
+        _: Entity<Project>,
         _: Option<&Pane>,
         item: Entity<Self::Item>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let languages = Some(project.read(cx).languages().clone());
-        Self::new(item, languages, window, cx)
+        Self::new(item, window, cx)
     }
 }
 
@@ -417,7 +414,6 @@ impl ResultsViewer {
     /// A viewer of a result file, which shows it again when the file changes.
     pub(crate) fn new(
         item: Entity<ResultsFile>,
-        languages: Option<Arc<LanguageRegistry>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -439,7 +435,6 @@ impl ResultsViewer {
             structured: None,
             can_show_query: false,
             query_view: None,
-            languages,
             _grid_subscription: None,
             _structured_subscription: None,
             _reload_subscription: reload,
@@ -486,8 +481,7 @@ impl ResultsViewer {
 
     fn build_query_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
-        let languages = self.languages.clone();
-        self.query_view = Some(cx.new(|cx| QueryView::new(&result, languages, window, cx)));
+        self.query_view = Some(cx.new(|cx| QueryView::new(&result, window, cx)));
     }
 
     /// Saves a copy of this result's file into the project, under a name made from its query.

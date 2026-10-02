@@ -1,7 +1,8 @@
 # Kusto editing spike
 
 Install this directory as a Zed dev extension, then open `examples/highlighting.kql`.
-The extension recognizes `.kql` files and provides Tree-sitter highlighting.
+The extension recognizes `.kql` files, and a local language server provides the colours, completion, hover,
+diagnostics and the schema of your clusters.
 It also launches a local language server for completion, hover information,
 signature help, and syntax diagnostics. The server uses
 `Microsoft.Azure.Kusto.Language` 12.4.0. It can load schema from your clusters
@@ -193,8 +194,7 @@ A result is a normal `.ktt` file, so you can also move or copy its file out of t
 yours to keep. A kept file opens in a tab like any other result, and the file carries what it needs to be
 understood and repeated, so it needs nothing from the history:
 
-- The **Query** tab (next to Data) shows the query the result came from, read-only and selectable, coloured
-  as Kusto, with where and when it ran and the values its parameters had.
+- The **Query** tab (next to Data) shows the query the result came from, read-only and selectable, with where and when it ran and the values its parameters had.
 - **Run again** (at the right of the tabs) runs that query again on the cluster and database the file names, with
   the parameter values the file holds, and shows the new result in the Results panel. The file itself does not
   change.
@@ -333,15 +333,6 @@ The schema tests run against a fake cluster in the test file, so they need no
 network or sign-in (the server reads `KUSTO_LSP_TEST_TOKEN` and
 `KUSTO_LSP_TEST_ENDPOINTS` for that, which nothing else should set).
 
-The grammar is pinned to `Willem-J-an/tree-sitter-kusto` at the commit in
-`extension.toml`. To run the fixture check, install the `tree-sitter` CLI, clone
-that grammar, and run:
-
-```sh
-./test-highlighting.sh /path/to/tree-sitter-kusto
-```
-
-The grammar has incomplete coverage of Kusto, so complex or newer query forms
-may parse with errors and lose some
-highlighting. Grammar coverage and cluster schema integration need evaluation
-before shipping this as default language support.
+There is no Tree-sitter grammar: the one this extension started with covered only part of Kusto, and the
+language server's colours (see Colours above) replace it. `examples/highlighting.kql` is a file to open to see
+them. The server's tests check the tokens themselves, so no fixture check is needed.
