@@ -253,12 +253,9 @@ fn kind_is_text(kind: ColumnKind) -> bool {
 /// Severity 1 to 5: critical, error, warning, normal, verbose.
 pub type SeverityLevel = u8;
 
-/// The column holding severity: the first named `level` or `severity`, in any case.
+/// The column holding severity under the built-in names: `level`, else `severity`, in any case.
 pub fn severity_column(table: &Table) -> Option<usize> {
-    table.columns.iter().position(|column| {
-        let name = column.name.trim();
-        name.eq_ignore_ascii_case("level") || name.eq_ignore_ascii_case("severity")
-    })
+    crate::trace_schema::TraceColumns::detect(table).severity
 }
 
 /// The severity a cell holds, when it is a whole number from 1 to 5. Anything else, null

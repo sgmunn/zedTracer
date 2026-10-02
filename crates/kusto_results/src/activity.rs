@@ -8,11 +8,9 @@
 use std::collections::HashMap;
 
 use crate::result::{Cell, Table};
-use crate::view::{SeverityLevel, severity_column, severity_level};
+use crate::trace_schema::TraceColumns;
+use crate::view::{SeverityLevel, severity_level};
 
-const CURRENT_ACTIVITY_COLUMN: &str = "CurrentActivityId";
-const PARENT_ACTIVITY_COLUMN: &str = "ParentActivityId";
-const MARKER_COLUMN: &str = "MarkerName";
 pub const MISSING_ACTIVITY_LABEL: &str = "(missing CurrentActivityId)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,19 +126,24 @@ struct Group {
     issue: Option<HierarchyIssue>,
 }
 
-/// Whether the table has the two columns the structured view needs. Cheap, unlike building
-/// the projection.
+/// Whether the table has the two columns the structured view needs, under the built-in
+/// names. Cheap, unlike building the projection.
 pub fn has_activity_columns(table: &Table) -> bool {
-    table.column_index(CURRENT_ACTIVITY_COLUMN).is_some()
-        && table.column_index(PARENT_ACTIVITY_COLUMN).is_some()
+    TraceColumns::detect(table).supports_activity()
 }
 
-/// Builds the projection, or `None` when the table lacks either activity column.
+/// Builds the projection with the built-in column names.
 pub fn build_projection(table: &Table) -> Option<ActivityProjection> {
-    let current_column = table.column_index(CURRENT_ACTIVITY_COLUMN)?;
-    let parent_column = table.column_index(PARENT_ACTIVITY_COLUMN)?;
-    let severity_column = severity_column(table);
-    let marker_column = table.column_index(MARKER_COLUMN);
+    build_projection_with(table, &TraceColumns::detect(table))
+}
+
+/// Builds the projection from the columns a schema resolved, or `None` when the table lacks
+/// either activity column.
+pub fn build_projection_with(table: &Table, columns: &TraceColumns) -> Option<ActivityProjection> {
+    let current_column = columns.activity_id?;
+    let parent_column = columns.parent_activity_id?;
+    let severity_column = columns.severity;
+    let marker_column = columns.marker;
 
     let mut groups: Vec<Group> = Vec::new();
     let mut group_by_id: HashMap<String, usize> = HashMap::new();
