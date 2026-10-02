@@ -174,11 +174,22 @@ without the network. A cached schema is used at once, however old it is. If it i
 cluster is asked too, in the background, and the cluster's copy replaces it when it arrives; if the cluster cannot
 be reached the cached copy stays, and the fetch is tried again after a minute. A schema with no cached copy is
 fetched as before. Set the `schemaCacheMinutes` initialization option to change the hour (`0` asks the cluster
-every time the server starts). Delete the `kusto/schema` folder to throw the cache away; an entry that cannot be
+every time the server starts). Click the schema lens to fetch a schema again now, or delete the `kusto/schema` folder to throw the cache away; an entry that cannot be
 read, or was written by another version, is ignored and replaced. Names in file paths are escaped, so no
 cluster or database name can write outside the folder. Files are written whole and then moved into place, so
 several Zed windows can share the cache. The token's audience is also asked for once per cluster instead of on
 every request.
+
+#### Refreshing the schema
+
+Each query has a lens, `↻ Schema: 3 h ago`, after the one that says where it runs: it says how old the schema
+the query is checked against is (`just now`, `12 min ago`, `3 h ago`, `2 d ago`), `loading…` while it is first
+fetched, `refreshing…` while it is fetched again, and `not loaded` when it could not be fetched and nothing is
+cached. **Click it to fetch the schema of that query's cluster and database again, whatever the cache says.** The
+fetch happens in the background and a message in the editor says how it went (`Refreshed the schema of
+help.kusto.windows.net / Samples: 120 tables, 33 functions.`, or why it could not). Completion uses the new
+schema as soon as it arrives. If the cluster cannot be reached the schema you had stays, and the lens keeps
+showing its age.
 
 Signature help appears inside the parentheses of a function call, including
 database functions with their parameter names and types. It finds unqualified

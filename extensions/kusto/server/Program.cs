@@ -14,6 +14,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     private RunLog runLog = new(null);
     private DefaultsFile defaultsFile = new(null);
     private IReadOnlyList<string> workspaceFolders = [];
+    private volatile bool clientReady;
     private readonly Dictionary<string, FileChangeWatcher> parameterWatchers = new(StringComparer.Ordinal);
     private int nextRequestId;
     private Timer? spinner;
@@ -65,6 +66,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "initialize":
                 var dataDirectory = ResolveDataDirectory(parameters);
                 schema = new SchemaManager(new KustoRestClient(), LoadGlobals(parameters), new SchemaCache(dataDirectory));
+                schema.Changed += () =>
+                {
+                    // Nothing may be asked of the client before it has said it is ready.
+                    if (clientReady)
+                        _ = RequestCodeLensRefreshAsync();
+                };
                 ApplyInitializationOptions(parameters);
                 workspaceFolders = WorkspaceFolders(parameters);
                 StartRunLog(dataDirectory);
@@ -77,12 +84,13 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(", ":" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
-                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand } },
+                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand } },
                         hoverProvider = true
                     },
                     serverInfo = new { name = "kusto-lsp", version = "0.1.0" }
                 };
             case "initialized":
+                clientReady = true;
                 return null;
             case "shutdown":
                 return null;
@@ -133,7 +141,19 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "textDocument/codeLens":
                 return GetCodeLenses(parameters);
             case "workspace/executeCommand":
-                // The lenses that only show text name this command so that Zed treats them as clickable.
+                // The lenses that only show text name a command so that Zed treats them as clickable.
+                if (parameters.TryGetProperty("command", out var command)
+                    && command.GetString() == CodeLenses.RefreshSchemaCommand)
+                {
+                    var arguments = parameters.TryGetProperty("arguments", out var list) ? list : default;
+                    string? Argument(int index) =>
+                        arguments.ValueKind == JsonValueKind.Array && arguments.GetArrayLength() > index
+                        && arguments[index].ValueKind == JsonValueKind.String
+                            ? arguments[index].GetString()
+                            : null;
+                    // The request must not wait for the network, or completion would wait for it too.
+                    _ = RefreshSchemaAsync(Argument(0), Argument(1));
+                }
                 return null;
             default:
                 return null;
@@ -211,7 +231,40 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             runLog.Read(),
             DateTimeOffset.UtcNow,
             schema.Defaults,
-            query => QueryParameters.Describe(query, profiles));
+            query => QueryParameters.Describe(query, profiles),
+            schema.StatusOf);
+    }
+
+    /// <summary>Fetches the schema again, and says in a message in the editor how that went.</summary>
+    private async Task RefreshSchemaAsync(string? cluster, string? database)
+    {
+        string message;
+        var type = 3;
+        try
+        {
+            var (host, name, tables, functions) = await schema.RefreshAsync(cluster, database);
+            message = name is null
+                ? $"Refreshed the databases of {host}."
+                : $"Refreshed the schema of {host} / {name}: {Count(tables, "table")}, {Count(functions, "function")}.";
+        }
+        catch (Exception exception)
+        {
+            type = 1;
+            message = $"Could not refresh the schema: {exception.Message}";
+            Console.Error.WriteLine($"workspace/executeCommand {CodeLenses.RefreshSchemaCommand}: {exception}");
+        }
+
+        try
+        {
+            await SendAsync(new { jsonrpc = "2.0", method = "window/showMessage", @params = new { type, message } });
+            await RequestCodeLensRefreshAsync();
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            Console.Error.WriteLine($"Could not report the schema refresh: {exception.Message}");
+        }
+
+        static string Count(int count, string noun) => $"{count} {noun}{(count == 1 ? "" : "s")}";
     }
 
     private static IReadOnlyList<string> WorkspaceFolders(JsonElement parameters)

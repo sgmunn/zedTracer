@@ -543,7 +543,7 @@ class CodeLensTest(unittest.TestCase):
             lens["command"]["title"]
             for lens in lenses
             if lens["range"]["start"]["line"] == line
-            and lens["command"]["command"] != "kusto.connection"
+            and lens["command"]["command"] not in ("kusto.connection", "kusto.refreshSchema")
         ]
 
     def connection_titles(self, lenses):
@@ -696,7 +696,8 @@ class CodeLensTest(unittest.TestCase):
     def test_without_a_log_there_are_only_run_lenses_and_the_connection(self):
         self.assertFalse(self.log.exists())
         lenses = self.lenses()
-        self.assertEqual(len(lenses), 4)
+        # Each of the two queries has a Run, a connection and a schema lens.
+        self.assertEqual(len(lenses), 6)
         self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
 
     def test_the_noop_command_is_accepted(self):
@@ -1167,6 +1168,192 @@ class DirectiveSchemaTest(SchemaTest):
         # Nothing was fetched from a cluster no query names.
         self.assertTrue(first.commands)
         self.assertTrue(second.commands)
+
+
+class SchemaRefreshTest(SchemaTest):
+    """The lens that says how old the schema is, and the command it runs to fetch it again."""
+
+    HOST = "help.kusto.windows.net"
+
+    def setUp(self):
+        super().setUp()
+        self.data = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data.cleanup)
+        self.cache = Path(self.data.name) / "kusto" / "schema" / self.HOST
+        self.next_request = 20
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+
+    def write_old_database(self, hours_ago):
+        moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
+        self.cache.mkdir(parents=True, exist_ok=True)
+        (self.cache / "Samples.json").write_text(json.dumps({
+            "version": 1,
+            "fetchedAt": moment.isoformat().replace("+00:00", "Z"),
+            "entities": [{"kind": "Table", "name": "OldTable", "schema": "Id:long",
+                          "parameters": "", "body": "", "description": None}],
+        }))
+
+    def begin(self, cluster, text="print 1"):
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"}, data_dir=self.data.name)
+        # A client says it is ready before a server may ask it anything.
+        self.send(None, "initialized", {})
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": URI, "languageId": "kusto", "version": 1, "text": text}},
+        )
+        self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+
+    def schema_lens(self):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(request_id, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        lenses = self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]
+        found = [
+            lens["command"] for lens in lenses if lens["command"]["command"] == "kusto.refreshSchema"
+        ]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def title_becomes(self, wanted, timeout=10):
+        deadline = time.time() + timeout
+        while True:
+            title = self.schema_lens()["title"]
+            if title == wanted or time.time() > deadline:
+                return title
+            time.sleep(0.1)
+
+    def labels(self, text):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": text}]},
+        )
+        self.receive_where(lambda message: message.get("method") == "textDocument/publishDiagnostics")
+        self.send(
+            request_id,
+            "textDocument/completion",
+            {"textDocument": {"uri": URI}, "position": {"line": 0, "character": len(text)}},
+        )
+        result = self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]
+        return [item["label"] for item in result]
+
+    def labels_include(self, text, wanted, timeout=10):
+        deadline = time.time() + timeout
+        while True:
+            labels = self.labels(text)
+            if wanted in labels or time.time() > deadline:
+                return labels
+            time.sleep(0.1)
+
+    def message(self):
+        return self.receive_where(lambda message: message.get("method") == "window/showMessage")["params"]
+
+    def refresh(self, cluster="help", database="Samples"):
+        self.send(
+            30,
+            "workspace/executeCommand",
+            {"command": "kusto.refreshSchema", "arguments": [cluster, database]},
+        )
+
+    def test_the_server_offers_the_command(self):
+        self.begin(self.fake(["Samples"], STORM_ENTITIES))
+        self.assertIn("kusto.refreshSchema", self.capabilities["executeCommandProvider"]["commands"])
+
+    def test_the_lens_says_the_schema_was_just_loaded_and_names_what_a_click_refreshes(self):
+        self.begin(self.fake(["Samples"], STORM_ENTITIES))
+        self.assertEqual(self.title_becomes("↻ Schema: just now"), "↻ Schema: just now")
+        lens = self.schema_lens()
+        self.assertEqual(lens["command"], "kusto.refreshSchema")
+        self.assertEqual(lens["arguments"], ["help", "Samples"])
+
+    def test_the_lens_says_loading_while_the_cluster_is_slow(self):
+        self.begin(self.fake(["Samples"], STORM_ENTITIES, delay=1.5))
+        self.assertEqual(self.title_becomes("↻ Schema: loading…", timeout=3), "↻ Schema: loading…")
+        self.assertEqual(self.title_becomes("↻ Schema: just now"), "↻ Schema: just now")
+
+    def test_the_lens_says_not_loaded_when_the_cluster_cannot_be_reached(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        self.begin(cluster)
+        self.assertEqual(self.title_becomes("↻ Schema: not loaded"), "↻ Schema: not loaded")
+
+    def test_a_cached_schema_shows_its_age_even_when_the_cluster_cannot_be_reached(self):
+        self.write_old_database(hours_ago=3)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        self.begin(cluster)
+        self.assertEqual(self.title_becomes("↻ Schema: 3 h ago"), "↻ Schema: 3 h ago")
+
+    def test_refreshing_fetches_the_schema_again_and_says_what_it_found(self):
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.begin(cluster)
+        self.assertIn("StormEvents", self.labels_include("Sto", "StormEvents"))
+        fetched = len(cluster.commands)
+
+        cluster.entities = {
+            "Samples": STORM_ENTITIES["Samples"]
+            + [("Table", "Alerts", "", "", "", "Id:long, Level:string")]
+        }
+        self.refresh()
+        message = self.message()
+
+        self.assertEqual(message["type"], 3)
+        self.assertEqual(
+            message["message"],
+            "Refreshed the schema of help.kusto.windows.net / Samples: 2 tables, 1 function.",
+        )
+        self.assertGreater(len(cluster.commands), fetched)
+        self.assertIn("Alerts", self.labels_include("Ale", "Alerts"))
+
+    def test_refreshing_asks_the_cluster_even_when_the_cached_schema_is_fresh(self):
+        self.write_old_database(hours_ago=0)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        self.begin(cluster)
+        self.assertEqual(self.title_becomes("↻ Schema: just now"), "↻ Schema: just now")
+        time.sleep(0.5)
+        self.assertFalse(
+            [csl for _, csl in cluster.commands if csl.startswith(".show databases entities")],
+            "a fresh cache needs no fetch",
+        )
+
+        self.refresh()
+        self.assertEqual(self.message()["type"], 3)
+        self.assertTrue([csl for _, csl in cluster.commands if csl.startswith(".show databases entities")])
+        self.assertIn("StormEvents", self.labels_include("Sto", "StormEvents"))
+        self.assertNotIn("OldTable", self.labels("Old"), "the cluster's schema replaced the cached one")
+
+    def test_a_refresh_that_fails_says_why_and_keeps_the_schema_there_was(self):
+        self.write_old_database(hours_ago=3)
+        cluster = self.fake(["Samples"], STORM_ENTITIES)
+        cluster.stop()
+        self.begin(cluster)
+        self.assertIn("OldTable", self.labels_include("Old", "OldTable"))
+
+        self.refresh()
+        message = self.message()
+        self.assertEqual(message["type"], 1)
+        self.assertTrue(message["message"].startswith("Could not refresh the schema: "), message)
+        self.assertIn("OldTable", self.labels("Old"))
+
+    def test_a_refresh_with_no_cluster_says_so(self):
+        self.start({}, {})
+        self.send(None, "initialized", {})
+        self.send(
+            30, "workspace/executeCommand", {"command": "kusto.refreshSchema", "arguments": ["", ""]}
+        )
+        message = self.message()
+        self.assertEqual(message["type"], 1)
+        self.assertIn("no cluster", message["message"])
 
 
 class SchemaCacheTest(SchemaTest):
