@@ -191,14 +191,19 @@ impl TraceColumns {
 /// `*` at the start, the end or both stands for any text. Wrapper markers, routine warnings and
 /// structural messages all use it.
 pub fn matches_pattern(pattern: &str, text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    let pattern = pattern.to_ascii_lowercase();
-    let core = pattern.trim_matches('*');
-    match (pattern.starts_with('*'), pattern.len() > 1 && pattern.ends_with('*')) {
-        (true, true) => text.contains(core),
-        (true, false) => text.ends_with(core),
-        (false, true) => text.starts_with(core),
-        (false, false) => text == core,
+    let core = pattern.trim_matches('*').as_bytes();
+    let text = text.as_bytes();
+    let starts = pattern.starts_with('*');
+    let ends = pattern.len() > 1 && pattern.ends_with('*');
+    match (starts, ends) {
+        (true, true) => {
+            core.is_empty() || text.windows(core.len()).any(|part| part.eq_ignore_ascii_case(core))
+        }
+        (true, false) => {
+            text.len() >= core.len() && text[text.len() - core.len()..].eq_ignore_ascii_case(core)
+        }
+        (false, true) => text.len() >= core.len() && text[..core.len()].eq_ignore_ascii_case(core),
+        (false, false) => text.eq_ignore_ascii_case(core),
     }
 }
 
@@ -337,6 +342,9 @@ mod tests {
         assert!(matches_pattern("exact", "EXACT"));
         assert!(!matches_pattern("exact", "exactly"));
         assert!(matches_pattern("*", "anything"));
+        assert!(matches_pattern("**", "anything"), "nothing but stars matches everything");
+        assert!(!matches_pattern("longer than the text*", "short"));
+        assert!(matches_pattern("*café*", "A CAFÉ and a café"), "only ASCII letters fold");
     }
 
     #[test]

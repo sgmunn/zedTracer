@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::filter::ColumnFilter;
 use crate::result::{Cell, ColumnKind, Table, TableView};
@@ -57,6 +58,9 @@ pub struct ViewState {
     pub search: String,
     pub filters: BTreeMap<usize, ColumnFilter>,
     pub sort: SortState,
+    /// Source rows left out of the view, by position in the table: a row is left out when its
+    /// entry is `true`. This is how rows with no content are hidden.
+    pub excluded_rows: Option<Arc<Vec<bool>>>,
 }
 
 impl ViewState {
@@ -100,6 +104,7 @@ pub fn visible_rows(
         })
         .collect();
 
+    let excluded = state.excluded_rows.as_deref();
     let candidates: Vec<usize> = match scope {
         Some(rows) => rows
             .iter()
@@ -113,6 +118,9 @@ pub fn visible_rows(
     for (position, row_index) in candidates.into_iter().enumerate() {
         if position % CANCELLATION_CHECK_INTERVAL == 0 && !keep_going() {
             return None;
+        }
+        if excluded.is_some_and(|mask| mask.get(row_index).copied().unwrap_or(false)) {
+            continue;
         }
         let row = &table.rows[row_index];
         let filters_match = filters.iter().all(|(column, kind, filter)| {
@@ -584,6 +592,24 @@ mod tests {
             visible_rows(&table, &state, None, &always),
             Some(vec![1, 0])
         );
+    }
+
+    #[test]
+    fn excluded_rows_are_left_out_of_the_view() {
+        let table = table(
+            &[("a", "string")],
+            vec![vec![text("x")], vec![text("y")], vec![text("x")]],
+        );
+        let leaving = |mask: Vec<bool>, scope: Option<&[usize]>| {
+            let state = ViewState {
+                excluded_rows: Some(Arc::new(mask)),
+                ..Default::default()
+            };
+            visible_rows(&table, &state, scope, &always).unwrap()
+        };
+        assert_eq!(leaving(vec![false, true, false], None), vec![0, 2]);
+        assert_eq!(leaving(vec![false, true, false], Some(&[1, 2])), vec![2]);
+        assert_eq!(leaving(vec![true], None), vec![1, 2], "a short mask leaves the rest in");
     }
 
     #[test]

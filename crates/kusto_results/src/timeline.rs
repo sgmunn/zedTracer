@@ -122,7 +122,7 @@ impl Timeline {
             repetitions: Vec::new(),
             outside_parent: Vec::new(),
             without_bounds: Vec::new(),
-            structural_rows: structural_rows(table, columns, options),
+            structural_rows: structural_rows(table, columns, &options.structural_messages),
         };
         timeline.find_outside_parent(projection);
         timeline.widen_to_descendants(projection);
@@ -312,7 +312,9 @@ fn union_length(intervals: &mut [(i64, i64)]) -> i64 {
     total
 }
 
-fn structural_rows(table: &Table, columns: &TraceColumns, options: &TimelineOptions) -> Vec<bool> {
+/// For each source row, whether its message only says something started or ended, by the
+/// patterns of `structural_messages`. All `false` when the table has no message column.
+pub fn structural_rows(table: &Table, columns: &TraceColumns, patterns: &[String]) -> Vec<bool> {
     let Some(message) = columns.message else {
         return vec![false; table.rows.len()];
     };
@@ -321,10 +323,7 @@ fn structural_rows(table: &Table, columns: &TraceColumns, options: &TimelineOpti
             table.cell(row, message).is_some_and(|cell| {
                 let text = cell.display_text();
                 let text = text.trim();
-                options
-                    .structural_messages
-                    .iter()
-                    .any(|pattern| matches_pattern(pattern, text))
+                patterns.iter().any(|pattern| matches_pattern(pattern, text))
             })
         })
         .collect()
