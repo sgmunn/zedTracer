@@ -126,6 +126,74 @@ struct Group {
     issue: Option<HierarchyIssue>,
 }
 
+/// One activity of a trace and everything below it, which every view can be rebuilt from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Focus {
+    pub activity_id: String,
+    pub marker: Option<String>,
+    /// The activity's parent, to focus one level up; `None` for a root.
+    pub parent_id: Option<String>,
+    /// The source rows of the events of the activity and of everything below it, in source order.
+    pub rows: Vec<usize>,
+}
+
+pub enum FocusTarget<'a> {
+    /// An activity id, matched exactly and then ignoring case, with padding trimmed.
+    Id(&'a str),
+    /// The activity that owns a source row.
+    Row(usize),
+}
+
+/// Finds the activity a target names and what is below it, or `None` when there is no such
+/// activity or it has no id of its own to focus on.
+pub fn resolve_focus(
+    table: &Table,
+    columns: &TraceColumns,
+    target: FocusTarget<'_>,
+) -> Option<Focus> {
+    let projection = build_projection_with(table, columns)?;
+    let activities = &projection.activities;
+    let chosen = match target {
+        FocusTarget::Id(text) => {
+            let text = text.trim();
+            (0..activities.len())
+                .filter(|index| activities[*index].has_activity_id)
+                .find(|index| activities[*index].activity_id == text)
+                .or_else(|| {
+                    (0..activities.len())
+                        .filter(|index| activities[*index].has_activity_id)
+                        .find(|index| activities[*index].activity_id.eq_ignore_ascii_case(text))
+                })?
+        }
+        FocusTarget::Row(row) => (0..activities.len())
+            .find(|index| activities[*index].event_rows.contains(&row))
+            .filter(|index| activities[*index].has_activity_id)?,
+    };
+
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); activities.len()];
+    for (index, activity) in activities.iter().enumerate() {
+        if let Some(parent) = activity.parent {
+            children[parent].push(index);
+        }
+    }
+    let mut rows = Vec::new();
+    let mut pending = vec![chosen];
+    while let Some(activity) = pending.pop() {
+        rows.extend(activities[activity].event_rows.iter().copied());
+        pending.extend(children[activity].iter().copied());
+    }
+    rows.sort_unstable();
+    Some(Focus {
+        activity_id: activities[chosen].activity_id.clone(),
+        marker: activities[chosen].marker_name.clone(),
+        parent_id: activities[chosen]
+            .parent
+            .filter(|parent| activities[*parent].has_activity_id)
+            .map(|parent| activities[parent].activity_id.clone()),
+        rows,
+    })
+}
+
 /// Whether the table has the two columns the structured view needs, under the built-in
 /// names. Cheap, unlike building the projection.
 pub fn has_activity_columns(table: &Table) -> bool {
@@ -140,6 +208,34 @@ pub fn build_projection(table: &Table) -> Option<ActivityProjection> {
 /// Builds the projection from the columns a schema resolved, or `None` when the table lacks
 /// either activity column.
 pub fn build_projection_with(table: &Table, columns: &TraceColumns) -> Option<ActivityProjection> {
+    build_projection_in(table, columns, None)
+}
+
+/// Builds the projection of the part of a trace a focus names, or of all of it with `None`. The
+/// events keep their source rows, and the focused activity is a root with no hierarchy issue:
+/// that its caller is outside the focus is the point of focusing, not a problem in the data.
+pub fn build_projection_in(
+    table: &Table,
+    columns: &TraceColumns,
+    focus: Option<&Focus>,
+) -> Option<ActivityProjection> {
+    match focus {
+        Some(focus) => build_from_rows(
+            table,
+            columns,
+            &mut focus.rows.iter().copied(),
+            Some(focus.activity_id.as_str()),
+        ),
+        None => build_from_rows(table, columns, &mut (0..table.rows.len()), None),
+    }
+}
+
+fn build_from_rows(
+    table: &Table,
+    columns: &TraceColumns,
+    row_indexes: &mut dyn Iterator<Item = usize>,
+    root: Option<&str>,
+) -> Option<ActivityProjection> {
     let current_column = columns.activity_id?;
     let parent_column = columns.parent_activity_id?;
     let severity_column = columns.severity;
@@ -147,7 +243,10 @@ pub fn build_projection_with(table: &Table, columns: &TraceColumns) -> Option<Ac
 
     let mut groups: Vec<Group> = Vec::new();
     let mut group_by_id: HashMap<String, usize> = HashMap::new();
-    for (row_index, row) in table.rows.iter().enumerate() {
+    for row_index in row_indexes {
+        let Some(row) = table.rows.get(row_index) else {
+            continue;
+        };
         let activity_id = identifier(row.get(current_column));
         let group_index = match activity_id.as_ref().and_then(|id| group_by_id.get(id)) {
             Some(existing) => *existing,
@@ -179,6 +278,9 @@ pub fn build_projection_with(table: &Table, columns: &TraceColumns) -> Option<Ac
     }
 
     for group in &mut groups {
+        if root.is_some_and(|root| group.has_activity_id && group.id == root) {
+            group.parent_candidates.clear();
+        }
         match group.parent_candidates.as_slice() {
             [] => {}
             [only] => match group_by_id.get(only) {
@@ -573,5 +675,98 @@ mod tests {
             .collect();
         let projection = build_projection(&trace(&events)).unwrap();
         assert_eq!(projection.activities[0].max_descendant_depth, 49_999);
+    }
+
+    /// r is the root with children a and b; c is below a; z is another root.
+    fn tree() -> Table {
+        let mut table = trace(&[
+            ("r", "", 4),
+            ("a", "r", 4),
+            ("c", "a", 4),
+            ("b", "r", 4),
+            ("a", "r", 3),
+            ("z", "", 4),
+            ("r", "", 4),
+        ]);
+        table.rows.push(vec![Cell::Null, Cell::Null, Cell::Int(4), Cell::Text("no id".into())]);
+        table
+    }
+
+    fn focus_on(table: &Table, text: &str) -> Option<Focus> {
+        resolve_focus(table, &TraceColumns::detect(table), FocusTarget::Id(text))
+    }
+
+    #[test]
+    fn a_focus_is_an_activity_and_every_row_below_it() {
+        let table = tree();
+        let focus = focus_on(&table, "a").expect("a focus");
+        assert_eq!(focus.activity_id, "a");
+        assert_eq!(focus.parent_id.as_deref(), Some("r"));
+        assert_eq!(focus.marker.as_deref(), Some("marker a"));
+        assert_eq!(focus.rows, vec![1, 2, 4], "a's two events and c's one, in source order");
+
+        let root = focus_on(&table, "r").expect("a focus");
+        assert_eq!(root.parent_id, None);
+        assert_eq!(root.rows, vec![0, 1, 2, 3, 4, 6]);
+        assert_eq!(focus_on(&table, "c").expect("a focus").rows, vec![2]);
+    }
+
+    #[test]
+    fn an_id_is_matched_exactly_then_ignoring_case_and_padding() {
+        let mut table = trace(&[("Abc", "", 4), ("abc", "", 4)]);
+        assert_eq!(focus_on(&table, "abc").expect("exact").rows, vec![1]);
+        assert_eq!(focus_on(&table, "  Abc ").expect("trimmed").rows, vec![0]);
+        assert_eq!(focus_on(&table, "ABC").expect("ignoring case").rows, vec![0], "the first of the two");
+        assert!(focus_on(&table, "nothing").is_none());
+        assert!(focus_on(&table, "").is_none());
+        table.columns.remove(1);
+        for row in &mut table.rows {
+            row.remove(1);
+        }
+        assert!(focus_on(&table, "abc").is_none(), "no parent column, no activities");
+    }
+
+    #[test]
+    fn a_row_focuses_the_activity_it_belongs_to_unless_it_has_none() {
+        let table = tree();
+        let columns = TraceColumns::detect(&table);
+        let by_row = |row| resolve_focus(&table, &columns, FocusTarget::Row(row));
+        assert_eq!(by_row(4).expect("a focus").activity_id, "a");
+        assert_eq!(by_row(2).expect("a focus").rows, vec![2]);
+        assert!(by_row(7).is_none(), "the row with no activity id has nothing to focus on");
+        assert!(by_row(99).is_none());
+    }
+
+    #[test]
+    fn a_projection_of_a_focus_holds_only_its_activities_with_their_source_rows() {
+        let table = tree();
+        let columns = TraceColumns::detect(&table);
+        let focus = focus_on(&table, "a").expect("a focus");
+        let projection = build_projection_in(&table, &columns, Some(&focus)).expect("a projection");
+        let ids: Vec<&str> = projection.activities.iter().map(|a| a.activity_id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
+        let a = find(&projection, "a");
+        assert_eq!(a.parent, None, "the focus is a root");
+        assert_eq!(a.issue, None, "and not an orphan, though its parent is outside");
+        assert_eq!(a.event_rows, vec![1, 4], "the source rows are kept");
+        assert_eq!(find(&projection, "c").parent, Some(0));
+        assert_eq!(projection.activities[0].subtree_activity_count, 2);
+
+        let whole = build_projection_in(&table, &columns, None).expect("a projection");
+        let orphans = whole.activities.iter().filter(|a| a.issue == Some(HierarchyIssue::Orphan)).count();
+        assert_eq!(orphans, 0, "the whole trace is unchanged");
+        let root = focus_on(&table, "r").expect("a focus");
+        let from_root = build_projection_in(&table, &columns, Some(&root)).expect("a projection");
+        assert_eq!(from_root.activities.len(), 4, "r, a, c and b, not z or the row with no id");
+    }
+
+    #[test]
+    fn a_leaf_is_a_one_activity_trace() {
+        let table = tree();
+        let columns = TraceColumns::detect(&table);
+        let focus = focus_on(&table, "b").expect("a focus");
+        let projection = build_projection_in(&table, &columns, Some(&focus)).expect("a projection");
+        assert_eq!(projection.activities.len(), 1);
+        assert_eq!(projection.activities[0].event_rows, vec![3]);
     }
 }

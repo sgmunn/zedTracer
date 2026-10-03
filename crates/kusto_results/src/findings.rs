@@ -474,7 +474,8 @@ impl Context<'_> {
         };
         let mut by_level = [0usize; 5];
         let mut rows = Vec::new();
-        for row in 0..self.table.rows.len() {
+        // The rows of the activities in view, so a focus counts only its own.
+        for row in self.projection.activities.iter().flat_map(|found| found.event_rows.iter().copied()) {
             let Some(level) = severity_level(self.table.cell(row, column)) else {
                 continue;
             };
@@ -483,6 +484,7 @@ impl Context<'_> {
                 rows.push(row);
             }
         }
+        rows.sort_unstable();
         if rows.is_empty() {
             return;
         }
@@ -893,6 +895,38 @@ mod tests {
     }
 
     #[test]
+    fn a_focus_makes_the_findings_about_its_own_part_of_the_trace() {
+        use crate::activity::{FocusTarget, build_projection_in, resolve_focus};
+        let mut events = Vec::new();
+        span(&mut events, "r", "", "A", "Run", 0, 1000);
+        span(&mut events, "step", "r", "A", "Step", 100, 300);
+        events.push(failing(event("bad", "step", "B", "Inside", 150), "inside failed"));
+        events.push(failing(event("other", "r", "B", "Outside", 800), "outside failed"));
+        let table = trace(events);
+        let columns = TraceColumns::detect(&table);
+
+        let whole = findings(&table);
+        assert_eq!(of_kind(&whole, FindingKind::FailureOrigin).len(), 2);
+
+        let focus = resolve_focus(&table, &columns, FocusTarget::Id("step")).expect("a focus");
+        let projection = build_projection_in(&table, &columns, Some(&focus)).expect("a projection");
+        let focused = Findings::build(&table, &projection, &columns, &FindingsOptions::default());
+        let origins = of_kind(&focused, FindingKind::FailureOrigin);
+        assert_eq!(origins.len(), 1);
+        assert_eq!(origins[0].title, "Failure began in B: Inside");
+        assert_eq!(focused.trace_duration_ticks, Some(200 * 10_000), "the focused step is the trace");
+        let mix = of_kind(&focused, FindingKind::SeverityMix);
+        assert_eq!(mix.len(), 1);
+        assert_eq!(mix[0].title, "1 row at warning level or worse", "the failure outside the focus is not counted");
+        assert!(
+            of_kind(&focused, FindingKind::DataQuality)
+                .iter()
+                .all(|finding| !finding.title.contains("caller is not in the result")),
+            "the focus is not a partial trace"
+        );
+    }
+
+    #[test]
     fn actors_are_shown_with_their_short_names() {
         let mut events = Vec::new();
         span(&mut events, "r", "", "Microsoft.Foo.Alpha.Service", "Run", 0, 100);
@@ -1035,6 +1069,37 @@ mod tests {
                     eprintln!("        {detail}");
                 }
             }
+        }
+    }
+
+    /// Needs the real traces in `fork-docs/samples`, which are not committed.
+    /// Run with `cargo test -p kusto_results --lib focus_on_a_real_trace -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn focus_on_a_real_trace() {
+        use crate::activity::{FocusTarget, build_projection_in, resolve_focus};
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fork-docs/samples/sample2.ktt");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            eprintln!("sample2.ktt is not here, skipped");
+            return;
+        };
+        let result = crate::result::ResultSet::from_json(&text).expect("a result file");
+        let table = &result.tables[0];
+        let columns = TraceColumns::detect(table);
+        let whole = build_projection_with(table, &columns).expect("a projection");
+        let chosen = whole
+            .activities
+            .iter()
+            .find(|found| found.marker_name.as_deref().is_some_and(|marker| marker.ends_with("ListTablesWithSchemas")))
+            .expect("the activity");
+        let started = std::time::Instant::now();
+        let focus = resolve_focus(table, &columns, FocusTarget::Id(&chosen.activity_id)).expect("a focus");
+        eprintln!("focus resolved in {:?}: {} rows of {}, parent {:?}", started.elapsed(), focus.rows.len(), table.rows.len(), focus.parent_id.is_some());
+        let projection = build_projection_in(table, &columns, Some(&focus)).expect("a projection");
+        let found = Findings::build(table, &projection, &columns, &FindingsOptions::default());
+        eprintln!("{} activities, trace duration {:?} ticks", projection.activities.len(), found.trace_duration_ticks);
+        for finding in &found.items {
+            eprintln!("  [{:?}] {}", finding.severity, finding.title);
         }
     }
 }
