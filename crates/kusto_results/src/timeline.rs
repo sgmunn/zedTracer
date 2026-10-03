@@ -707,4 +707,25 @@ mod tests {
             }
         }
     }
+
+    /// A grid asks for these when it opens, so the cost over a large table matters.
+    /// Run with `cargo test -p kusto_results --release --lib structural_rows_baseline -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing baseline, run in a release build"]
+    fn structural_rows_baseline() {
+        let messages = ["Monitored scope start.", "Doing the work with a longer message than most", "Monitored scope end.", "Retrying after 5 ms"];
+        let table = Table {
+            name: "t".into(),
+            columns: vec![Column::new("MessageText", "string")],
+            rows: (0..500_000)
+                .map(|row| vec![Cell::Text(messages[row % messages.len()].into())])
+                .collect(),
+        };
+        let columns = TraceColumns::detect(&table);
+        let patterns = TimelineOptions::default().structural_messages;
+        let started = std::time::Instant::now();
+        let found = structural_rows(&table, &columns, &patterns);
+        eprintln!("structural_rows over 500,000 rows: {:?}", started.elapsed());
+        assert_eq!(found.iter().filter(|row| **row).count(), 250_000);
+    }
 }
