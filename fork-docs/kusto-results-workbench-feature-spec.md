@@ -381,6 +381,7 @@ Applies to a table containing both a `CurrentActivityId` and a `ParentActivityId
 | ACT-15 | P1 | For large results the structured grid must not duplicate the whole table in memory: it shares the rows of the ordinary view (VS Code embeds them once for this reason). It initializes when its tab is first shown. |
 | ACT-16 | P1 | Structured view is available in the same places as the data tab, including live results in the bottom panel and the reuse tab. VS Code offers it only in `.ktt` document tabs, which includes each live run when results are shown in an editor tab in new-tab mode, but not in the bottom panel or the reuse tab (Q-2). |
 | ACT-17 | P2 | Surface hierarchy anomalies as a tooltip line on the node (`Parent not found`, `Conflicting parents`, `Cycle broken here`) without using the warning triangle. VS Code records the flags but does not show them. |
+| ACT-18 | P1 | **Time** (Zed addition). When the table has a readable timestamp (TRC-1), a node also shows how long the activity ran and when it started, as an offset from the start of the trace, in two columns before the marker (`4.2 s`, `+0.045 s`). The tooltip gives the absolute start in UTC to the millisecond, the duration to a readable precision and, for an activity with children, how much of it is not covered by traced work (TLN-3), and says the times come from the logged events and include the activity's descendants (TLN-1, TLN-2). An activity with no readable timestamp shows empty columns. A table with no timestamp column shows neither column. |
 
 ### 4.13 Persistence (PER)
 

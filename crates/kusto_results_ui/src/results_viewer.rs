@@ -16,7 +16,7 @@ use gpui_util::ResultExt as _;
 use kusto_results::activity::build_projection_with;
 use kusto_results::findings::{Finding, Findings, FindingsOptions};
 use kusto_results::sequence::{SequenceOptions, build_sequence};
-use kusto_results::timeline::TimelineOptions;
+use kusto_results::timeline::{Timeline, TimelineOptions};
 use kusto_results::trace_schema::TraceRole;
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
@@ -835,25 +835,42 @@ impl ResultsViewer {
             .tables
             .first()
             .map(|table| settings.trace_columns(table));
+        let timeline_options = TimelineOptions {
+            structural_messages: settings.structural_messages.clone(),
+            ..TimelineOptions::default()
+        };
         self.structured = Some(Structured::Building {
             _task: cx.spawn_in(window, async move |this, cx| {
                 let for_projection = result.clone();
-                let projection = cx
+                let built = cx
                     .background_spawn(async move {
                         let table = for_projection.tables.first()?;
-                        build_projection_with(table, &columns?)
+                        let columns = columns?;
+                        let projection = build_projection_with(table, &columns)?;
+                        let timeline = columns.timestamp.is_some().then(|| {
+                            Timeline::build(table, &projection, &columns, &timeline_options)
+                        });
+                        Some((projection, timeline))
                     })
                     .await;
                 this.update_in(cx, |this, window, cx| {
-                    let Some(projection) = projection else {
+                    let Some((projection, timeline)) = built else {
                         this.structured = None;
                         this.can_show_structured = false;
                         this.mode = ViewMode::Data;
                         cx.notify();
                         return;
                     };
-                    let view = cx
-                        .new(|cx| StructuredView::new(result, 0, Arc::new(projection), window, cx));
+                    let view = cx.new(|cx| {
+                        StructuredView::new(
+                            result,
+                            0,
+                            Arc::new(projection),
+                            timeline.map(Arc::new),
+                            window,
+                            cx,
+                        )
+                    });
                     let grid = view.read(cx).grid().clone();
                     if this.hide_structural {
                         grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));

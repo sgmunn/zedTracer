@@ -11,6 +11,7 @@ use gpui::{
 };
 use kusto_results::ResultSet;
 use kusto_results::activity::ActivityProjection;
+use kusto_results::timeline::Timeline;
 use ui::prelude::*;
 
 use crate::activity_tree::{ActivityTree, ActivityTreeEvent};
@@ -66,10 +67,11 @@ impl StructuredView {
         result: Arc<ResultSet>,
         table_index: usize,
         projection: Arc<ActivityProjection>,
+        timeline: Option<Arc<Timeline>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let tree = cx.new(|cx| ActivityTree::new(projection.clone(), cx));
+        let tree = cx.new(|cx| ActivityTree::new(projection.clone(), timeline, cx));
         let first = tree.read(cx).selected();
         let table_name = result
             .tables
@@ -325,7 +327,7 @@ mod tests {
         let result = trace();
         let projection = Arc::new(build_projection(&result.tables[0]).expect("activity columns"));
         let (view, cx) =
-            cx.add_window_view(|window, cx| StructuredView::new(result, 0, projection, window, cx));
+            cx.add_window_view(|window, cx| StructuredView::new(result, 0, projection, None, window, cx));
         cx.simulate_resize(size(px(1000.), px(600.)));
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (view, cx)
@@ -546,5 +548,66 @@ mod tests {
             assert!(activities[auth].shows_warning_triangle());
             assert!(activities[retry].shows_warning_triangle());
         });
+    }
+
+    /// A trace with timestamps shows how long each activity ran and when it started.
+    #[gpui::test]
+    async fn the_tree_shows_how_long_each_activity_ran_and_when_it_started(
+        cx: &mut TestAppContext,
+    ) {
+        use kusto_results::activity::build_projection_with;
+        use kusto_results::timeline::{Timeline, TimelineOptions};
+        use kusto_results::trace_schema::TraceColumns;
+
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let events: &[(&str, &str, u32)] = &[("r", "", 0), ("r", "", 100), ("a", "r", 10), ("a", "r", 40)];
+        let table = Table {
+            name: "t".into(),
+            columns: vec![
+                Column::new("CurrentActivityId", "string"),
+                Column::new("ParentActivityId", "string"),
+                Column::new("TIMESTAMP", "datetime"),
+            ],
+            rows: events
+                .iter()
+                .map(|(current, parent, millis)| {
+                    vec![
+                        Cell::Text((*current).into()),
+                        if parent.is_empty() { Cell::Null } else { Cell::Text((*parent).into()) },
+                        Cell::Text(format!("2026-01-01T00:00:00.{:07}Z", millis * 10_000)),
+                    ]
+                })
+                .collect(),
+        };
+        let columns = TraceColumns::detect(&table);
+        let projection = build_projection_with(&table, &columns).expect("a projection");
+        let timeline = Arc::new(Timeline::build(&table, &projection, &columns, &TimelineOptions::default()));
+        let result = Arc::new(ResultSet {
+            tables: vec![table],
+            ..Default::default()
+        });
+        let projection = Arc::new(projection);
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            StructuredView::new(result, 0, projection, Some(timeline), window, cx)
+        });
+        let tree = view.read_with(cx, |view, _| view.tree().clone());
+
+        let root = tree.read_with(cx, |tree, _| tree.time_labels_for_test(0)).expect("times for the root");
+        assert_eq!((root.duration.as_str(), root.start.as_str()), ("100 ms", "+0.000 s"));
+        assert!(root.tooltip.contains("Start 2026-01-01 00:00:00.000 UTC (+0.000 s from the start of the trace)"), "{}", root.tooltip);
+        assert!(root.tooltip.contains("Duration 100 ms, of which 70 ms is not covered by traced work"), "{}", root.tooltip);
+        let child = tree.read_with(cx, |tree, _| tree.time_labels_for_test(1)).expect("times for the child");
+        assert_eq!((child.duration.as_str(), child.start.as_str()), ("30 ms", "+0.010 s"));
+        assert!(child.tooltip.contains("Start 2026-01-01 00:00:00.010 UTC"), "{}", child.tooltip);
+        assert!(!child.tooltip.contains("not covered"), "a leaf has no children to cover it: {}", child.tooltip);
+
+        let (plain, cx) = open(cx);
+        let plain_tree = plain.read_with(cx, |view, _| view.tree().clone());
+        assert_eq!(plain_tree.read_with(cx, |tree, _| tree.time_labels_for_test(0)), None, "no timestamps, no times");
     }
 }

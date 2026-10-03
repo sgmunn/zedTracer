@@ -10,6 +10,10 @@ use gpui::{
 };
 use kusto_results::activity::{ActivityProjection, HierarchyIssue, Strength};
 use kusto_results::activity_tree::ActivityTreeState;
+use kusto_results::findings::format_ticks;
+use kusto_results::timeline::Timeline;
+use kusto_results::trace_text::{offset_from_start, short_duration};
+use kusto_results::typed::format_datetime_ticks;
 use settings::Settings as _;
 use ui::{Button, ButtonSize, Icon, IconName, IconSize, Tooltip, prelude::*};
 
@@ -36,6 +40,9 @@ actions!(
 /// The depth badge and the event count come first, in columns, so the names line up.
 const DEPTH_COLUMN_WIDTH: Pixels = px(28.);
 const COUNT_COLUMN_WIDTH: Pixels = px(40.);
+/// How long an activity ran and when it started, when the trace has timestamps.
+const DURATION_COLUMN_WIDTH: Pixels = px(56.);
+const START_COLUMN_WIDTH: Pixels = px(68.);
 /// A node's indent for each level.
 const INDENT: Pixels = px(16.);
 /// The strength of a node's colour when its issue was handled: a warning or error earlier in
@@ -49,8 +56,18 @@ pub enum ActivityTreeEvent {
 
 pub struct ActivityTree {
     state: ActivityTreeState,
+    /// The times of the activities, when the trace has a readable timestamp.
+    timeline: Option<Arc<Timeline>>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+}
+
+/// What a node says about time.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TimeLabels {
+    pub duration: String,
+    pub start: String,
+    pub tooltip: String,
 }
 
 impl EventEmitter<ActivityTreeEvent> for ActivityTree {}
@@ -70,9 +87,14 @@ fn level_name(level: u8) -> &'static str {
 }
 
 impl ActivityTree {
-    pub fn new(projection: Arc<ActivityProjection>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        projection: Arc<ActivityProjection>,
+        timeline: Option<Arc<Timeline>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             state: ActivityTreeState::new(projection),
+            timeline,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
         }
@@ -162,6 +184,42 @@ impl ActivityTree {
         self.tint(activity, cx)
     }
 
+    /// How long an activity ran, when it started and a tooltip that explains both, from the
+    /// logged events and widened to the activity's descendants (TLN-1, TLN-2). `None` when the
+    /// trace has no times or this activity has no readable timestamp.
+    fn time_labels(&self, activity: usize) -> Option<TimeLabels> {
+        let timeline = self.timeline.as_ref()?;
+        let start = (*timeline.start.get(activity)?)?;
+        let duration = timeline.duration_ticks(activity)?;
+        let offset = start - timeline.trace_start?;
+        let mut tooltip = format!(
+            "Start {} ({} from the start of the trace)\nDuration {}",
+            format_datetime_ticks(start),
+            offset_from_start(offset),
+            format_ticks(duration),
+        );
+        let has_children = !timeline.children.get(activity)?.is_empty();
+        if let Some(untraced) = timeline.untraced_ticks[activity].filter(|ticks| *ticks > 0) {
+            if has_children {
+                tooltip.push_str(&format!(
+                    ", of which {} is not covered by traced work",
+                    format_ticks(untraced)
+                ));
+            }
+        }
+        tooltip.push_str("\nTimes are from the logged events and include its descendants.");
+        Some(TimeLabels {
+            duration: short_duration(duration),
+            start: offset_from_start(offset),
+            tooltip,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn time_labels_for_test(&self, activity: usize) -> Option<TimeLabels> {
+        self.time_labels(activity)
+    }
+
     fn render_node(&self, position: usize, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let node = *self.state.visible().get(position)?;
         let activity = self.state.projection().activities.get(node.activity)?;
@@ -194,6 +252,11 @@ impl ActivityTree {
         if let Some(sentence) = &triangle_sentence {
             tooltip.push_str(" — ");
             tooltip.push_str(sentence);
+        }
+        let times = self.time_labels(index);
+        if let Some(times) = &times {
+            tooltip.push('\n');
+            tooltip.push_str(&times.tooltip);
         }
         if let Some(issue) = activity.issue {
             tooltip.push('\n');
@@ -294,6 +357,25 @@ impl ActivityTree {
                             .color(Color::Muted),
                     ),
                 )
+                .when(self.timeline.is_some(), |row| {
+                    let (duration, start) = times
+                        .as_ref()
+                        .map_or((String::new(), String::new()), |times| {
+                            (times.duration.clone(), times.start.clone())
+                        });
+                    row.child(
+                        div()
+                            .id(("activity-duration", index))
+                            .min_w(DURATION_COLUMN_WIDTH)
+                            .child(Label::new(duration).size(LabelSize::Small).color(Color::Muted)),
+                    )
+                    .child(
+                        div()
+                            .id(("activity-start", index))
+                            .min_w(START_COLUMN_WIDTH)
+                            .child(Label::new(start).size(LabelSize::Small).color(Color::Muted)),
+                    )
+                })
                 .when_some(activity.marker_name.clone(), |row, marker| {
                     row.child(Label::new(marker).single_line())
                 })
