@@ -1444,6 +1444,12 @@ pub struct KustoResultsSettingsContent {
 
     /// How the sequence diagram of a trace is drawn.
     pub sequence: Option<KustoSequenceSettingsContent>,
+
+    /// Messages that only say something started or ended and carry no content. Rows with such a
+    /// message are dimmed in the grid, and can be hidden. A `*` at either end matches any text.
+    ///
+    /// Default: ["Monitored scope start*", "Monitored scope end*"]
+    pub structural_messages: Option<Vec<String>>,
 }
 
 /// How the sequence diagram of a trace is drawn. The Sequence tab also lets you change the step

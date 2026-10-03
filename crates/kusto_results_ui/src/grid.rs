@@ -16,6 +16,7 @@ use gpui::{
 use gpui_util::ResultExt as _;
 use kusto_results::export::{copy_text, datatable, html, markdown};
 use kusto_results::filter::ColumnFilter;
+use kusto_results::timeline::structural_rows;
 use kusto_results::view::{
     CellSelection, SortColumn, SortDirection, ViewState, display_column_order, selected_positions,
     severity_level, toggle_row, visible_rows,
@@ -150,6 +151,8 @@ pub struct ResultGrid {
     result: Arc<ResultSet>,
     table_index: usize,
     view_state: ViewState,
+    /// Which rows only say something started or ended, when any do.
+    structural: Option<StructuralRows>,
     /// Original column indexes in the order they are displayed.
     column_order: Vec<usize>,
     visible_rows: Arc<Vec<usize>>,
@@ -185,6 +188,12 @@ pub struct ResultGrid {
     search_editor: Entity<Editor>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     _search_subscription: Subscription,
+}
+
+/// The rows of a table that carry no content, by position in the table.
+struct StructuralRows {
+    mask: Arc<Vec<bool>>,
+    count: usize,
 }
 
 /// What distinguishes one grid of a table from another.
@@ -283,10 +292,22 @@ impl ResultGrid {
             }
         });
 
+        let structural = table.and_then(|table| {
+            let settings = ResultsSettings::get_global(cx);
+            let columns = settings.trace_columns(table);
+            let mask = structural_rows(table, &columns, &settings.structural_messages);
+            let count = mask.iter().filter(|structural| **structural).count();
+            (count > 0).then(|| StructuralRows {
+                mask: Arc::new(mask),
+                count,
+            })
+        });
+
         Self {
             result,
             table_index,
             view_state: ViewState::default(),
+            structural,
             column_order,
             visible_rows: options
                 .scope
@@ -390,6 +411,32 @@ impl ResultGrid {
             .collect()
     }
 
+    /// How many rows only say something started or ended (TPL-1).
+    pub fn structural_row_count(&self) -> usize {
+        self.structural.as_ref().map_or(0, |structural| structural.count)
+    }
+
+    pub fn hides_structural_rows(&self) -> bool {
+        self.view_state.excluded_rows.is_some()
+    }
+
+    /// Hides or shows the rows that only say something started or ended. They are dimmed
+    /// either way. This is a view; the result is not changed.
+    pub fn set_hide_structural(&mut self, hide: bool, cx: &mut Context<Self>) {
+        let Some(structural) = &self.structural else {
+            return;
+        };
+        if hide == self.hides_structural_rows() {
+            return;
+        }
+        self.view_state.excluded_rows = hide.then(|| structural.mask.clone());
+        // The rows the selection referred to may be going, as when the scope changes.
+        self.selection = None;
+        self.added_rows.clear();
+        self.publish_selection(cx);
+        self.recompute("Filtering", cx);
+    }
+
     /// Selects these source rows as whole rows and scrolls to the first, for a link from another
     /// view. Rows the search, the filters or the scope hide cannot be selected. Returns how many
     /// were selected, and changes nothing when that is none.
@@ -427,6 +474,10 @@ impl ResultGrid {
         } else {
             format!("{shown} of {total} rows")
         });
+        if let Some(structural) = self.structural.as_ref().filter(|_| self.hides_structural_rows())
+        {
+            parts.push(format!("{} structural rows hidden", structural.count));
+        }
         let selected = self.selected_source_rows();
         match selected.as_slice() {
             [] => {}
@@ -1198,11 +1249,15 @@ impl ResultGrid {
             return Vec::new();
         };
         let selected_color = cx.theme().colors().element_selected;
+        let muted = cx.theme().colors().text_muted;
         let settings = ResultsSettings::get_global(cx).clone();
         let severity_column = settings.trace_columns(table).severity;
         let rows: Vec<Vec<AnyElement>> = range
             .filter_map(|display_row| {
                 let source_row = *self.visible_rows.get(display_row)?;
+                let structural = self.structural.as_ref().is_some_and(|structural| {
+                    structural.mask.get(source_row).copied().unwrap_or(false)
+                });
                 let mut elements: Vec<AnyElement> = Vec::with_capacity(self.column_order.len() + 1);
                 let row_selected = self.added_rows.contains(&display_row)
                     || self.selection.is_some_and(|selection| {
@@ -1215,6 +1270,7 @@ impl ResultGrid {
                     div()
                         .size_full()
                         .debug_selector(|| format!("gutter-{display_row}"))
+                        .when(structural, |cell| cell.text_color(muted))
                         .when(row_selected, |cell| cell.bg(selected_color))
                         .child(SharedString::from((source_row + 1).to_string()))
                         .on_mouse_down(
@@ -1244,6 +1300,7 @@ impl ResultGrid {
                         div()
                             .size_full()
                             .debug_selector(|| format!("cell-{display_row}-{position}"))
+                            .when(structural, |cell| cell.text_color(muted))
                             .when_some(tint, |cell, tint| cell.bg(tint))
                             .when(selected, |cell| cell.bg(selected_color))
                             .child(text)
@@ -1929,6 +1986,49 @@ mod tests {
                 ResultGridEvent::SelectionChanged { rows: Vec::new() },
             ]
         );
+    }
+
+    /// TPL-1: rows that only say something started or ended can be hidden, and the footer says
+    /// how many are.
+    #[gpui::test]
+    async fn structural_rows_can_be_hidden_and_the_footer_says_so(cx: &mut TestAppContext) {
+        init_test(cx);
+        let rows: Vec<Vec<kusto_results::Cell>> = ["Monitored scope start.", "Doing the work", "Monitored scope end.", "Done"]
+            .into_iter()
+            .map(|message| vec![kusto_results::Cell::Text(message.into())])
+            .collect();
+        let result = Arc::new(ResultSet {
+            tables: vec![kusto_results::Table {
+                name: "t".into(),
+                columns: vec![kusto_results::Column::new("MessageText", "string")],
+                rows,
+            }],
+            ..ResultSet::default()
+        });
+        let (grid, cx) = cx.add_window_view(|window, cx| ResultGrid::new(result, 0, window, cx));
+        cx.simulate_resize(size(px(800.), px(400.)));
+        draw(cx);
+        assert_eq!(grid.read_with(cx, |grid, _| grid.structural_row_count()), 2);
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 4);
+
+        grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
+        cx.run_until_parked();
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_rows_for_test().to_vec()), vec![1, 3]);
+        let status = grid.read_with(cx, |grid, _| grid.status_text());
+        assert!(status.contains("2 of 4 rows") && status.contains("2 structural rows hidden"), "{status}");
+
+        grid.update(cx, |grid, cx| grid.set_hide_structural(false, cx));
+        cx.run_until_parked();
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 4);
+        assert!(!grid.read_with(cx, |grid, _| grid.status_text()).contains("structural"));
+
+        let (plain, cx) = cx.add_window_view(|window, cx| {
+            ResultGrid::new(Arc::new(generated_result(5, 2)), 0, window, cx)
+        });
+        plain.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
+        cx.run_until_parked();
+        assert_eq!(plain.read_with(cx, |grid, _| grid.visible_row_count()), 5, "a table with none changes nothing");
+        assert!(!plain.read_with(cx, |grid, _| grid.hides_structural_rows()));
     }
 
     /// A link from another view selects the rows it names, in display order, and leaves out

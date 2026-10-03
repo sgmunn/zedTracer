@@ -147,6 +147,9 @@
     // "timestamp", "severity", "message" and may list "requires" columns. The first entry whose
     // columns are all in the table is used.
     "trace_schemas": [],
+    // Messages that only say something started or ended and carry no content. Such rows are
+    // dimmed in the grid and can be hidden. A "*" at either end matches any text.
+    "structural_messages": ["Monitored scope start*", "Monitored scope end*"],
     // How the sequence diagram of a trace is drawn.
     "sequence": {
       // Levels below the root at which an activity groups the calls it caused into a step.

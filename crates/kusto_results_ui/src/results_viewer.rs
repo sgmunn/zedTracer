@@ -16,6 +16,7 @@ use gpui_util::ResultExt as _;
 use kusto_results::activity::build_projection_with;
 use kusto_results::findings::{Finding, Findings, FindingsOptions};
 use kusto_results::sequence::{SequenceOptions, build_sequence};
+use kusto_results::timeline::TimelineOptions;
 use kusto_results::trace_schema::TraceRole;
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
@@ -380,6 +381,8 @@ pub struct ResultsViewer {
     sequence_options: SequenceOptions,
     findings: Option<FindingsState>,
     _findings_subscription: Option<Subscription>,
+    /// Whether rows that only say something started or ended are left out of the grids (TPL-1).
+    hide_structural: bool,
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
@@ -469,6 +472,7 @@ impl ResultsViewer {
             sequence_options: SequenceOptions::default(),
             findings: None,
             _findings_subscription: None,
+            hide_structural: false,
             can_show_query: false,
             query_view: None,
             _grid_subscription: None,
@@ -493,6 +497,11 @@ impl ResultsViewer {
             .grid
             .as_ref()
             .map(|grid| Self::save_layouts_of(grid, cx));
+        if self.hide_structural {
+            if let Some(grid) = &self.grid {
+                grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
+            }
+        }
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -659,6 +668,10 @@ impl ResultsViewer {
             .map(|table| settings.trace_columns(table));
         let options = FindingsOptions {
             generic_actor_suffixes: settings.sequence.generic_actor_suffixes.clone(),
+            timeline: TimelineOptions {
+                structural_messages: settings.structural_messages.clone(),
+                ..TimelineOptions::default()
+            },
             ..FindingsOptions::default()
         };
         self.findings = Some(FindingsState::Building {
@@ -747,6 +760,16 @@ impl ResultsViewer {
         }
     }
 
+    fn toggle_hide_structural(&mut self, cx: &mut Context<Self>) {
+        self.hide_structural = !self.hide_structural;
+        let hide = self.hide_structural;
+        let structured = self.structured_view().map(|view| view.read(cx).grid().clone());
+        for grid in self.grid.iter().cloned().chain(structured) {
+            grid.update(cx, |grid, cx| grid.set_hide_structural(hide, cx));
+        }
+        cx.notify();
+    }
+
     /// Steps off, then 1, 2 and 3 levels below the root, then off again.
     fn cycle_step_depth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sequence_options.step_depth = match self.sequence_options.step_depth {
@@ -832,6 +855,9 @@ impl ResultsViewer {
                     let view = cx
                         .new(|cx| StructuredView::new(result, 0, Arc::new(projection), window, cx));
                     let grid = view.read(cx).grid().clone();
+                    if this.hide_structural {
+                        grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
+                    }
                     this._structured_subscription = Some(Self::save_layouts_of(&grid, cx));
                     this.structured = Some(Structured::Ready(view));
                     cx.notify();
@@ -869,6 +895,11 @@ impl Render for ResultsViewer {
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
         };
+        let structural_rows = self
+            .grid
+            .as_ref()
+            .map_or(0, |grid| grid.read(cx).structural_row_count());
+        let hide_structural = self.hide_structural;
         let strip = match &self.findings {
             Some(FindingsState::Ready(strip)) if self.grid.is_some() => Some(strip.clone()),
             _ => None,
@@ -968,6 +999,23 @@ impl Render for ResultsViewer {
                             )
                         })
                         .child(div().flex_1())
+                        .when(
+                            structural_rows > 0 && matches!(mode, ViewMode::Data | ViewMode::Structured),
+                            |bar| {
+                                bar.child(
+                                    div().debug_selector(|| "hide-structural".to_string()).child(
+                                        Button::new("results-hide-structural", "Hide structural rows")
+                                            .toggle_state(hide_structural)
+                                            .tooltip(ui::Tooltip::text(format!(
+                                                "{structural_rows} rows only say something started or ended. They are dimmed either way; this only hides them from the view"
+                                            )))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.toggle_hide_structural(cx)
+                                            })),
+                                    ),
+                                )
+                            },
+                        )
                         .when_some(save, |bar, action| {
                             bar.child(
                                 div().debug_selector(|| "save-button".to_string()).child(
@@ -1979,5 +2027,133 @@ mod tests {
             strip.read_with(cx, |strip, _| strip.note().cloned()),
             Some("Those rows are hidden by the filters or the search.".into())
         );
+    }
+
+    /// TPL-1: a result with rows that only say something started or ended offers to hide them,
+    /// in the Data and Structured tabs.
+    #[gpui::test]
+    async fn the_viewer_offers_to_hide_structural_rows(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = "2026-01-01T00:00:00.0000000Z";
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                    { "name": "MessageText", "type": "string" },
+                ],
+                "rows": [
+                    ["r", "", "A", time, "Monitored scope start."],
+                    ["r", "", "A", time, "Working"],
+                    ["r", "", "A", time, "Monitored scope end."],
+                ],
+            }],
+        })
+        .to_string();
+        let plain = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [{ "name": "MessageText", "type": "string" }],
+                "rows": [["Working"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace, "plain.ktt": plain }))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let plain = open("plain.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("hide-structural").is_none(), "no structural rows, no toggle");
+        assert!(plain.read_with(cx, |viewer, _| viewer.grid().is_some()));
+
+        let viewer = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let grid = viewer
+            .read_with(cx, |viewer, _| viewer.grid().cloned())
+            .expect("the grid");
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 3);
+
+        let toggle = cx
+            .debug_bounds("hide-structural")
+            .map(|bounds| bounds.center())
+            .expect("the toggle shows");
+        cx.simulate_click(toggle, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_rows_for_test().to_vec()), vec![1]);
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Structured, window, cx)
+        });
+        cx.run_until_parked();
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built");
+        let structured_grid = structured.read_with(cx, |view, _| view.grid().clone());
+        assert!(
+            structured_grid.read_with(cx, |grid, _| grid.hides_structural_rows()),
+            "a grid built after the choice keeps it"
+        );
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Sequence, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("hide-structural").is_none(), "not in the sequence tab");
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Data, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let toggle = cx
+            .debug_bounds("hide-structural")
+            .map(|bounds| bounds.center())
+            .expect("the toggle shows again");
+        cx.simulate_click(toggle, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 3);
+        assert!(!structured_grid.read_with(cx, |grid, _| grid.hides_structural_rows()));
     }
 }

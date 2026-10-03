@@ -1,6 +1,7 @@
 use gpui::{Hsla, Rgba};
 use kusto_results::Table;
 use kusto_results::sequence::SequenceOptions;
+use kusto_results::timeline::TimelineOptions;
 use kusto_results::trace_schema::{TraceColumns, TraceSchema};
 use settings::{DockSide, RegisterSetting, Settings};
 
@@ -16,6 +17,8 @@ pub struct ResultsSettings {
     pub trace_schemas: Vec<TraceSchema>,
     /// How the sequence diagram of a trace is drawn.
     pub sequence: SequenceOptions,
+    /// Messages that only say something started or ended, which the grid dims and can hide.
+    pub structural_messages: Vec<String>,
 }
 
 impl ResultsSettings {
@@ -114,6 +117,11 @@ impl Settings for ResultsSettings {
                 .iter()
                 .map(trace_schema)
                 .collect(),
+            structural_messages: content
+                .kusto_results
+                .as_ref()
+                .and_then(|results| results.structural_messages.clone())
+                .unwrap_or_else(|| TimelineOptions::default().structural_messages),
             sequence: sequence_options(
                 content
                     .kusto_results
@@ -166,6 +174,7 @@ mod tests {
             }),
             trace_schemas: None,
             sequence: None,
+            structural_messages: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -235,6 +244,32 @@ mod tests {
             assert_eq!(changed.wrapper_markers, vec!["*Entry".to_string()]);
             assert_eq!(changed.collapse_repeats, defaults.collapse_repeats);
             assert_eq!(changed.routine_warnings, defaults.routine_warnings);
+        });
+    }
+
+    #[gpui::test]
+    fn the_structural_messages_default_to_the_scope_markers_and_can_be_replaced(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            assert_eq!(
+                ResultsSettings::get_global(cx).structural_messages,
+                vec!["Monitored scope start*".to_string(), "Monitored scope end*".to_string()]
+            );
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "structural_messages": ["Entering*"] } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            assert_eq!(
+                ResultsSettings::get_global(cx).structural_messages,
+                vec!["Entering*".to_string()]
+            );
         });
     }
 
