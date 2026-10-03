@@ -563,7 +563,7 @@ The facts about *time* and *failure* in a structured trace, computed once from t
 | TLN-7 | P1 | **Failures.** The analysis behind SEQ-11 and SEQ-13 is computed once and shared: an activity's error row, whether it recovered (ACT-9, muted), whether anything below it failed, and which activities are failure origins. |
 | TLN-8 | P1 | Each computation is linear or n log n in the number of activities and rows and does not recurse on the depth of the tree (NFR-1). |
 
-**Status.** All of TLN-1 to TLN-8 are built: `timeline.rs` and `failures.rs` in `crates/kusto_results`, with tests, and checked on both real traces (ignored tests print the numbers). On Sample 2 the critical path attributes 4,208 ms to `ListTablesWithSchemas`. The sequence view reads its times and failures from them. Not built: the settings `kusto_results.structural_messages` and the repeat minimum.
+**Status.** All of TLN-1 to TLN-8 are built: `timeline.rs` and `failures.rs` in `crates/kusto_results`, with tests, and checked on both real traces (ignored tests print the numbers). On Sample 2 the critical path attributes 4,208 ms to `ListTablesWithSchemas`. The sequence view reads its times and failures from them. The setting `kusto_results.structural_messages` is built (TLN-6); the repeat minimum is not a setting yet.
 
 ### 5.6 Findings strip (FND)
 
@@ -609,14 +609,14 @@ Repeated messages differ only in ids and numbers. Grouping them shows what a tra
 
 | ID | Pri | Requirement |
 | --- | --- | --- |
-| TPL-1 | P1 | **Structural rows** (TLN-6) are shown dimmed in the grid, and a **Hide structural rows** toggle removes them from the view. Hiding is a view, never a change to the result (PER-6). The toggle starts off. |
+| TPL-1 | P1 | **Structural rows** (TLN-6) are shown dimmed in the grid, and a **Hide structural rows** button removes them from the view in the Data and Structured tabs. Hiding is a view, never a change to the result (PER-6). The toggle starts off. |
 | TPL-2 | P2 | A **template** is a row's message with the variable parts masked: GUIDs, timestamps, URLs, long hex strings, and any word that contains a digit become a placeholder; a multipart prefix `k/N:` is dropped; whitespace is collapsed; the result is cut at 200 characters. One function does this, so every feature agrees. |
 | TPL-3 | P2 | A derived **Pattern** column, not stored in the result, can be shown, sorted and filtered like any column. **Group by pattern** lists each template with its count and expands to its rows. |
 | TPL-4 | P2 | **Rare and bad**: a filter for rows whose template occurs once in the table and whose severity is 3 or worse. In Sample 2, 36 of 432 one-off templates qualify, which is a short list worth reading. |
 | TPL-5 | P2 | The list of masks can be extended in a setting. |
 | TPL-6 | P3 | A clustering method that learns templates from the data (as log-parsing tools do) is only worth building if masking leaves too many templates on real traces. On the two samples a plain regex gave 371 and 1,240 templates and masking digit words gave 362 and 568, so the quality of the masking matters more than the method. |
 
-**Status.** Not built.
+**Status.** TPL-1 is built: structural rows are dimmed in the grid and the Hide structural rows button, in the Data and Structured tabs, leaves them out of the view (off by default, a view only, with the count in the footer). Finding them over 500,000 rows takes about 9 ms. Not built: templates, the Pattern column, grouping and the rare-and-bad filter (TPL-2 to TPL-6).
 
 ## 6. Acceptance vectors
 
