@@ -59,6 +59,36 @@ pub fn parse_datetime_ticks(text: &str) -> Option<i64> {
     ticks.checked_sub(offset_seconds.checked_mul(TICKS_PER_SECOND)?)
 }
 
+/// A moment in ticks since 0001-01-01 as `2026-09-21 21:15:49.673 UTC`, to the millisecond.
+pub fn format_datetime_ticks(ticks: i64) -> String {
+    let days = ticks.div_euclid(TICKS_PER_DAY) - DAYS_FROM_YEAR_ONE_TO_UNIX_EPOCH;
+    let of_day = ticks.rem_euclid(TICKS_PER_DAY);
+    let (year, month, day) = civil_from_days(days);
+    let seconds = of_day / TICKS_PER_SECOND;
+    let milliseconds = (of_day % TICKS_PER_SECOND) / (TICKS_PER_SECOND / 1000);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}.{milliseconds:03} UTC",
+        seconds / 3600,
+        (seconds / 60) % 60,
+        seconds % 60
+    )
+}
+
+/// The year, month and day of a count of days since 1970-01-01.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
 fn split_zone(text: &str) -> (&str, &str) {
     if let Some(clock) = text.strip_suffix('Z') {
         return (clock, "Z");
@@ -337,6 +367,21 @@ fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moment_formats_back_to_the_text_it_was_read_from() {
+        for (text, expected) in [
+            ("2026-09-21T21:15:49.6731516Z", "2026-09-21 21:15:49.673 UTC"),
+            ("2024-02-29T00:00:00Z", "2024-02-29 00:00:00.000 UTC"),
+            ("1970-01-01T00:00:00Z", "1970-01-01 00:00:00.000 UTC"),
+            ("2000-12-31T23:59:59.9999999Z", "2000-12-31 23:59:59.999 UTC"),
+            ("0001-01-01T00:00:00Z", "0001-01-01 00:00:00.000 UTC"),
+            ("2026-03-01T05:06:07+02:00", "2026-03-01 03:06:07.000 UTC"),
+        ] {
+            let ticks = parse_datetime_ticks(text).expect(text);
+            assert_eq!(format_datetime_ticks(ticks), expected, "{text}");
+        }
+    }
 
     #[test]
     fn datetime_keeps_seven_digit_precision() {

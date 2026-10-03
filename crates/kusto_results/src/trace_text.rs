@@ -160,6 +160,25 @@ pub fn display_names(names: &[String], generic_suffixes: &[String]) -> Vec<Strin
         .collect()
 }
 
+const TICKS_PER_MILLISECOND: i64 = 10_000;
+
+/// A duration for a narrow column: `4.2 s` from a second up, `76 ms`, or `<1 ms`.
+pub fn short_duration(ticks: i64) -> String {
+    let milliseconds = ticks as f64 / TICKS_PER_MILLISECOND as f64;
+    if milliseconds >= 1000.0 {
+        format!("{:.1} s", milliseconds / 1000.0)
+    } else if milliseconds >= 1.0 {
+        format!("{} ms", milliseconds.round() as i64)
+    } else {
+        "<1 ms".to_string()
+    }
+}
+
+/// A time from the start of a trace, as `+0.045 s`.
+pub fn offset_from_start(ticks: i64) -> String {
+    format!("+{:.3} s", ticks.max(0) as f64 / (TICKS_PER_MILLISECOND * 1000) as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +239,16 @@ mod tests {
             .map(String::from)
             .collect();
         assert_eq!(display_names(&clashing, &suffixes), vec!["A.Core", "B.Core"]);
+    }
+
+    #[test]
+    fn durations_and_offsets_fit_a_narrow_column() {
+        assert_eq!(short_duration(4_202 * TICKS_PER_MILLISECOND), "4.2 s");
+        assert_eq!(short_duration(76 * TICKS_PER_MILLISECOND), "76 ms");
+        assert_eq!(short_duration(5_000), "<1 ms");
+        assert_eq!(short_duration(0), "<1 ms");
+        assert_eq!(offset_from_start(45 * TICKS_PER_MILLISECOND), "+0.045 s");
+        assert_eq!(offset_from_start(4_539 * TICKS_PER_MILLISECOND), "+4.539 s");
+        assert_eq!(offset_from_start(-5), "+0.000 s");
     }
 }
