@@ -166,6 +166,21 @@ impl ActivityTreeState {
         Some(activity)
     }
 
+    /// Opens the ancestors of an activity and selects it, so it is visible. Returns whether that
+    /// changed the selection; an unknown activity changes nothing.
+    pub fn reveal(&mut self, activity: usize) -> bool {
+        if activity >= self.projection.activities.len() {
+            return false;
+        }
+        for ancestor in self.projection.ancestors(activity) {
+            self.expanded.insert(ancestor);
+        }
+        let changed = self.selected != activity;
+        self.selected = activity;
+        self.rebuild_visible();
+        changed
+    }
+
     /// The Deepest button's label and tooltip numbers: the depth, and how many activities
     /// share it. `None` when every activity is a root, so there is nothing to reveal.
     pub fn deepest_summary(&self) -> Option<(usize, usize)> {
@@ -375,5 +390,17 @@ mod tests {
         ));
         state.reveal_deepest();
         assert_eq!(state.visible().len(), depth);
+    }
+
+    #[test]
+    fn revealing_an_activity_opens_its_ancestors_and_selects_it() {
+        let mut state = sample();
+        assert!(state.position_of(3).is_none(), "d is hidden while its branch is closed");
+        assert!(state.reveal(3), "d was not selected");
+        assert_eq!(state.selected(), 3);
+        assert!(state.position_of(3).is_some(), "its ancestors are open now");
+        assert!(!state.reveal(3), "it was already selected");
+        assert!(!state.reveal(99), "an activity that does not exist changes nothing");
+        assert_eq!(state.selected(), 3);
     }
 }
