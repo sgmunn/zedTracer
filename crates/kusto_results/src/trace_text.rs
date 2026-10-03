@@ -120,6 +120,46 @@ pub fn short_marker(marker: &str) -> String {
     }
 }
 
+/// Short names for the actors: generic trailing segments dropped, then the fewest trailing
+/// segments that tell every actor apart.
+pub fn display_names(names: &[String], generic_suffixes: &[String]) -> Vec<String> {
+    let trimmed: Vec<Vec<&str>> = names
+        .iter()
+        .map(|name| {
+            let mut segments: Vec<&str> = name.split('.').collect();
+            while segments.len() > 1
+                && segments.last().is_some_and(|last| {
+                    generic_suffixes
+                        .iter()
+                        .any(|suffix| suffix.eq_ignore_ascii_case(last))
+                })
+            {
+                segments.pop();
+            }
+            segments
+        })
+        .collect();
+    let trailing = |segments: &[&str], count: usize| -> String {
+        segments[segments.len().saturating_sub(count)..].join(".")
+    };
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let own = &trimmed[index];
+            (1..=own.len())
+                .find(|count| {
+                    let candidate = trailing(own, *count);
+                    trimmed.iter().enumerate().all(|(other, segments)| {
+                        other == index || trailing(segments, *count) != candidate
+                    })
+                })
+                .map(|count| trailing(own, count))
+                .unwrap_or_else(|| name.clone())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +197,28 @@ mod tests {
         assert_eq!(short_marker("Microsoft.Dms.Client.GetToken"), "Client.GetToken");
         assert_eq!(short_marker("WebApi-IncomingRequest"), "WebApi-IncomingRequest");
         assert_eq!(short_marker("A.B"), "A.B");
+    }
+
+    #[test]
+    fn actor_names_are_shortened_until_they_differ() {
+        let names: Vec<String> = [
+            "Microsoft.Dms.Service.EntryPoint",
+            "Microsoft.MWC.Workload.OneLake.Service.EntryPoint",
+            "Microsoft.ASPaaS.FrontEnd.Service",
+            "(unknown)",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let suffixes = vec!["EntryPoint".to_string(), "Service".to_string()];
+        assert_eq!(
+            display_names(&names, &suffixes),
+            vec!["Dms", "OneLake", "FrontEnd", "(unknown)"]
+        );
+        let clashing: Vec<String> = ["A.Core.Service", "B.Core.Service"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(display_names(&clashing, &suffixes), vec!["A.Core", "B.Core"]);
     }
 }

@@ -9,6 +9,7 @@ pub mod activity_tree;
 pub mod export;
 pub mod failures;
 pub mod filter;
+pub mod findings;
 pub mod inspector;
 pub mod result;
 pub mod sequence;
