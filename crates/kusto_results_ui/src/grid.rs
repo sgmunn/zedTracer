@@ -114,6 +114,8 @@ pub enum ResultGridEvent {
     SelectionChanged { rows: Vec<usize> },
     /// The user changed the order or widths of the columns. A saved result writes this back.
     LayoutChanged(TableView),
+    /// The user asked, from the context menu, to focus on the activity this row belongs to.
+    FocusRequested { source_row: usize },
 }
 
 /// A header dragged to a new place among the columns.
@@ -187,6 +189,8 @@ pub struct ResultGrid {
     focus_handle: FocusHandle,
     search_editor: Entity<Editor>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
+    /// The row last right-clicked, which the context menu is about.
+    context_row: Option<usize>,
     _search_subscription: Subscription,
 }
 
@@ -336,6 +340,7 @@ impl ResultGrid {
             focus_handle: cx.focus_handle(),
             search_editor,
             context_menu: None,
+            context_row: None,
             _search_subscription: search_subscription,
         }
     }
@@ -868,12 +873,28 @@ impl ResultGrid {
         cx: &mut Context<Self>,
     ) {
         let focus_handle = self.focus_handle.clone();
+        let focus_row = self.context_row.take().filter(|_| self.offers_focus(cx));
+        let grid = cx.entity().downgrade();
         let menu = ContextMenu::build(window, cx, |menu, _, _| {
-            menu.context(focus_handle)
+            let menu = menu
+                .context(focus_handle)
                 .action("Copy", Box::new(Copy))
                 .action("Copy as Markdown", Box::new(CopyAsMarkdown))
                 .action("Copy as HTML", Box::new(CopyAsHtml))
-                .action("Copy as datatable", Box::new(CopyAsDatatable))
+                .action("Copy as datatable", Box::new(CopyAsDatatable));
+            match focus_row {
+                Some(source_row) => menu.separator().entry(
+                    "Focus on this row's activity",
+                    None,
+                    move |_, cx| {
+                        grid.update(cx, |_, cx| {
+                            cx.emit(ResultGridEvent::FocusRequested { source_row })
+                        })
+                        .log_err();
+                    },
+                ),
+                None => menu,
+            }
         });
         window.focus(&menu.focus_handle(cx), cx);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -882,6 +903,28 @@ impl ResultGrid {
         });
         self.context_menu = Some((menu, position, subscription));
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offers_focus_for_test(&self, cx: &gpui::App) -> bool {
+        self.offers_focus(cx)
+    }
+
+    /// Whether the table is a trace, whose rows belong to activities that can be focused on.
+    fn offers_focus(&self, cx: &gpui::App) -> bool {
+        self.result
+            .tables
+            .get(self.table_index)
+            .is_some_and(|table| {
+                ResultsSettings::get_global(cx)
+                    .trace_columns(table)
+                    .supports_activity()
+            })
     }
 
     /// While a drag is held above or below the rows, keeps extending the selection and scrolling.
@@ -1274,6 +1317,12 @@ impl ResultGrid {
                         .when(row_selected, |cell| cell.bg(selected_color))
                         .child(SharedString::from((source_row + 1).to_string()))
                         .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, _: &MouseDownEvent, _, _| {
+                                this.context_row = Some(source_row)
+                            }),
+                        )
+                        .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                 window.focus(&this.focus_handle, cx);
@@ -1304,6 +1353,12 @@ impl ResultGrid {
                             .when_some(tint, |cell, tint| cell.bg(tint))
                             .when(selected, |cell| cell.bg(selected_color))
                             .child(text)
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, _: &MouseDownEvent, _, _| {
+                                    this.context_row = Some(source_row)
+                                }),
+                            )
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {

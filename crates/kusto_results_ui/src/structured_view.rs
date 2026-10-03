@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Bounds, Context, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, IntoElement,
-    Orientation, Pixels, Render, Role, Subscription, Window, actions, canvas, div, px,
+    Bounds, Context, DragMoveEvent, Empty, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, Orientation, Pixels, Render, Role, Subscription, Window, actions, canvas, div, px,
 };
 use kusto_results::ResultSet;
 use kusto_results::activity::ActivityProjection;
@@ -50,6 +50,13 @@ impl Render for SplitterDrag {
         Empty
     }
 }
+
+pub enum StructuredViewEvent {
+    /// The user asked, from the tree's context menu, to focus on the activity with this id.
+    FocusRequested(String),
+}
+
+impl EventEmitter<StructuredViewEvent> for StructuredView {}
 
 pub struct StructuredView {
     tree: Entity<ActivityTree>,
@@ -95,9 +102,11 @@ impl StructuredView {
                 cx,
             )
         });
-        let subscription = cx.subscribe(&tree, |this, _, event: &ActivityTreeEvent, cx| {
-            let ActivityTreeEvent::SelectionChanged(activity) = event;
-            this.show_events_of(*activity, cx);
+        let subscription = cx.subscribe(&tree, |this, _, event: &ActivityTreeEvent, cx| match event {
+            ActivityTreeEvent::SelectionChanged(activity) => this.show_events_of(*activity, cx),
+            ActivityTreeEvent::FocusRequested(id) => {
+                cx.emit(StructuredViewEvent::FocusRequested(id.clone()))
+            }
         });
         Self {
             tree,

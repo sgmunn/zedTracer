@@ -4,10 +4,12 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla, IntoElement, Render,
-    Role, ScrollStrategy, SharedString, UniformListScrollHandle, Window, actions, div, px,
+    Anchor, App, ClickEvent, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    IntoElement, MouseButton, MouseDownEvent, Point, Render, Role, ScrollStrategy, SharedString,
+    Subscription, UniformListScrollHandle, Window, actions, anchored, deferred, div, px,
     uniform_list,
 };
+use gpui_util::ResultExt as _;
 use kusto_results::activity::{ActivityProjection, HierarchyIssue, Strength};
 use kusto_results::activity_tree::ActivityTreeState;
 use kusto_results::findings::format_ticks;
@@ -15,7 +17,7 @@ use kusto_results::timeline::Timeline;
 use kusto_results::trace_text::{offset_from_start, short_duration};
 use kusto_results::typed::format_datetime_ticks;
 use settings::Settings as _;
-use ui::{Button, ButtonSize, Icon, IconName, IconSize, Tooltip, prelude::*};
+use ui::{Button, ButtonSize, ContextMenu, Icon, IconName, IconSize, Tooltip, prelude::*};
 
 use crate::results_settings::ResultsSettings;
 
@@ -52,6 +54,8 @@ const HANDLED_ISSUE_STRENGTH: f32 = 0.3;
 pub enum ActivityTreeEvent {
     /// The selected activity changed, as an index into the projection's activities.
     SelectionChanged(usize),
+    /// The user asked, from the context menu, to focus on the activity with this id.
+    FocusRequested(String),
 }
 
 pub struct ActivityTree {
@@ -60,6 +64,7 @@ pub struct ActivityTree {
     timeline: Option<Arc<Timeline>>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+    context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
 }
 
 /// What a node says about time.
@@ -97,7 +102,48 @@ impl ActivityTree {
             timeline,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
+            context_menu: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    /// Selects the activity under a right click and offers to focus on it, when it has an id.
+    fn deploy_context_menu(
+        &mut self,
+        activity: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select(activity, cx);
+        let Some(found) = self
+            .state
+            .projection()
+            .activities
+            .get(activity)
+            .filter(|found| found.has_activity_id)
+        else {
+            return;
+        };
+        let id = found.activity_id.clone();
+        let tree = cx.entity().downgrade();
+        let menu = ContextMenu::build(window, cx, |menu, _, _| {
+            menu.entry("Focus on this activity", None, move |_, cx| {
+                tree.update(cx, |_, cx| cx.emit(ActivityTreeEvent::FocusRequested(id.clone())))
+                    .log_err();
+            })
+        });
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
     }
 
     pub fn selected(&self) -> usize {
@@ -326,6 +372,12 @@ impl ActivityTree {
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     this.click_node(index, event, cx)
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.deploy_context_menu(index, event.position, window, cx)
+                    }),
+                )
                 .child(disclosure)
                 .when(triangle_sentence.is_some(), |row| {
                     row.child(
@@ -465,5 +517,14 @@ impl Render for ActivityTree {
                     .size_full(),
                 ),
             )
+            .children(self.context_menu.as_ref().map(|(menu, position, _)| {
+                deferred(
+                    anchored()
+                        .position(*position)
+                        .anchor(Anchor::TopLeft)
+                        .child(menu.clone()),
+                )
+                .with_priority(1)
+            }))
     }
 }

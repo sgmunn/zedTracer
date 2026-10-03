@@ -40,7 +40,7 @@ use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
 use crate::sequence_view::SequenceView;
-use crate::structured_view::StructuredView;
+use crate::structured_view::{StructuredView, StructuredViewEvent};
 use crate::waterfall_view::{WaterfallEvent, WaterfallView};
 
 pub fn init(cx: &mut App) {
@@ -371,6 +371,8 @@ struct FocusInput {
 /// What a focus is asked for by.
 enum FocusRequest {
     Id(String),
+    /// The activity that owns this source row.
+    Row(usize),
 }
 
 /// The timeline is built when it is first asked for, away from the window.
@@ -423,6 +425,7 @@ pub struct ResultsViewer {
     query_view: Option<Entity<QueryView>>,
     _grid_subscription: Option<Subscription>,
     _structured_subscription: Option<Subscription>,
+    _structured_events_subscription: Option<Subscription>,
     _reload_subscription: Subscription,
 }
 
@@ -521,6 +524,7 @@ impl ResultsViewer {
             query_view: None,
             _grid_subscription: None,
             _structured_subscription: None,
+            _structured_events_subscription: None,
             _reload_subscription: reload,
         };
         viewer.show(&item, window, cx);
@@ -545,7 +549,7 @@ impl ResultsViewer {
         self._grid_subscription = self
             .grid
             .as_ref()
-            .map(|grid| Self::save_layouts_of(grid, cx));
+            .map(|grid| Self::watch_grid(grid, window, cx));
         if self.hide_structural {
             if let Some(grid) = &self.grid {
                 grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
@@ -583,6 +587,7 @@ impl ResultsViewer {
         // What the structured and sequence views were built from has changed.
         self.structured = None;
         self._structured_subscription = None;
+        self._structured_events_subscription = None;
         self.sequence = None;
         self.timeline = None;
         self._timeline_subscription = None;
@@ -656,12 +661,21 @@ impl ResultsViewer {
         })
     }
 
-    fn save_layouts_of(grid: &Entity<ResultGrid>, cx: &mut Context<Self>) -> Subscription {
-        cx.subscribe(grid, |this, _, event: &ResultGridEvent, cx| {
-            if let ResultGridEvent::LayoutChanged(layout) = event {
+    /// Writes a grid's column layout back to the file, and does what its context menu asks.
+    fn watch_grid(
+        grid: &Entity<ResultGrid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(grid, window, |this, _, event: &ResultGridEvent, window, cx| match event {
+            ResultGridEvent::LayoutChanged(layout) => {
                 this.results_file
                     .update(cx, |file, cx| file.save_layout(layout.clone(), cx));
             }
+            ResultGridEvent::FocusRequested { source_row } => {
+                this.request_focus(FocusRequest::Row(*source_row), window, cx)
+            }
+            ResultGridEvent::SelectionChanged { .. } => {}
         })
     }
 
@@ -729,15 +743,20 @@ impl ResultsViewer {
             .tables
             .first()
             .map(|table| settings.trace_columns(table));
-        let FocusRequest::Id(asked) = &request;
-        let asked = asked.trim().to_string();
+        let asked = match &request {
+            FocusRequest::Id(id) => id.trim().to_string(),
+            FocusRequest::Row(row) => format!("row {}", row + 1),
+        };
         self.focus_note = None;
         self._focus_task = Some(cx.spawn_in(window, async move |this, cx| {
             let found = cx
                 .background_spawn(async move {
                     let table = result.tables.first()?;
-                    let FocusRequest::Id(id) = &request;
-                    resolve_focus(table, &columns?, FocusTarget::Id(id))
+                    let target = match &request {
+                        FocusRequest::Id(id) => FocusTarget::Id(id),
+                        FocusRequest::Row(row) => FocusTarget::Row(*row),
+                    };
+                    resolve_focus(table, &columns?, target)
                 })
                 .await;
             this.update_in(cx, |this, window, cx| match found {
@@ -746,7 +765,14 @@ impl ResultsViewer {
                     this.apply_focus(Some(Arc::new(focus)), window, cx);
                 }
                 None => {
-                    this.focus_note = Some(format!("No activity has the id {asked}.").into());
+                    this.focus_note = Some(
+                        if asked.starts_with("row ") {
+                            format!("{asked} has no activity id to focus on.")
+                        } else {
+                            format!("No activity has the id {asked}.")
+                        }
+                        .into(),
+                    );
                     cx.notify();
                 }
             })
@@ -760,6 +786,7 @@ impl ResultsViewer {
         self.focus_note = None;
         self.structured = None;
         self._structured_subscription = None;
+        self._structured_events_subscription = None;
         self.sequence = None;
         self.timeline = None;
         self._timeline_subscription = None;
@@ -961,8 +988,14 @@ impl ResultsViewer {
                         &view,
                         window,
                         |this, _, event: &WaterfallEvent, window, cx| {
-                            let WaterfallEvent::OpenActivity(activity) = event;
-                            this.open_in_structured(*activity, window, cx);
+                            match event {
+                                WaterfallEvent::OpenActivity(activity) => {
+                                    this.open_in_structured(*activity, window, cx)
+                                }
+                                WaterfallEvent::FocusRequested(id) => {
+                                    this.request_focus(FocusRequest::Id(id.clone()), window, cx)
+                                }
+                            }
                         },
                     ));
                     this.timeline = Some(TimelineState::Ready(view));
@@ -1225,7 +1258,15 @@ impl ResultsViewer {
                     if this.hide_structural {
                         grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
                     }
-                    this._structured_subscription = Some(Self::save_layouts_of(&grid, cx));
+                    this._structured_subscription = Some(Self::watch_grid(&grid, window, cx));
+                    this._structured_events_subscription = Some(cx.subscribe_in(
+                        &view,
+                        window,
+                        |this, _, event: &StructuredViewEvent, window, cx| {
+                            let StructuredViewEvent::FocusRequested(id) = event;
+                            this.request_focus(FocusRequest::Id(id.clone()), window, cx);
+                        },
+                    ));
                     if let Some(activity) = this.pending_structured_reveal.take() {
                         let tree = view.read(cx).tree().clone();
                         tree.update(cx, |tree, cx| tree.reveal(activity, cx));
@@ -2947,5 +2988,161 @@ mod tests {
             Some("Failure began in A: Other".to_string()),
             "the whole trace has its failure back"
         );
+    }
+
+    /// FOC-1: a right-click on a grid row, a tree node or a timeline row offers to focus, and the
+    /// request focuses every view.
+    #[gpui::test]
+    async fn the_context_menus_of_the_views_offer_to_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = |millis: u32| {
+            format!("2026-01-01T00:00:{:02}.{:07}Z", millis / 1000, (millis % 1000) * 10_000)
+        };
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "MarkerName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                ],
+                "rows": [
+                    ["r", "", "A", "Run", time(0)],
+                    ["a", "r", "B", "Step", time(100)],
+                    ["c", "a", "B", "Inner", time(200)],
+                    ["c", "a", "B", "Inner", time(300)],
+                    ["a", "r", "B", "Step", time(600)],
+                    ["r", "", "A", "Run", time(1000)],
+                ],
+            }],
+        })
+        .to_string();
+        let plain = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [{ "name": "MessageText", "type": "string" }],
+                "rows": [["hello"], ["world"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace, "plain.ktt": plain })).await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let viewer = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The grid: a right click on a row opens its menu, and a request focuses on the row's activity.
+        let grid = viewer
+            .read_with(cx, |viewer, _| viewer.grid().cloned())
+            .expect("the grid");
+        let over_row = cx.debug_bounds("cell-2-1").expect("a cell").center();
+        cx.simulate_mouse_down(over_row, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(over_row, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(grid.read_with(cx, |grid, _| grid.has_context_menu()));
+        grid.update(cx, |_, cx| cx.emit(crate::grid::ResultGridEvent::FocusRequested { source_row: 2 }));
+        cx.run_until_parked();
+        let focus = viewer.read_with(cx, |viewer, _| viewer.focus.clone()).expect("focused");
+        assert_eq!((focus.activity_id.as_str(), focus.rows.clone()), ("c", vec![2, 3]));
+        viewer.update_in(cx, |viewer, window, cx| viewer.apply_focus(None, window, cx));
+        cx.run_until_parked();
+        grid.update(cx, |_, cx| cx.emit(crate::grid::ResultGridEvent::FocusRequested { source_row: 99 }));
+        cx.run_until_parked();
+        assert!(viewer.read_with(cx, |viewer, _| viewer.focus.is_none()));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.focus_note.clone()),
+            Some("row 100 has no activity id to focus on.".into())
+        );
+
+        // The tree: a right click on a node selects it and opens its menu; its request focuses.
+        viewer.update_in(cx, |viewer, window, cx| viewer.set_mode(ViewMode::Structured, window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view");
+        let tree = structured.read_with(cx, |view, _| view.tree().clone());
+        let node = cx.debug_bounds("activity-node-0").expect("a node").center();
+        cx.simulate_mouse_down(node, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(node, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(tree.read_with(cx, |tree, _| tree.has_context_menu()));
+        tree.update(cx, |_, cx| {
+            cx.emit(crate::activity_tree::ActivityTreeEvent::FocusRequested("a".to_string()))
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.focus.clone().map(|focus| focus.activity_id.clone())),
+            Some("a".to_string())
+        );
+
+        // The timeline: a right click on a row opens its menu; its request focuses.
+        viewer.update_in(cx, |viewer, window, cx| viewer.apply_focus(None, window, cx));
+        viewer.update_in(cx, |viewer, window, cx| viewer.set_mode(ViewMode::Timeline, window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let waterfall = viewer
+            .read_with(cx, |viewer, _| viewer.waterfall_view().cloned())
+            .expect("the timeline");
+        let row = cx.debug_bounds("waterfall-row-1").expect("a row").center();
+        cx.simulate_mouse_down(row, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(row, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(waterfall.read_with(cx, |view, _| view.has_context_menu()));
+        waterfall.update(cx, |_, cx| cx.emit(WaterfallEvent::FocusRequested("c".to_string())));
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.focus.clone().map(|focus| focus.activity_id.clone())),
+            Some("c".to_string())
+        );
+
+        // A table that is not a trace offers no focus.
+        let plain = open("plain.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let plain_grid = plain
+            .read_with(cx, |viewer, _| viewer.grid().cloned())
+            .expect("the grid");
+        assert!(!plain_grid.read_with(cx, |grid, cx| grid.offers_focus_for_test(cx)));
     }
 }

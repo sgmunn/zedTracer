@@ -8,15 +8,18 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, EventEmitter, Hsla, IntoElement, Render, ScrollStrategy,
-    ScrollWheelEvent, SharedString, UniformListScrollHandle, Window, div, pattern_slash, px,
+    Anchor, AnyElement, App, ClickEvent, Context, DismissEvent, Entity, EventEmitter, Focusable,
+    Hsla, IntoElement,
+    MouseButton, MouseDownEvent, Point, Render, ScrollStrategy, ScrollWheelEvent, SharedString,
+    Subscription, UniformListScrollHandle, Window, anchored, deferred, div, pattern_slash, px,
     relative, uniform_list,
 };
+use gpui_util::ResultExt as _;
 use kusto_results::ResultSet;
 use kusto_results::activity::ActivityProjection;
 use kusto_results::trace_text::{offset_from_start, short_duration, short_marker};
 use kusto_results::waterfall::{Row, Span, Waterfall};
-use ui::{Button, ButtonSize, IconButton, IconName, IconSize, Tooltip, prelude::*};
+use ui::{Button, ButtonSize, ContextMenu, IconButton, IconName, IconSize, Tooltip, prelude::*};
 
 use crate::row_details_panel::ActiveSelection;
 
@@ -37,6 +40,8 @@ const AXIS_TICKS: i64 = 8;
 pub(crate) enum WaterfallEvent {
     /// A row was double-clicked: show this activity's events.
     OpenActivity(usize),
+    /// The user asked, from the context menu, to focus on the activity with this id.
+    FocusRequested(String),
 }
 
 impl EventEmitter<WaterfallEvent> for WaterfallView {}
@@ -56,6 +61,7 @@ pub(crate) struct WaterfallView {
     view_span: i64,
     highlight_critical: bool,
     scroll_handle: UniformListScrollHandle,
+    context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
 }
 
 impl WaterfallView {
@@ -76,6 +82,7 @@ impl WaterfallView {
             selected: None,
             highlight_critical: false,
             scroll_handle: UniformListScrollHandle::new(),
+            context_menu: None,
         };
         view.recompute_rows();
         view
@@ -142,6 +149,45 @@ impl WaterfallView {
         if let Some(position) = self.rows.iter().position(|row| row.activity == activity) {
             self.scroll_handle.scroll_to_item(position, ScrollStrategy::Center);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    /// Selects the activity under a right click and offers to focus on it, when it has an id.
+    fn deploy_context_menu(
+        &mut self,
+        activity: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select(activity, cx);
+        let Some(found) = self
+            .projection
+            .activities
+            .get(activity)
+            .filter(|found| found.has_activity_id)
+        else {
+            return;
+        };
+        let id = found.activity_id.clone();
+        let view = cx.entity().downgrade();
+        let menu = ContextMenu::build(window, cx, |menu, _, _| {
+            menu.entry("Focus on this activity", None, move |_, cx| {
+                view.update(cx, |_, cx| cx.emit(WaterfallEvent::FocusRequested(id.clone())))
+                    .log_err();
+            })
+        });
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
     }
 
     fn toggle_fold(&mut self, activity: usize, cx: &mut Context<Self>) {
@@ -371,6 +417,12 @@ impl WaterfallView {
                         cx.emit(WaterfallEvent::OpenActivity(activity));
                     }
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.deploy_context_menu(activity, event.position, window, cx)
+                    }),
+                )
                 .child(label)
                 .child(bars)
                 .into_any_element(),
@@ -529,6 +581,15 @@ impl Render for WaterfallView {
                         .size_full(),
                     ),
             )
+            .children(self.context_menu.as_ref().map(|(menu, position, _)| {
+                deferred(
+                    anchored()
+                        .position(*position)
+                        .anchor(Anchor::TopLeft)
+                        .child(menu.clone()),
+                )
+                .with_priority(1)
+            }))
     }
 }
 

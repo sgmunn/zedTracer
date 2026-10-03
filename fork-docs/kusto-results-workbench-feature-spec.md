@@ -637,7 +637,7 @@ A trace can be thousands of activities, and the question is often about one step
 
 **Acceptance vectors (spec).** FOC-V1: focusing a leaf gives a one-activity trace in every tab. FOC-V2: focusing the root changes nothing but the bar. FOC-V3: the rows of a focus keep their source numbers and are exactly those of the activity and its descendants. FOC-V4: Up one level from a root is not offered. FOC-V5: an id that is not in the trace names it and leaves the focus as it was.
 
-**Status.** Not built.
+**Status.** FOC-1 to FOC-6 are built. The core is in `activity.rs` (`Focus`, `resolve_focus`, `build_projection_in`, and the findings count the rows in view), checked on the real trace: focusing the 4.6 s step resolves in 5 ms to 4,611 of 6,413 rows. The viewer has the Focus… button and field, the focus bar with Up one level and Show whole trace, and the right-click **Focus on this activity** on a grid row, a tree node and a timeline row. Tests drive each path and check that the Data rows, the findings, the Timeline axis and the tree's activities all follow the focus. Not built: key bindings (FOC-7) and remembering the focus per result (FOC-8).
 
 ## 6. Acceptance vectors
 
