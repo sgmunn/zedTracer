@@ -11,6 +11,7 @@ pub mod filter;
 pub mod inspector;
 pub mod result;
 pub mod sequence;
+pub mod timeline;
 pub mod trace_schema;
 pub mod typed;
 pub mod view;

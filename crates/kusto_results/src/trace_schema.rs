@@ -187,6 +187,21 @@ impl TraceColumns {
     }
 }
 
+/// Whether `text` matches a pattern as the trace settings write them: case does not matter and a
+/// `*` at the start, the end or both stands for any text. Wrapper markers, routine warnings and
+/// structural messages all use it.
+pub fn matches_pattern(pattern: &str, text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
+    let core = pattern.trim_matches('*');
+    match (pattern.starts_with('*'), pattern.len() > 1 && pattern.ends_with('*')) {
+        (true, true) => text.contains(core),
+        (true, false) => text.ends_with(core),
+        (false, true) => text.starts_with(core),
+        (false, false) => text == core,
+    }
+}
+
 /// Tries each name in turn, exact match first and then ignoring case. Padding around a column
 /// name is ignored on both sides.
 fn find_column(table: &Table, names: &[&str]) -> Option<usize> {
@@ -310,6 +325,18 @@ mod tests {
         };
         let columns = TraceColumns::resolve(&table(&["Host", "Role"]), &[first, second]);
         assert_eq!(columns.actor, Some(1));
+    }
+
+    #[test]
+    fn patterns_match_at_either_end_ignoring_case() {
+        assert!(matches_pattern("*IncomingRequest", "WebApi-incomingrequest"));
+        assert!(!matches_pattern("*IncomingRequest", "IncomingRequest-Extra"));
+        assert!(matches_pattern("Monitored scope start*", "monitored scope start."));
+        assert!(!matches_pattern("Monitored scope start*", "A monitored scope start"));
+        assert!(matches_pattern("*request completed*", "Request completed in 5 ms"));
+        assert!(matches_pattern("exact", "EXACT"));
+        assert!(!matches_pattern("exact", "exactly"));
+        assert!(matches_pattern("*", "anything"));
     }
 
     #[test]

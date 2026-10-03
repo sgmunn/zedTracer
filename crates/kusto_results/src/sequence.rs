@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::activity::{ActivityProjection, Strength};
 use crate::result::Table;
-use crate::trace_schema::TraceColumns;
+use crate::trace_schema::{TraceColumns, matches_pattern};
 use crate::typed::{TICKS_PER_SECOND, parse_datetime_ticks};
 use crate::view::severity_level;
 
@@ -1013,18 +1013,6 @@ fn short_marker(marker: &str) -> String {
     match segments.len() {
         0..=2 => marker.to_string(),
         count => segments[count - 2..].join("."),
-    }
-}
-
-fn matches_pattern(pattern: &str, text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    let pattern = pattern.to_ascii_lowercase();
-    let core = pattern.trim_matches('*');
-    match (pattern.starts_with('*'), pattern.len() > 1 && pattern.ends_with('*')) {
-        (true, true) => text.contains(core),
-        (true, false) => text.ends_with(core),
-        (false, true) => text.starts_with(core),
-        (false, false) => text == core,
     }
 }
 
