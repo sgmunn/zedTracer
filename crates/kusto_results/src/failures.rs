@@ -8,6 +8,7 @@
 use crate::activity::{ActivityProjection, Strength};
 use crate::result::Table;
 use crate::timeline::Timeline;
+use crate::trace_text::is_filler;
 use crate::trace_schema::TraceColumns;
 use crate::view::severity_level;
 
@@ -94,30 +95,6 @@ fn first_error_row(table: &Table, columns: &TraceColumns, rows: &[usize]) -> Opt
         severity_level(table.cell(*row, severity)).is_some_and(|level| level <= 2)
             && !row_message(table, columns, *row).is_some_and(|text| is_filler(&text))
     })
-}
-
-/// A row whose text says nothing about what went wrong: a later part of a split message, or a
-/// notice that a message was split.
-pub(crate) fn is_filler(text: &str) -> bool {
-    let text = text.trim_start();
-    if text.starts_with("The message is splitted")
-        || text.starts_with("Message size is too large")
-        || text.starts_with("Monitored scope")
-    {
-        return true;
-    }
-    split_part_prefix(text).is_some_and(|(part, _)| part != 1)
-}
-
-/// `(part, rest)` for text that starts `k/N: `.
-pub(crate) fn split_part_prefix(text: &str) -> Option<(usize, &str)> {
-    let (part, rest) = text.split_once('/')?;
-    let (total, rest) = rest.split_once(':')?;
-    if total.is_empty() || !total.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let part: usize = part.parse().ok()?;
-    Some((part, rest.trim_start()))
 }
 
 #[cfg(test)]
