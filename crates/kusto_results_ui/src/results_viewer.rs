@@ -12,8 +12,10 @@ use gpui::{
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
+use editor::Editor;
+use menu::{Cancel, Confirm};
 use gpui_util::ResultExt as _;
-use kusto_results::activity::build_projection_with;
+use kusto_results::activity::{Focus, FocusTarget, build_projection_in, resolve_focus};
 use kusto_results::findings::{Finding, Findings, FindingsOptions};
 use kusto_results::sequence::{SequenceOptions, build_sequence};
 use kusto_results::timeline::{Timeline, TimelineOptions};
@@ -24,7 +26,7 @@ use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use settings::Settings as _;
 use text::LineEnding;
-use ui::{Button, Icon, IconName, prelude::*};
+use ui::{Button, ButtonSize, Icon, IconName, prelude::*};
 use util::rel_path::RelPath;
 use workspace::Pane;
 use workspace::Workspace;
@@ -361,6 +363,16 @@ enum Sequence {
     Ready(Entity<SequenceView>),
 }
 
+/// The field an activity id is typed into to focus on it.
+struct FocusInput {
+    editor: Entity<Editor>,
+}
+
+/// What a focus is asked for by.
+enum FocusRequest {
+    Id(String),
+}
+
 /// The timeline is built when it is first asked for, away from the window.
 enum TimelineState {
     Building { _task: Task<()> },
@@ -398,6 +410,12 @@ pub struct ResultsViewer {
     _timeline_subscription: Option<Subscription>,
     /// An activity to reveal in the tree once the structured view is built.
     pending_structured_reveal: Option<usize>,
+    /// The activity every view is built from, with what is below it; `None` is the whole trace.
+    focus: Option<Arc<Focus>>,
+    /// The field a Focus… id is typed in, while it is open.
+    focus_input: Option<FocusInput>,
+    focus_note: Option<SharedString>,
+    _focus_task: Option<Task<()>>,
     /// Whether rows that only say something started or ended are left out of the grids (TPL-1).
     hide_structural: bool,
     /// Whether the file says which query it came from, which can be shown and run again.
@@ -494,6 +512,10 @@ impl ResultsViewer {
             timeline: None,
             _timeline_subscription: None,
             pending_structured_reveal: None,
+            focus: None,
+            focus_input: None,
+            focus_note: None,
+            _focus_task: None,
             hide_structural: false,
             can_show_query: false,
             query_view: None,
@@ -512,6 +534,11 @@ impl ResultsViewer {
     /// Shows what the file holds now: a grid, or the reason there is none.
     fn show(&mut self, item: &Entity<ResultsFile>, window: &mut Window, cx: &mut Context<Self>) {
         let result = item.read(cx).result.clone();
+        // A new file may not hold the focused activity, so a reload shows the whole trace.
+        self.focus = None;
+        self.focus_input = None;
+        self.focus_note = None;
+        self._focus_task = None;
         self.problem = item.read(cx).problem;
         self.grid = (self.problem.is_none() && !result.tables.is_empty())
             .then(|| cx.new(|cx| ResultGrid::new(result.clone(), 0, window, cx)));
@@ -694,9 +721,213 @@ impl ResultsViewer {
         cx.notify();
     }
 
+    /// Focuses every view on an activity and what is below it, found away from the window.
+    fn request_focus(&mut self, request: FocusRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let settings = ResultsSettings::get_global(cx);
+        let columns = result
+            .tables
+            .first()
+            .map(|table| settings.trace_columns(table));
+        let FocusRequest::Id(asked) = &request;
+        let asked = asked.trim().to_string();
+        self.focus_note = None;
+        self._focus_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let found = cx
+                .background_spawn(async move {
+                    let table = result.tables.first()?;
+                    let FocusRequest::Id(id) = &request;
+                    resolve_focus(table, &columns?, FocusTarget::Id(id))
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| match found {
+                Some(focus) => {
+                    this.focus_input = None;
+                    this.apply_focus(Some(Arc::new(focus)), window, cx);
+                }
+                None => {
+                    this.focus_note = Some(format!("No activity has the id {asked}.").into());
+                    cx.notify();
+                }
+            })
+            .log_err();
+        }));
+    }
+
+    /// Shows the whole trace with `None`, or one activity and what is below it, in every view.
+    fn apply_focus(&mut self, focus: Option<Arc<Focus>>, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus = focus;
+        self.focus_note = None;
+        self.structured = None;
+        self._structured_subscription = None;
+        self.sequence = None;
+        self.timeline = None;
+        self._timeline_subscription = None;
+        self.pending_structured_reveal = None;
+        let rows = self.focus.as_ref().map(|focus| Arc::new(focus.rows.clone()));
+        if let Some(grid) = &self.grid {
+            grid.update(cx, |grid, cx| grid.set_scope(rows, cx));
+        }
+        self.findings = None;
+        self._findings_subscription = None;
+        if self.can_show_structured {
+            self.build_findings(window, cx);
+        }
+        match self.mode {
+            ViewMode::Structured => self.build_structured(window, cx),
+            ViewMode::Sequence => self.build_sequence(window, cx),
+            ViewMode::Timeline => self.build_timeline(window, cx),
+            ViewMode::Data | ViewMode::Query => {}
+        }
+        cx.notify();
+    }
+
+    fn focus_up_one_level(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(parent) = self.focus.as_ref().and_then(|focus| focus.parent_id.clone()) else {
+            return;
+        };
+        self.request_focus(FocusRequest::Id(parent), window, cx);
+    }
+
+    /// Opens or closes the field an activity id is typed into.
+    fn toggle_focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus_input.take().is_some() {
+            self.focus_note = None;
+            cx.notify();
+            return;
+        }
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Activity id", window, cx);
+            editor
+        });
+        window.focus(&editor.focus_handle(cx), cx);
+        self.focus_input = Some(FocusInput { editor });
+        cx.notify();
+    }
+
+    fn confirm_focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = &self.focus_input else {
+            return;
+        };
+        let text = input.editor.read(cx).text(cx);
+        if text.trim().is_empty() {
+            return;
+        }
+        self.request_focus(FocusRequest::Id(text), window, cx);
+    }
+
+    /// The bar above the tabs: what is focused, and the field a Focus… id is typed in.
+    fn render_focus_bar(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.focus.is_none() && self.focus_input.is_none() {
+            return None;
+        }
+        let colors = cx.theme().colors();
+        let focused = self.focus.as_ref().map(|focus| {
+            let name = focus
+                .marker
+                .as_deref()
+                .map(kusto_results::trace_text::short_marker)
+                .unwrap_or_default();
+            (name, focus.activity_id.clone(), focus.parent_id.is_some())
+        });
+        Some(
+            v_flex()
+                .key_context("KustoFocus")
+                .on_action(cx.listener(|this, _: &Confirm, window, cx| {
+                    this.confirm_focus_input(window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                    if this.focus_input.is_some() {
+                        this.toggle_focus_input(window, cx);
+                    }
+                }))
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.surface_background)
+                .when_some(focused, |bar, (name, id, has_parent)| {
+                    bar.child(
+                        h_flex()
+                            .debug_selector(|| "focus-bar".to_string())
+                            .px_2()
+                            .py_1()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new("Focused on").size(LabelSize::Small).color(Color::Muted))
+                            .child(Label::new(name).size(LabelSize::Small).weight(gpui::FontWeight::SEMIBOLD))
+                            .child(Label::new(id).size(LabelSize::Small).color(Color::Muted))
+                            .child(div().flex_1())
+                            .child(
+                                div().debug_selector(|| "focus-up".to_string()).child(
+                                    Button::new("results-focus-up", "Up one level")
+                                        .size(ButtonSize::Compact)
+                                        .disabled(!has_parent)
+                                        .tooltip(ui::Tooltip::text("Focus on the parent of this activity"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.focus_up_one_level(window, cx)
+                                        })),
+                                ),
+                            )
+                            .child(
+                                div().debug_selector(|| "focus-clear".to_string()).child(
+                                    Button::new("results-focus-clear", "Show whole trace")
+                                        .size(ButtonSize::Compact)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.apply_focus(None, window, cx)
+                                        })),
+                                ),
+                            ),
+                    )
+                })
+                .when_some(self.focus_input.as_ref(), |bar, input| {
+                    bar.child(
+                        h_flex()
+                            .px_2()
+                            .py_1()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new("Focus on activity").size(LabelSize::Small).color(Color::Muted))
+                            .child(
+                                div()
+                                    .debug_selector(|| "focus-input".to_string())
+                                    .flex_1()
+                                    .px_2()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .child(input.editor.clone()),
+                            )
+                            .child(
+                                div().debug_selector(|| "focus-confirm".to_string()).child(
+                                    Button::new("results-focus-confirm", "Focus")
+                                        .size(ButtonSize::Compact)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_focus_input(window, cx)
+                                        })),
+                                ),
+                            )
+                            .child(
+                                Button::new("results-focus-cancel", "Cancel")
+                                    .size(ButtonSize::Compact)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_focus_input(window, cx)
+                                    })),
+                            ),
+                    )
+                })
+                .children(self.focus_note.clone().map(|note| {
+                    div().px_3().pb_1().child(
+                        Label::new(note).size(LabelSize::XSmall).color(Color::Warning),
+                    )
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// Builds the timeline away from the window, then the view.
     fn build_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
+        let focus = self.focus.clone();
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -710,7 +941,7 @@ impl ResultsViewer {
                     .background_spawn(async move {
                         let table = for_build.tables.first()?;
                         let columns = columns?;
-                        let projection = build_projection_with(table, &columns)?;
+                        let projection = build_projection_in(table, &columns, focus.as_deref())?;
                         let waterfall = Waterfall::build(table, &projection, &columns, &options)?;
                         Some((projection, waterfall))
                     })
@@ -768,6 +999,7 @@ impl ResultsViewer {
     /// Works out the findings of a trace away from the window, then shows the strip.
     fn build_findings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
+        let focus = self.focus.clone();
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -787,7 +1019,7 @@ impl ResultsViewer {
                     .background_spawn(async move {
                         let table = result.tables.first()?;
                         let columns = columns?;
-                        let projection = build_projection_with(table, &columns)?;
+                        let projection = build_projection_in(table, &columns, focus.as_deref())?;
                         Some(Findings::build(table, &projection, &columns, &options))
                     })
                     .await;
@@ -909,6 +1141,7 @@ impl ResultsViewer {
     /// Builds the sequence diagram away from the window, then the view.
     fn build_sequence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
+        let focus = self.focus.clone();
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -921,7 +1154,7 @@ impl ResultsViewer {
                     .background_spawn(async move {
                         let table = result.tables.first()?;
                         let columns = columns?;
-                        let projection = build_projection_with(table, &columns)?;
+                        let projection = build_projection_in(table, &columns, focus.as_deref())?;
                         build_sequence(table, &projection, &columns, &options)
                             .map(|diagram| diagram.to_mermaid())
                     })
@@ -946,6 +1179,7 @@ impl ResultsViewer {
     /// Builds the activity projection away from the window, then the view.
     fn build_structured(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.results_file.read(cx).result.clone();
+        let focus = self.focus.clone();
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -962,7 +1196,7 @@ impl ResultsViewer {
                     .background_spawn(async move {
                         let table = for_projection.tables.first()?;
                         let columns = columns?;
-                        let projection = build_projection_with(table, &columns)?;
+                        let projection = build_projection_in(table, &columns, focus.as_deref())?;
                         let timeline = columns.timestamp.is_some().then(|| {
                             Timeline::build(table, &projection, &columns, &timeline_options)
                         });
@@ -1040,6 +1274,9 @@ impl Render for ResultsViewer {
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
             },
         };
+        let focus_bar = self.render_focus_bar(cx);
+        let can_focus = self.can_show_structured && self.grid.is_some();
+        let focus_open = self.focus_input.is_some();
         let structural_rows = self
             .grid
             .as_ref()
@@ -1162,6 +1399,20 @@ impl Render for ResultsViewer {
                             )
                         })
                         .child(div().flex_1())
+                        .when(can_focus, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "focus-button".to_string()).child(
+                                    Button::new("results-focus", "Focus…")
+                                        .toggle_state(focus_open)
+                                        .tooltip(ui::Tooltip::text(
+                                            "Rebuild every view from one activity, by its id, and what is below it",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_focus_input(window, cx)
+                                        })),
+                                ),
+                            )
+                        })
                         .when(
                             structural_rows > 0 && matches!(mode, ViewMode::Data | ViewMode::Structured),
                             |bar| {
@@ -1210,6 +1461,7 @@ impl Render for ResultsViewer {
                         }),
                 )
             })
+            .children(focus_bar)
             .children(strip)
             .child(div().flex_1().min_h_0().child(body))
     }
@@ -2519,6 +2771,181 @@ mod tests {
             structured.read_with(cx, |view, cx| view.tree().read(cx).selected()),
             1,
             "the activity is revealed once the tree exists"
+        );
+    }
+
+    /// FOC-1 to FOC-6: every view can be rebuilt from one activity, by its id, and go back.
+    #[gpui::test]
+    async fn every_view_can_be_focused_on_an_activity_and_back(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = |millis: u32| {
+            format!("2026-01-01T00:00:{:02}.{:07}Z", millis / 1000, (millis % 1000) * 10_000)
+        };
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "MarkerName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                    { "name": "Level", "type": "long" },
+                    { "name": "MessageText", "type": "string" },
+                ],
+                "rows": [
+                    ["r", "", "A", "Run", time(0), 4, "start"],
+                    ["a", "r", "B", "Step", time(100), 4, "start"],
+                    ["c", "a", "B", "Inner", time(200), 4, "start"],
+                    ["c", "a", "B", "Inner", time(300), 4, "end"],
+                    ["a", "r", "B", "Step", time(600), 4, "end"],
+                    ["b", "r", "A", "Other", time(700), 2, "it broke"],
+                    ["r", "", "A", "Run", time(1000), 4, "end"],
+                ],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace })).await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let path = ProjectPath {
+            worktree_id,
+            path: RelPath::new(Path::new("trace.ktt"), util::paths::PathStyle::Unix)
+                .expect("relative path")
+                .into_arc(),
+        };
+        let viewer = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let grid = viewer
+            .read_with(cx, |viewer, _| viewer.grid().cloned())
+            .expect("the grid");
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 7);
+        assert!(cx.debug_bounds("focus-bar").is_none(), "no focus, no bar");
+        let strip = viewer
+            .read_with(cx, |viewer, _| viewer.findings_strip().cloned())
+            .expect("findings");
+        assert_eq!(
+            strip.read_with(cx, |strip, _| strip.finding(0).map(|finding| finding.title.clone())),
+            Some("Failure began in A: Other".to_string())
+        );
+
+        // The field opens, and an unknown id says so and changes nothing.
+        let button = cx
+            .debug_bounds("focus-button")
+            .map(|bounds| bounds.center())
+            .expect("the Focus… button shows");
+        cx.simulate_click(button, gpui::Modifiers::default());
+        cx.run_until_parked();
+        let editor = viewer
+            .read_with(cx, |viewer, _| viewer.focus_input.as_ref().map(|input| input.editor.clone()))
+            .expect("the field is open");
+        editor.update_in(cx, |editor, window, cx| editor.set_text("nope", window, cx));
+        viewer.update_in(cx, |viewer, window, cx| viewer.confirm_focus_input(window, cx));
+        cx.run_until_parked();
+        assert!(viewer.read_with(cx, |viewer, _| viewer.focus.is_none()));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.focus_note.clone()),
+            Some("No activity has the id nope.".into())
+        );
+
+        // An id, in any case, focuses every view on that activity and what is below it.
+        editor.update_in(cx, |editor, window, cx| editor.set_text("  A ", window, cx));
+        viewer.update_in(cx, |viewer, window, cx| viewer.confirm_focus_input(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = viewer
+            .read_with(cx, |viewer, _| viewer.focus.clone())
+            .expect("focused");
+        assert_eq!((focus.activity_id.as_str(), focus.rows.clone()), ("a", vec![1, 2, 3, 4]));
+        assert!(viewer.read_with(cx, |viewer, _| viewer.focus_input.is_none()), "the field closes");
+        assert!(cx.debug_bounds("focus-bar").is_some(), "the bar shows");
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_rows_for_test().to_vec()), vec![1, 2, 3, 4]);
+        let origins = viewer.read_with(cx, |viewer, cx| {
+            viewer.findings_strip().map_or(0, |strip| {
+                let strip = strip.read(cx);
+                (0..strip.count())
+                    .filter_map(|index| strip.finding(index))
+                    .filter(|finding| finding.title.starts_with("Failure began"))
+                    .count()
+            })
+        });
+        assert_eq!(origins, 0, "the failure is outside the focus");
+
+        viewer.update_in(cx, |viewer, window, cx| viewer.set_mode(ViewMode::Timeline, window, cx));
+        cx.run_until_parked();
+        let waterfall = viewer
+            .read_with(cx, |viewer, _| viewer.waterfall_view().cloned())
+            .expect("the timeline");
+        let (_, extent) = waterfall.read_with(cx, |view, _| view.view());
+        assert_eq!(extent, 500 * 10_000, "the axis is the focused step: 100 to 600 ms");
+
+        viewer.update_in(cx, |viewer, window, cx| viewer.set_mode(ViewMode::Structured, window, cx));
+        cx.run_until_parked();
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view");
+        let activities = structured.read_with(cx, |view, cx| {
+            view.tree().read(cx).state().projection().activities.len()
+        });
+        assert_eq!(activities, 2, "a and c; r and b are outside");
+
+        // Up one level, then the whole trace.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let up = cx
+            .debug_bounds("focus-up")
+            .map(|bounds| bounds.center())
+            .expect("Up one level shows");
+        cx.simulate_click(up, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = viewer
+            .read_with(cx, |viewer, _| viewer.focus.clone())
+            .expect("focused");
+        assert_eq!(focus.activity_id, "r");
+        assert_eq!(focus.parent_id, None, "a root has no level above");
+        assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 7);
+
+        let clear = cx
+            .debug_bounds("focus-clear")
+            .map(|bounds| bounds.center())
+            .expect("Show whole trace shows");
+        cx.simulate_click(clear, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(viewer.read_with(cx, |viewer, _| viewer.focus.is_none()));
+        assert!(cx.debug_bounds("focus-bar").is_none(), "the bar goes");
+        let strip = viewer
+            .read_with(cx, |viewer, _| viewer.findings_strip().cloned())
+            .expect("findings again");
+        assert_eq!(
+            strip.read_with(cx, |strip, _| strip.finding(0).map(|finding| finding.title.clone())),
+            Some("Failure began in A: Other".to_string()),
+            "the whole trace has its failure back"
         );
     }
 }
