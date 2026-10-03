@@ -3,7 +3,10 @@
 //!
 //! Everything is computed from the activity tree and the timestamps of the events. Times are
 //! only as good as what was logged: an activity runs from its first event to its last, so one
-//! with a single event has no duration, and one with none has no bounds at all.
+//! with a single event has no duration, and one with none has no bounds at all. An activity
+//! that has bounds is widened to cover its descendants, because a scope is still running while
+//! the work it started is: a parent that logged only at its start still lasts as long as its
+//! children.
 
 use std::collections::HashMap;
 
@@ -49,20 +52,21 @@ pub struct Repetition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Timeline {
-    /// Earliest and latest event time of each activity, in 100 ns ticks. `None` when none of its
-    /// events has a readable timestamp.
+    /// Earliest and latest event time of each activity, in 100 ns ticks, widened to cover its
+    /// descendants. `None` when none of its own events has a readable timestamp.
     pub start: Vec<Option<i64>>,
     pub end: Vec<Option<i64>>,
     pub children: Vec<Vec<usize>>,
     pub roots: Vec<usize>,
     /// Time an activity's children do not explain, in ticks: its duration minus the union of its
-    /// children's intervals, each clipped to its own. `None` without bounds.
+    /// children's intervals. `None` without bounds.
     pub untraced_ticks: Vec<Option<i64>>,
     /// Ticks of an activity's own time that lie on the critical path of its root. For a root with
     /// bounds the values of its branch add up to its duration.
     pub critical_ticks: Vec<i64>,
     pub repetitions: Vec<Repetition>,
-    /// Activities with a bound that start before, or end after, their parent.
+    /// Activities whose own events start before, or end after, their parent's own events. The
+    /// parent's bounds were widened to cover them.
     pub outside_parent: Vec<usize>,
     /// Activities none of whose events has a readable timestamp.
     pub without_bounds: Vec<usize>,
@@ -107,8 +111,8 @@ impl Timeline {
         }
 
         let mut timeline = Self {
-            trace_start: roots.iter().filter_map(|root| start[*root]).min(),
-            trace_end: roots.iter().filter_map(|root| end[*root]).max(),
+            trace_start: None,
+            trace_end: None,
             start,
             end,
             children,
@@ -120,6 +124,10 @@ impl Timeline {
             without_bounds: Vec::new(),
             structural_rows: structural_rows(table, columns, options),
         };
+        timeline.find_outside_parent(projection);
+        timeline.widen_to_descendants(projection);
+        timeline.trace_start = timeline.roots.iter().filter_map(|root| timeline.start[*root]).min();
+        timeline.trace_end = timeline.roots.iter().filter_map(|root| timeline.end[*root]).max();
         timeline.find_untraced_time(projection);
         timeline.find_critical_path();
         timeline.find_repetitions(projection, options.minimum_repeat);
@@ -138,13 +146,11 @@ impl Timeline {
         (end > start).then_some((start, end))
     }
 
-    fn find_untraced_time(&mut self, projection: &ActivityProjection) {
+    fn find_outside_parent(&mut self, projection: &ActivityProjection) {
         for index in 0..projection.activities.len() {
             let (Some(start), Some(end)) = (self.start[index], self.end[index]) else {
-                self.without_bounds.push(index);
                 continue;
             };
-            let mut intervals: Vec<(i64, i64)> = Vec::new();
             for child in &self.children[index] {
                 if let (Some(child_start), Some(child_end)) = (self.start[*child], self.end[*child])
                 {
@@ -152,12 +158,49 @@ impl Timeline {
                         self.outside_parent.push(*child);
                     }
                 }
-                intervals.extend(self.clipped(*child, start, end));
             }
-            self.untraced_ticks[index] = Some((end - start) - union_length(&mut intervals));
         }
         self.outside_parent.sort_unstable();
         self.outside_parent.dedup();
+    }
+
+    /// Bottom up, so a grandchild's time reaches the grandparent. An activity with no bounds of
+    /// its own stays without them rather than being given its children's.
+    fn widen_to_descendants(&mut self, projection: &ActivityProjection) {
+        let mut preorder = Vec::with_capacity(projection.activities.len());
+        let mut pending: Vec<usize> = self.roots.iter().rev().copied().collect();
+        while let Some(activity) = pending.pop() {
+            preorder.push(activity);
+            pending.extend(self.children[activity].iter().rev().copied());
+        }
+        for activity in preorder.into_iter().rev() {
+            let Some(parent) = projection.activities[activity].parent else {
+                continue;
+            };
+            let (Some(start), Some(end)) = (self.start[activity], self.end[activity]) else {
+                continue;
+            };
+            if let Some(parent_start) = self.start[parent] {
+                self.start[parent] = Some(parent_start.min(start));
+            }
+            if let Some(parent_end) = self.end[parent] {
+                self.end[parent] = Some(parent_end.max(end));
+            }
+        }
+    }
+
+    fn find_untraced_time(&mut self, projection: &ActivityProjection) {
+        for index in 0..projection.activities.len() {
+            let (Some(start), Some(end)) = (self.start[index], self.end[index]) else {
+                self.without_bounds.push(index);
+                continue;
+            };
+            let mut intervals: Vec<(i64, i64)> = self.children[index]
+                .iter()
+                .filter_map(|child| self.clipped(*child, start, end))
+                .collect();
+            self.untraced_ticks[index] = Some((end - start) - union_length(&mut intervals));
+        }
     }
 
     /// Walks back from the end of each root. The child that finishes last is on the path, and the
@@ -416,6 +459,26 @@ mod tests {
     }
 
     #[test]
+    fn a_grandchild_widens_its_grandparent_but_an_activity_with_no_bounds_stays_without() {
+        let mut events = Vec::new();
+        span(&mut events, "g", "", "G", 0, 10);
+        events.push(event("silent", "g", "S", 5));
+        span(&mut events, "leaf", "silent", "L", 20, 90);
+        let mut table = trace(events);
+        for row in &mut table.rows {
+            if row[0] == Cell::Text("silent".into()) {
+                row[3] = Cell::Text("not a time".into());
+            }
+        }
+        let (projection, timeline) = build(&table);
+        let g = index(&projection, "g");
+        assert_eq!(timeline.duration_ticks(g), Some(10 * MILLISECOND), "silent has no bounds to pass up");
+        let silent = index(&projection, "silent");
+        assert_eq!(timeline.start[silent], None);
+        assert_eq!(timeline.without_bounds, vec![silent]);
+    }
+
+    #[test]
     fn untraced_time_is_what_the_children_do_not_cover() {
         let mut events = Vec::new();
         span(&mut events, "p", "", "P", 0, 100);
@@ -429,14 +492,18 @@ mod tests {
     }
 
     #[test]
-    fn a_child_outside_its_parent_is_clipped_and_counted() {
+    fn a_parent_is_widened_to_cover_its_children_and_they_are_counted() {
         let mut events = Vec::new();
         span(&mut events, "p", "", "P", 100, 200);
         span(&mut events, "early", "p", "E", 50, 120);
         span(&mut events, "outside", "p", "O", 300, 400);
         let (projection, timeline) = build(&trace(events));
         let p = index(&projection, "p");
-        assert_eq!(timeline.untraced_ticks[p], Some(80 * MILLISECOND), "only [100,120] is covered");
+        assert_eq!(timeline.start[p], timeline.start[index(&projection, "early")], "the earliest descendant");
+        assert_eq!(timeline.end[p], timeline.end[index(&projection, "outside")], "the latest descendant");
+        assert_eq!(timeline.duration_ticks(p), Some(350 * MILLISECOND));
+        assert_eq!(timeline.untraced_ticks[p], Some(180 * MILLISECOND), "[50,120] and [300,400] are covered");
+        assert_eq!(timeline.trace_end, timeline.end[p]);
         let mut expected = vec![index(&projection, "early"), index(&projection, "outside")];
         expected.sort_unstable();
         assert_eq!(timeline.outside_parent, expected);
