@@ -8,10 +8,12 @@
 
 use std::collections::HashMap;
 
-use crate::activity::{ActivityProjection, Strength};
+use crate::activity::ActivityProjection;
+use crate::failures::{Failures, row_message, split_part_prefix};
 use crate::result::Table;
+use crate::timeline::{Timeline, TimelineOptions};
 use crate::trace_schema::{TraceColumns, matches_pattern};
-use crate::typed::{TICKS_PER_SECOND, parse_datetime_ticks};
+use crate::typed::TICKS_PER_SECOND;
 use crate::view::severity_level;
 
 /// Calls nested deeper than this are counted but not drawn. Fifty nested activation bars are
@@ -181,17 +183,11 @@ struct Builder<'a> {
     columns: &'a TraceColumns,
     options: &'a SequenceOptions,
     actor_of: Vec<usize>,
-    start: Vec<Option<i64>>,
-    end: Vec<Option<i64>>,
+    timeline: Timeline,
+    failures: Failures,
     owner: Vec<Option<usize>>,
     root_of: Vec<usize>,
-    subtree_error: Vec<bool>,
-    /// Whether some activity below this one has an error: this activity's own error is then
-    /// the same failure passing through, not where it started.
-    descendant_error: Vec<bool>,
-    error_row: Vec<Option<usize>>,
     handled_errors: Vec<usize>,
-    children: Vec<Vec<usize>>,
     /// Activities with an error of their own, by the call they run in.
     call_errors: Vec<Vec<usize>>,
     /// The same for activities that run in no call, by the root they belong to.
@@ -275,74 +271,40 @@ impl<'a> Builder<'a> {
         actor_count: usize,
     ) -> Self {
         let count = projection.activities.len();
+        let timeline = Timeline::build(table, projection, columns, &TimelineOptions::default());
+        let failures = Failures::analyze(table, projection, columns, &timeline);
+        let mut handled_errors = vec![0; actor_count];
+        for (index, handled) in failures.handled_row.iter().enumerate() {
+            if handled.is_some() {
+                handled_errors[actor_of[index]] += 1;
+            }
+        }
+        let trace_start = timeline.start.iter().flatten().min().copied();
         let mut builder = Self {
             table,
             projection,
             columns,
             options,
             actor_of,
-            start: vec![None; count],
-            end: vec![None; count],
+            timeline,
+            failures,
             owner: vec![None; count],
             root_of: vec![0; count],
-            subtree_error: vec![false; count],
-            descendant_error: vec![false; count],
-            error_row: vec![None; count],
-            handled_errors: vec![0; actor_count],
-            children: Vec::new(),
+            handled_errors,
             call_errors: Vec::new(),
             root_errors: HashMap::new(),
             calls: Vec::new(),
             nested_calls: Vec::new(),
-            trace_start: None,
+            trace_start,
             omitted_calls: 0,
         };
-        builder.read_times_and_errors();
         builder.find_calls();
         builder.walk_tree();
         builder
     }
 
-    fn read_times_and_errors(&mut self) {
-        let (table, projection) = (self.table, self.projection);
-        for (index, activity) in projection.activities.iter().enumerate() {
-            if let Some(column) = self.columns.timestamp {
-                let ticks = activity.event_rows.iter().filter_map(|row| {
-                    parse_datetime_ticks(&table.cell(*row, column)?.display_text())
-                });
-                let (earliest, latest) = ticks.fold((None, None), |(low, high), tick| {
-                    (
-                        Some(low.map_or(tick, |low: i64| low.min(tick))),
-                        Some(high.map_or(tick, |high: i64| high.max(tick))),
-                    )
-                });
-                self.start[index] = earliest;
-                self.end[index] = latest;
-            }
-            let error = self.first_error_row(&activity.event_rows);
-            let handled = activity
-                .severity
-                .is_some_and(|severity| severity.strength == Strength::Muted);
-            if error.is_some() && handled {
-                self.handled_errors[self.actor_of[index]] += 1;
-            } else {
-                self.error_row[index] = error;
-            }
-        }
-        self.trace_start = self.start.iter().flatten().min().copied();
-    }
-
-    fn first_error_row(&self, rows: &[usize]) -> Option<usize> {
-        let severity = self.columns.severity?;
-        rows.iter().copied().find(|row| {
-            severity_level(self.table.cell(*row, severity)).is_some_and(|level| level <= 2)
-                && !self.message_of(*row).is_some_and(|text| is_filler(&text))
-        })
-    }
-
     fn message_of(&self, row: usize) -> Option<String> {
-        let column = self.columns.message?;
-        Some(self.table.cell(row, column)?.display_text().into_owned())
+        row_message(self.table, self.columns, row)
     }
 
     fn marker_of(&self, activity: usize) -> Option<&str> {
@@ -372,11 +334,11 @@ impl<'a> Builder<'a> {
 
         let mut calls = Vec::new();
         for ((parent, callee_actor), mut kids) in buckets {
-            kids.sort_by_key(|kid| (self.start[*kid].unwrap_or(i64::MAX), self.first_row(*kid)));
+            kids.sort_by_key(|kid| (self.timeline.start[*kid].unwrap_or(i64::MAX), self.first_row(*kid)));
             let mut cluster: Vec<usize> = Vec::new();
             let mut cluster_end: Option<i64> = None;
             for kid in kids {
-                let overlaps = match (self.start[kid], cluster_end) {
+                let overlaps = match (self.timeline.start[kid], cluster_end) {
                     (Some(start), Some(end)) => start <= end,
                     _ => false,
                 };
@@ -384,7 +346,7 @@ impl<'a> Builder<'a> {
                     calls.push(self.call_data(parent, callee_actor, std::mem::take(&mut cluster)));
                     cluster_end = None;
                 }
-                cluster_end = match (cluster_end, self.end[kid]) {
+                cluster_end = match (cluster_end, self.timeline.end[kid]) {
                     (Some(current), Some(end)) => Some(current.max(end)),
                     (None, end) => end,
                     (current, None) => current,
@@ -405,8 +367,8 @@ impl<'a> Builder<'a> {
     }
 
     fn call_data(&self, parent: usize, callee_actor: usize, kids: Vec<usize>) -> CallData {
-        let start = kids.iter().filter_map(|kid| self.start[*kid]).min();
-        let end = kids.iter().filter_map(|kid| self.end[*kid]).max();
+        let start = kids.iter().filter_map(|kid| self.timeline.start[*kid]).min();
+        let end = kids.iter().filter_map(|kid| self.timeline.end[*kid]).max();
         CallData {
             caller_activity: parent,
             caller_actor: self.actor_of[parent],
@@ -436,38 +398,21 @@ impl<'a> Builder<'a> {
                 call_of_kid.insert(*kid, call_index);
             }
         }
-        let mut children: Vec<Vec<usize>> = vec![Vec::new(); activities.len()];
-        let mut roots = Vec::new();
-        for (index, activity) in activities.iter().enumerate() {
-            match activity.parent {
-                Some(parent) => children[parent].push(index),
-                None => roots.push(index),
-            }
-        }
-
-        self.children = children.clone();
         let mut preorder = Vec::with_capacity(activities.len());
-        let mut stack: Vec<(usize, Option<usize>, usize)> =
-            roots.iter().rev().map(|root| (*root, None, *root)).collect();
+        let mut stack: Vec<(usize, Option<usize>, usize)> = self
+            .timeline
+            .roots
+            .iter()
+            .rev()
+            .map(|root| (*root, None, *root))
+            .collect();
         while let Some((activity, inherited, root)) = stack.pop() {
             let current = call_of_kid.get(&activity).copied().or(inherited);
             self.owner[activity] = current;
             self.root_of[activity] = root;
             preorder.push(activity);
-            for child in children[activity].iter().rev() {
+            for child in self.timeline.children[activity].iter().rev() {
                 stack.push((*child, current, root));
-            }
-        }
-
-        for activity in 0..activities.len() {
-            self.subtree_error[activity] = self.error_row[activity].is_some();
-        }
-        for activity in preorder.iter().rev() {
-            if self.subtree_error[*activity] {
-                if let Some(parent) = activities[*activity].parent {
-                    self.subtree_error[parent] = true;
-                    self.descendant_error[parent] = true;
-                }
             }
         }
 
@@ -480,7 +425,7 @@ impl<'a> Builder<'a> {
 
         self.call_errors = vec![Vec::new(); self.calls.len()];
         for activity in &preorder {
-            if self.error_row[*activity].is_none() || self.descendant_error[*activity] {
+            if self.failures.error_row[*activity].is_none() || self.failures.descendant_error[*activity] {
                 continue;
             }
             match self.owner[*activity] {
@@ -548,8 +493,8 @@ impl<'a> Builder<'a> {
                 .map(|marker| shorten(&short_marker(marker), self.options.label_characters))
                 .unwrap_or_else(|| "(root)".to_string()),
             activity: root,
-            duration_ms: self.duration_ms(self.start[root], self.end[root]),
-            failed: self.subtree_error[root],
+            duration_ms: self.duration_ms(self.timeline.start[root], self.timeline.end[root]),
+            failed: self.failures.subtree_error[root],
             items,
             notes: self.notes(scope_errors),
         }
@@ -664,7 +609,7 @@ impl<'a> Builder<'a> {
             activities: data.kids.clone(),
             offset_seconds: self.offset_seconds(data.start),
             duration_ms: self.duration_ms(data.start, data.end),
-            failed: data.kids.iter().any(|kid| self.subtree_error[*kid]),
+            failed: data.kids.iter().any(|kid| self.failures.subtree_error[*kid]),
             items,
             notes: self.notes(self.call_errors[index].clone()),
         }
@@ -733,7 +678,7 @@ impl<'a> Builder<'a> {
             for kid in &call.activities {
                 let mut pending = vec![*kid];
                 while let Some(activity) = pending.pop() {
-                    pending.extend(self.children[activity].iter().copied());
+                    pending.extend(self.timeline.children[activity].iter().copied());
                     for row in &self.projection.activities[activity].event_rows {
                         if severity_level(self.table.cell(*row, severity)) != Some(3) {
                             continue;
@@ -786,13 +731,13 @@ impl<'a> Builder<'a> {
     fn notes(&self, mut activities: Vec<usize>) -> ErrorNotes {
         activities.sort_by_key(|activity| {
             (
-                self.start[*activity].unwrap_or(i64::MAX),
+                self.timeline.start[*activity].unwrap_or(i64::MAX),
                 self.first_row(*activity),
             )
         });
         let mut groups: Vec<Note> = Vec::new();
         for activity in activities {
-            let Some(row) = self.error_row[activity] else {
+            let Some(row) = self.failures.error_row[activity] else {
                 continue;
             };
             let marker = self
@@ -895,30 +840,6 @@ fn count_calls(items: &[Item]) -> usize {
             Item::Step(step) => count_calls(&step.items),
         })
         .sum()
-}
-
-/// A row whose text says nothing about what went wrong: a later part of a split message, or a
-/// notice that a message was split.
-fn is_filler(text: &str) -> bool {
-    let text = text.trim_start();
-    if text.starts_with("The message is splitted")
-        || text.starts_with("Message size is too large")
-        || text.starts_with("Monitored scope")
-    {
-        return true;
-    }
-    split_part_prefix(text).is_some_and(|(part, _)| part != 1)
-}
-
-/// `(part, rest)` for text that starts `k/N: `.
-fn split_part_prefix(text: &str) -> Option<(usize, &str)> {
-    let (part, rest) = text.split_once('/')?;
-    let (total, rest) = rest.split_once(':')?;
-    if total.is_empty() || !total.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let part: usize = part.parse().ok()?;
-    Some((part, rest.trim_start()))
 }
 
 /// What a note says: the `message` of a JSON error when there is one, else the text itself,

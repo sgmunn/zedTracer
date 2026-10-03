@@ -563,7 +563,7 @@ The facts about *time* and *failure* in a structured trace, computed once from t
 | TLN-7 | P1 | **Failures.** The analysis behind SEQ-11 and SEQ-13 is computed once and shared: an activity's error row, whether it recovered (ACT-9, muted), whether anything below it failed, and which activities are failure origins. |
 | TLN-8 | P1 | Each computation is linear or n log n in the number of activities and rows and does not recurse on the depth of the tree (NFR-1). |
 
-**Status.** TLN-1 to TLN-6 and TLN-8 are built in `crates/kusto_results/src/timeline.rs`, with tests, and give the numbers measured above on both real traces (an ignored test prints them). On Sample 2 the critical path attributes 4,208 ms to `ListTablesWithSchemas`. Not built: TLN-7 (the failure analysis is still inside the sequence view) and the settings `kusto_results.structural_messages` and the repeat minimum.
+**Status.** TLN-1 to TLN-6 and TLN-8 are built in `crates/kusto_results/src/timeline.rs`, with tests, and give the numbers measured above on both real traces (an ignored test prints them). On Sample 2 the critical path attributes 4,208 ms to `ListTablesWithSchemas`. TLN-7 is built in `failures.rs`, which the sequence view now uses for both failures and times. Not built: the settings `kusto_results.structural_messages` and the repeat minimum.
 
 ### 5.6 Findings strip (FND)
 

@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod activity_tree;
 pub mod export;
+pub mod failures;
 pub mod filter;
 pub mod inspector;
 pub mod result;
