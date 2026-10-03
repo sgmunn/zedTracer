@@ -18,6 +18,7 @@ pub mod trace_schema;
 pub mod trace_text;
 pub mod typed;
 pub mod view;
+pub mod waterfall;
 
 pub use result::{
     Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, NoResultData, ResultSet, Table,

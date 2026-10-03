@@ -64,6 +64,9 @@ pub struct Timeline {
     /// Ticks of an activity's own time that lie on the critical path of its root. For a root with
     /// bounds the values of its branch add up to its duration.
     pub critical_ticks: Vec<i64>,
+    /// Whether the walk reached this activity: it is on the critical path even when all of its
+    /// time belongs to its children.
+    pub on_critical_path: Vec<bool>,
     pub repetitions: Vec<Repetition>,
     /// Activities whose own events start before, or end after, their parent's own events. The
     /// parent's bounds were widened to cover them.
@@ -119,6 +122,7 @@ impl Timeline {
             roots,
             untraced_ticks: vec![None; count],
             critical_ticks: vec![0; count],
+            on_critical_path: vec![false; count],
             repetitions: Vec::new(),
             outside_parent: Vec::new(),
             without_bounds: Vec::new(),
@@ -236,6 +240,7 @@ impl Timeline {
             }
             own += cursor - window_start;
             self.critical_ticks[activity] += own;
+            self.on_critical_path[activity] = true;
         }
     }
 
@@ -521,6 +526,9 @@ mod tests {
         assert_eq!(ticks("b"), 50 * MILLISECOND);
         assert_eq!(ticks("a"), 0, "a overlaps b, which finished later");
         assert_eq!(ticks("p"), 30 * MILLISECOND, "10 after c, 10 between b and c, 10 before b");
+        let on_path = |id: &str| timeline.on_critical_path[index(&projection, id)];
+        assert!(on_path("p") && on_path("b") && on_path("c"));
+        assert!(!on_path("a"), "a overlaps b, which finished later");
     }
 
     #[test]
