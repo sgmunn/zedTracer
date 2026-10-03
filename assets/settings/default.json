@@ -150,6 +150,12 @@
     // Messages that only say something started or ended and carry no content. Such rows are
     // dimmed in the grid and can be hidden. A "*" at either end matches any text.
     "structural_messages": ["Monitored scope start*", "Monitored scope end*"],
+    // How the Timeline tab of a trace is drawn.
+    "waterfall": {
+      // Activities shorter than this share of the trace's duration are folded into their parent.
+      // 0 folds nothing.
+      "fold_share": 0.01,
+    },
     // How the sequence diagram of a trace is drawn.
     "sequence": {
       // Levels below the root at which an activity groups the calls it caused into a step.

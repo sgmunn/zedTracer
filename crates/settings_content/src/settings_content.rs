@@ -1450,6 +1450,20 @@ pub struct KustoResultsSettingsContent {
     ///
     /// Default: ["Monitored scope start*", "Monitored scope end*"]
     pub structural_messages: Option<Vec<String>>,
+
+    /// How the Timeline tab of a trace is drawn.
+    pub waterfall: Option<KustoWaterfallSettingsContent>,
+}
+
+/// How the Timeline tab of a trace is drawn.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoWaterfallSettingsContent {
+    /// Activities shorter than this share of the trace's duration are folded into their parent,
+    /// which says how many it hides and opens them on demand. 0 folds nothing.
+    ///
+    /// Default: 0.01
+    pub fold_share: Option<f64>,
 }
 
 /// How the sequence diagram of a trace is drawn. The Sequence tab also lets you change the step

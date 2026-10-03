@@ -2,6 +2,7 @@ use gpui::{Hsla, Rgba};
 use kusto_results::Table;
 use kusto_results::sequence::SequenceOptions;
 use kusto_results::timeline::TimelineOptions;
+use kusto_results::waterfall::WaterfallOptions;
 use kusto_results::trace_schema::{TraceColumns, TraceSchema};
 use settings::{DockSide, RegisterSetting, Settings};
 
@@ -19,6 +20,8 @@ pub struct ResultsSettings {
     pub sequence: SequenceOptions,
     /// Messages that only say something started or ended, which the grid dims and can hide.
     pub structural_messages: Vec<String>,
+    /// How the Timeline tab folds and names what it draws.
+    pub waterfall: WaterfallOptions,
 }
 
 impl ResultsSettings {
@@ -60,6 +63,28 @@ fn sequence_options(content: Option<&settings::KustoSequenceSettingsContent>) ->
             .unwrap_or(defaults.generic_actor_suffixes),
         max_arrows: content.max_arrows.unwrap_or(defaults.max_arrows),
         ..defaults
+    }
+}
+
+fn waterfall_options(content: &settings::SettingsContent) -> WaterfallOptions {
+    let defaults = WaterfallOptions::default();
+    let results = content.kusto_results.as_ref();
+    WaterfallOptions {
+        fold_share: results
+            .and_then(|results| results.waterfall.as_ref())
+            .and_then(|waterfall| waterfall.fold_share)
+            .filter(|share| share.is_finite() && *share >= 0.0)
+            .unwrap_or(defaults.fold_share),
+        timeline: TimelineOptions {
+            structural_messages: results
+                .and_then(|results| results.structural_messages.clone())
+                .unwrap_or_else(|| defaults.timeline.structural_messages.clone()),
+            ..defaults.timeline
+        },
+        generic_actor_suffixes: results
+            .and_then(|results| results.sequence.as_ref())
+            .and_then(|sequence| sequence.generic_actor_suffixes.clone())
+            .unwrap_or(defaults.generic_actor_suffixes),
     }
 }
 
@@ -122,6 +147,7 @@ impl Settings for ResultsSettings {
                 .as_ref()
                 .and_then(|results| results.structural_messages.clone())
                 .unwrap_or_else(|| TimelineOptions::default().structural_messages),
+            waterfall: waterfall_options(content),
             sequence: sequence_options(
                 content
                     .kusto_results
@@ -175,6 +201,7 @@ mod tests {
             trace_schemas: None,
             sequence: None,
             structural_messages: None,
+            waterfall: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -269,6 +296,39 @@ mod tests {
             assert_eq!(
                 ResultsSettings::get_global(cx).structural_messages,
                 vec!["Entering*".to_string()]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn the_waterfall_folds_at_one_percent_unless_the_setting_says_otherwise(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            assert_eq!(ResultsSettings::get_global(cx).waterfall.fold_share, 0.01);
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "waterfall": { "fold_share": 0.05 },
+                            "sequence": { "generic_actor_suffixes": ["Host"] } } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            let waterfall = ResultsSettings::get_global(cx).waterfall.clone();
+            assert_eq!(waterfall.fold_share, 0.05);
+            assert_eq!(waterfall.generic_actor_suffixes, vec!["Host".to_string()]);
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(r#"{ "kusto_results": { "waterfall": { "fold_share": -1 } } }"#, cx)
+                    .expect("the user settings parse");
+            });
+            assert_eq!(
+                ResultsSettings::get_global(cx).waterfall.fold_share,
+                0.01,
+                "a negative share is not a share"
             );
         });
     }
