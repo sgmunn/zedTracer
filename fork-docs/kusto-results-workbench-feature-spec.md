@@ -22,6 +22,10 @@ The KustoTraceTools VS Code extension (fork `dev/gregm` of `Kusto-Explorer-VsCod
 | Agent access to results | Deferred (section 5) | Requirements recorded so they are not lost. |
 | Sequence diagram view | Deferred (section 5.3) | A Zed addition. Requirements come from a prototype on two real traces. |
 | Trace schema (configurable column roles) | Deferred (section 5.4) | Needed by the sequence view and wanted by the activity view. |
+| Timeline model (durations, untraced time, critical path, repetition, failures) | Deferred (section 5.5) | The shared computation behind the findings strip, the waterfall and the sequence view. |
+| Findings strip | Deferred (section 5.6) | A short list of facts about a trace, each linked to its rows. |
+| Waterfall (Timeline tab) | Deferred (section 5.7) | Where the time went, drawn natively. |
+| Message templates and structural rows | Deferred (section 5.8) | Grouping repeated messages and setting aside rows that carry no content. |
 | Charts, `render`, graph and pivot views | Out | To be specified later. |
 | Connections explorer, scratch pads, formatting settings, Copilot schema tools | Out | Not part of this effort. |
 | Query editing (highlighting, completion, diagnostics) | Out | Covered by the Kusto extension spike in `extensions/kusto`. |
@@ -532,6 +536,88 @@ The activity view and the severity colours look for fixed column names (`Current
 
 **Status.** TRC-1 to TRC-4 are built for the activity view and the severity colours: `trace_schema.rs` in `crates/kusto_results`, and the `kusto_results.trace_schemas` setting, read by the grid and the viewer in `crates/kusto_results_ui`. A change to the setting applies to results opened afterwards, not to ones already open. The projection (SEQ-2 to SEQ-14, SEQ-17, SEQ-18, and the text of SEQ-15) is built in `sequence.rs`, with tests. The Sequence tab, built when first shown (SEQ-1, SEQ-15, SEQ-16) and the note that names a missing role (TRC-6) are in `crates/kusto_results_ui`; the diagram is drawn by the markdown view. Its tests cannot show the drawn diagram, so that has to be checked in a window. The options (SEQ-19) are the `kusto_results.sequence` setting and the Steps and Collapse loops controls in the tab. Not built yet: slow or failing in-process activities and marker patterns (the rest of SEQ-19), click-through (SEQ-20, which needs a diagram that can be hit-tested, so a native renderer), saving an edited diagram (SEQ-21, SEQ-22, which need somewhere to edit it) and a per-file schema (TRC-5, not decided).
 
+### 5.5 Timeline model (TLN)
+
+The facts about *time* and *failure* in a structured trace, computed once from the activity tree and used by the findings strip (5.6), the waterfall (5.7) and the sequence view (5.3). Nothing here draws anything. It lives in `crates/kusto_results` next to the activity projection.
+
+**Where the rules come from.** Measured on the two real traces used for the sequence view (git-ignored, so the numbers are recorded here).
+
+| | Sample 1 | Sample 2 |
+| --- | --- | --- |
+| Rows, activities | 1,002, 164 | 6,413, 1,314 |
+| Activities under 1 ms | 80 | 1,234 (25 of them have a single event, so zero duration) |
+| Activities of 100 ms or more | 10 | 3 |
+| Children that start before, or end after, their parent | 5 of 163 | 2 of 1,312 |
+| Most siblings overlapping at once | 18 | 2 |
+| Largest self time | about 6.0 s in one activity | about 4.2 s of an activity of about 4.5 s, which holds 25 calls that add up to about 0.3 s |
+| Scope start and end rows | 328 (33%) | 2,474 (39%) |
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| TLN-1 | P1 | **Bounds.** An activity runs from its earliest to its latest event that has a readable timestamp (the timestamp role, TRC-1), counting every row including structural ones (TLN-6). An activity with one such event has zero duration; one with none has no bounds and is never given invented ones. Durations are only as good as what was logged, and the UI says so where it shows one. |
+| TLN-2 | P1 | **Skew.** For everything that sums time below, a child's interval is clipped to its parent's. A child wholly outside its parent counts for nothing there. The number of children that start before or end after their parent is kept, because it is a data-quality fact (FND-3). |
+| TLN-3 | P1 | **Self time**, shown to users as *untraced time*. An activity's duration minus the union of its clipped children's intervals. It is time the trace does not explain: the process may be waiting on something outside the trace, doing work that logs nothing, or sleeping. It is never called slow code. |
+| TLN-4 | P1 | **Critical path.** Walk back from the end of an activity: the child that finishes last (not after the cursor) is on the path, the gap between the cursor and its end is the activity's own time, then continue from the child's start and ignore children that overlap it. Recurse into each child on the path. Every tick of a root's duration is attributed to exactly one activity's own time, so the attributions sum to the root's duration. A chain of "the child that ends last" is not enough: in Sample 2 it follows the final 76 ms request and misses the 4.2 s before it. |
+| TLN-5 | P1 | **Repetition.** Children of one parent with the same marker, at least 5 of them (a setting), form a repeat. It records the count, the time the repeats cover (union of their intervals), the shortest and longest duration, the first and last start, and the activities. |
+| TLN-6 | P1 | **Structural rows.** A row whose message matches a configurable list (default `Monitored scope start*` and `Monitored scope end*`; `*` at either end matches any text) says that something started or ended and carries no content. Structural rows still set an activity's bounds (TLN-1). They are left out of findings text and templates, and can be dimmed or hidden in the grid (TPL-1). The setting is `kusto_results.structural_messages`. |
+| TLN-7 | P1 | **Failures.** The analysis behind SEQ-11 and SEQ-13 is computed once and shared: an activity's error row, whether it recovered (ACT-9, muted), whether anything below it failed, and which activities are failure origins. |
+| TLN-8 | P1 | Each computation is linear or n log n in the number of activities and rows and does not recurse on the depth of the tree (NFR-1). |
+
+**Status.** Not built.
+
+### 5.6 Findings strip (FND)
+
+A short list of facts about the trace in front of you, each one linked to the rows it comes from. It answers "what is notable here" before any reading. Every finding is computed locally and deterministically; none comes from a model. It is also the right input for an agent (AGT): a few evidence-linked findings are a far better prompt than thousands of rows.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| FND-1 | P1 | The **strip** sits above the grid, the activity tree and the sequence and timeline views of a trace result (a table with the activity columns, ACT). It is one line when collapsed (the number of findings by severity and the headline) and a list when expanded. It starts collapsed. |
+| FND-2 | P1 | A **finding** has a kind, a severity (error, warning, information), a one-sentence title, optional detail, the source rows and activities it comes from, and a magnitude used for ordering. A finding with no rows or activities is not shown; a data-quality finding names the rows involved. |
+| FND-3 | P1 | **Catalogue.** (1) *Failure origins*: each origin, with the actor, marker and message, and the chain of activities from it to the root. (2) *Untraced time*: an activity whose own time (TLN-3) is at least 10% of the trace's duration and at least 10 ms, with how much of the activity it is. (3) *Critical path*: the three activities with the most own time on it (TLN-4). (4) *Repetition*: each repeat (TLN-5) with its count and the time it covers. (5) *Handled errors*: per actor (SEQ-13). (6) *Severity mix*: rows by level, linking to the rows at level 3 or worse. (7) *Data quality*: roots whose caller is not in the result, children outside their parents (TLN-2), activities with no readable timestamp, and a missing severity column. |
+| FND-4 | P1 | Order: errors first, then warnings, then information; within a severity by magnitude (share of the trace's duration, or count). At most 12 are listed, then a line `N more`. |
+| FND-5 | P1 | Selecting a finding selects its rows in the grid (switching to the Data tab) or, in the Structured tab, its activity, and scrolls to it. In the Sequence and Timeline tabs it highlights what it can; those tabs add this later (P2). |
+| FND-6 | P1 | Wording is factual and says what is not known. Untraced time is *not covered by traced work*, never *slow*. A duration says it is from the logged events. A partial trace says its caller is missing. |
+| FND-7 | P1 | Findings are computed away from the window, when a trace result is first shown, from the same projection the other views use, and are rebuilt when the result or the trace schema changes. They are never written to the result file (PER-6). |
+| FND-8 | P2 | **Copy findings** as Markdown for a ticket, and as JSON for an agent. |
+| FND-9 | P2 | The strip remembers whether it was expanded, per window. |
+
+**Status.** Not built.
+
+### 5.7 Waterfall (WFL)
+
+The **Timeline** tab: where the time went. It is the natural next step from the activity tree, with durations, concurrency and the critical path. It is drawn natively, not as a Mermaid gantt: a gantt has no hierarchy, no interaction and does not hold thousands of rows.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| WFL-1 | P1 | A **Timeline** tab is offered where the Sequence tab is (SEQ-1): a table with the activity columns and a readable timestamp. A missing role is named (TRC-6). |
+| WFL-2 | P1 | One row per activity in tree order (ACT-4), indented by depth, with a bar from its start to its end on one shared time axis, labelled in offsets from the start of the trace. The axis scrolls and zooms in time, and the rows scroll. |
+| WFL-3 | P1 | **Folding.** Most activities are too short to see: 1,234 of Sample 2's 1,314 are under 1 ms. An activity shorter than a threshold (default 1% of the trace's duration, a setting) is folded into its parent, whose row says how many it hides and expands on demand. These are never folded: an error origin and the chain from it to the root, an activity on the critical path, the selected activity, and a match of a search. |
+| WFL-4 | P1 | **Untraced time** (TLN-3) is drawn inside a parent's bar as a hatched part; children's bars are drawn over it. |
+| WFL-5 | P1 | Bars are coloured by actor. An error is a mark at its event; a handled error is a lighter mark. The warning marker follows ACT-10. |
+| WFL-6 | P1 | Parallel work shows as overlapping bars on separate rows, so concurrency can be read without extra lanes. |
+| WFL-7 | P1 | Selecting a row selects the activity as the tree does, and the grid and the inspector follow (ACT-6, ACT-13). |
+| WFL-8 | P1 | A tooltip gives the marker, the actor, the offset and duration, the untraced time, the number of events, and the worst severity, and says the times come from the logged events (TLN-1). |
+| WFL-9 | P1 | **Critical path** can be highlighted (TLN-4), with the own time of each activity on it. |
+| WFL-10 | P2 | **Repetition** (TLN-5) can be shown as one row with a tick for each repeat. |
+| WFL-11 | P1 | The rows are virtualised and the folding default keeps a trace of 100k activities usable (NFR-1). The model is built in a background task (NFR-2). |
+
+**Status.** Not built.
+
+### 5.8 Message templates and structural rows (TPL)
+
+Repeated messages differ only in ids and numbers. Grouping them shows what a trace says, not each time it says it. The gain depends on the trace: Sample 1 has 674 rows of content that fall into 362 templates (1.9 times fewer), Sample 2 has 3,939 that fall into 568 (6.9 times), and the ten most common templates cover 62% of Sample 2's content rows. Markers already group (59 to 61 distinct), so templates are most useful *within* a marker. A third or more of all rows are structural (TLN-6), which setting aside helps every trace.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| TPL-1 | P1 | **Structural rows** (TLN-6) are shown dimmed in the grid, and a **Hide structural rows** toggle removes them from the view. Hiding is a view, never a change to the result (PER-6). The toggle starts off. |
+| TPL-2 | P2 | A **template** is a row's message with the variable parts masked: GUIDs, timestamps, URLs, long hex strings, and any word that contains a digit become a placeholder; a multipart prefix `k/N:` is dropped; whitespace is collapsed; the result is cut at 200 characters. One function does this, so every feature agrees. |
+| TPL-3 | P2 | A derived **Pattern** column, not stored in the result, can be shown, sorted and filtered like any column. **Group by pattern** lists each template with its count and expands to its rows. |
+| TPL-4 | P2 | **Rare and bad**: a filter for rows whose template occurs once in the table and whose severity is 3 or worse. In Sample 2, 36 of 432 one-off templates qualify, which is a short list worth reading. |
+| TPL-5 | P2 | The list of masks can be extended in a setting. |
+| TPL-6 | P3 | A clustering method that learns templates from the data (as log-parsing tools do) is only worth building if masking leaves too many templates on real traces. On the two samples a plain regex gave 371 and 1,240 templates and masking digit words gave 362 and 568, so the quality of the masking matters more than the method. |
+
+**Status.** Not built.
+
 ## 6. Acceptance vectors
 
 Concrete cases each implementation must satisfy. Vectors marked **(VSC test)** come from the VS Code unit tests. Vectors marked **(spec)** are defined by this spec from reading the code, because VS Code has no test for them. Automated tests should reproduce all of them. Fixture files that exercise these cases, with expected results, are in `fork-docs/samples/` (see its README). Wire formats follow what the VS Code server emits: datetimes as ISO 8601 with seven fractional digits, timespans as `[-][d.]hh:mm:ss[.fffffff]`.
@@ -642,7 +728,7 @@ Every deliberate difference in one place. "Fix" means Zed does not reproduce the
 
 ## 8. Questions and decisions
 
-Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open.
+Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open. Q-21 to Q-26 belong to the timeline, findings, waterfall and template sections (5.5 to 5.8); Q-21 to Q-24 are decided and Q-25 and Q-26 are open.
 
 | # | Question | Decision |
 | --- | --- | --- |
@@ -666,3 +752,9 @@ Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are
 | Q-18 | Is an actor the process name alone, or the process name plus the process id? | Decided: the name alone. The actor column is configurable (TRC-1) for traces where another column is the better actor. |
 | Q-19 | Draw the diagram as a Mermaid picture, or build a native renderer so arrows can be clicked (SEQ-20)? | Open. The picture is enough for the first version; the projection is kept separate so a native view can follow. |
 | Q-20 | What if one activity has events from more than one actor? | Open. Neither sample does this. SEQ-2 takes the first event's actor; a trace that mixes them may need splitting the activity. |
+| Q-21 | Where does the findings strip go (FND-1)? | Decided: above the grid, tree and sequence and timeline views of a trace result, collapsed to one line until opened. |
+| Q-22 | How are rows with no content (scope start and end) recognised (TLN-6)? | Decided: a configurable list of message patterns, default `Monitored scope start*` and `Monitored scope end*`, not detection. |
+| Q-23 | What is the waterfall's folding threshold (WFL-3)? | Decided: a share of the trace's duration, default 1%, so it suits a trace of any length. |
+| Q-24 | Native waterfall or a Mermaid gantt? | Decided: native (section 5.7). |
+| Q-25 | What size of untraced time is a finding (FND-3)? | Open. 10% of the trace and at least 10 ms is a starting point; try it on more traces. |
+| Q-26 | Should structural rows be hidden by default (TPL-1)? | Open. They are a third of the rows, but hiding rows by default surprises. Dimmed and shown is the starting point. |
