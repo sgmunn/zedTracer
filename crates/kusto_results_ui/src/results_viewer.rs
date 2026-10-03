@@ -14,6 +14,7 @@ use gpui::{
 };
 use gpui_util::ResultExt as _;
 use kusto_results::activity::build_projection_with;
+use kusto_results::findings::{Finding, Findings, FindingsOptions};
 use kusto_results::sequence::{SequenceOptions, build_sequence};
 use kusto_results::trace_schema::TraceRole;
 use kusto_results::{NoResultData, ResultSet, TableView};
@@ -28,6 +29,7 @@ use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem};
 use worktree::Worktree;
 
+use crate::findings_strip::{FindingsStrip, FindingsStripEvent};
 use crate::grid::{ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
 use crate::results_settings::ResultsSettings;
@@ -354,6 +356,12 @@ enum Sequence {
     Ready(Entity<SequenceView>),
 }
 
+/// The findings are worked out when the result is first shown, away from the window.
+enum FindingsState {
+    Building { _task: Task<()> },
+    Ready(Entity<FindingsStrip>),
+}
+
 pub struct ResultsViewer {
     focus_handle: FocusHandle,
     results_file: Entity<ResultsFile>,
@@ -370,6 +378,8 @@ pub struct ResultsViewer {
     sequence: Option<Sequence>,
     /// How the diagram is drawn: the settings, changed by the controls of this tab.
     sequence_options: SequenceOptions,
+    findings: Option<FindingsState>,
+    _findings_subscription: Option<Subscription>,
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
@@ -457,6 +467,8 @@ impl ResultsViewer {
             sequence_missing: None,
             sequence: None,
             sequence_options: SequenceOptions::default(),
+            findings: None,
+            _findings_subscription: None,
             can_show_query: false,
             query_view: None,
             _grid_subscription: None,
@@ -500,6 +512,11 @@ impl ResultsViewer {
                 SharedString::from(format!("Sequence needs: {}", roles.join(", ")))
             });
         self.sequence_options = settings.sequence.clone();
+        self.findings = None;
+        self._findings_subscription = None;
+        if self.can_show_structured {
+            self.build_findings(window, cx);
+        }
         // What the structured and sequence views were built from has changed.
         self.structured = None;
         self._structured_subscription = None;
@@ -592,6 +609,19 @@ impl ResultsViewer {
     }
 
     #[cfg(test)]
+    pub(crate) fn findings_strip(&self) -> Option<&Entity<FindingsStrip>> {
+        match &self.findings {
+            Some(FindingsState::Ready(strip)) => Some(strip),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn grid(&self) -> Option<&Entity<ResultGrid>> {
+        self.grid.as_ref()
+    }
+
+    #[cfg(test)]
     pub(crate) fn sequence_view(&self) -> Option<&Entity<SequenceView>> {
         match &self.sequence {
             Some(Sequence::Ready(view)) => Some(view),
@@ -617,6 +647,104 @@ impl ResultsViewer {
             self.build_query_view(window, cx);
         }
         cx.notify();
+    }
+
+    /// Works out the findings of a trace away from the window, then shows the strip.
+    fn build_findings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let settings = ResultsSettings::get_global(cx);
+        let columns = result
+            .tables
+            .first()
+            .map(|table| settings.trace_columns(table));
+        let options = FindingsOptions {
+            generic_actor_suffixes: settings.sequence.generic_actor_suffixes.clone(),
+            ..FindingsOptions::default()
+        };
+        self.findings = Some(FindingsState::Building {
+            _task: cx.spawn_in(window, async move |this, cx| {
+                let findings = cx
+                    .background_spawn(async move {
+                        let table = result.tables.first()?;
+                        let columns = columns?;
+                        let projection = build_projection_with(table, &columns)?;
+                        Some(Findings::build(table, &projection, &columns, &options))
+                    })
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    let Some(findings) = findings.filter(|findings| !findings.items.is_empty())
+                    else {
+                        this.findings = None;
+                        cx.notify();
+                        return;
+                    };
+                    let strip = cx.new(|_| FindingsStrip::new(Arc::new(findings)));
+                    this._findings_subscription = Some(cx.subscribe_in(
+                        &strip,
+                        window,
+                        |this, strip, event: &FindingsStripEvent, window, cx| {
+                            let FindingsStripEvent::Chosen(index) = event;
+                            this.choose_finding(strip, *index, window, cx);
+                        },
+                    ));
+                    this.findings = Some(FindingsState::Ready(strip));
+                    cx.notify();
+                })
+                .log_err();
+            }),
+        });
+    }
+
+    /// Shows what a finding points at: in the Structured tab the activity, otherwise its rows in
+    /// the Data tab.
+    fn choose_finding(
+        &mut self,
+        strip: &Entity<FindingsStrip>,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(finding) = strip.read(cx).finding(index).cloned() else {
+            return;
+        };
+        let note = self.show_finding(&finding, window, cx);
+        strip.update(cx, |strip, cx| strip.set_note(note, cx));
+    }
+
+    fn show_finding(
+        &mut self,
+        finding: &Finding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<SharedString> {
+        if self.mode == ViewMode::Structured {
+            if let (Some(activity), Some(view)) =
+                (finding.activities.first().copied(), self.structured_view().cloned())
+            {
+                let tree = view.read(cx).tree().clone();
+                tree.update(cx, |tree, cx| tree.reveal(activity, cx));
+                return None;
+            }
+        }
+        if finding.rows.is_empty() {
+            return Some("This finding has no rows to select.".into());
+        }
+        self.set_mode(ViewMode::Data, window, cx);
+        let grid = self.grid.clone()?;
+        let shown = grid.update(cx, |grid, cx| {
+            grid.select_source_rows(&finding.rows, window, cx)
+        });
+        match shown {
+            0 => Some("Those rows are hidden by the filters or the search.".into()),
+            shown if shown < finding.rows.len() => Some(
+                format!(
+                    "{shown} of {} rows are shown; the rest are hidden by the filters or the search.",
+                    finding.rows.len()
+                )
+                .into(),
+            ),
+            _ => None,
+        }
     }
 
     /// Steps off, then 1, 2 and 3 levels below the root, then off again.
@@ -740,6 +868,10 @@ impl Render for ResultsViewer {
             (_, _, _, None, _) => div()
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
+        };
+        let strip = match &self.findings {
+            Some(FindingsState::Ready(strip)) if self.grid.is_some() => Some(strip.clone()),
+            _ => None,
         };
         let mode = self.mode;
         let steps = self.sequence_options.step_depth;
@@ -867,6 +999,7 @@ impl Render for ResultsViewer {
                         }),
                 )
             })
+            .children(strip)
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -1684,5 +1817,167 @@ mod tests {
             viewer.toggle_collapsed_loops(window, cx)
         });
         assert!(!viewer.read_with(cx, |viewer, _| viewer.sequence_options.collapse_repeats));
+    }
+
+    /// FND-1, FND-5: a trace shows its findings in a strip that opens, and choosing a finding
+    /// selects its rows in the Data tab or its activity in the Structured tab.
+    #[gpui::test]
+    async fn a_trace_shows_findings_that_select_what_they_point_at(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = |millis: u32| format!("2026-01-01T00:00:00.{:07}Z", millis * 10_000);
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "MarkerName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                    { "name": "Level", "type": "long" },
+                    { "name": "MessageText", "type": "string" },
+                ],
+                "rows": [
+                    ["r", "", "A", "Job.Run", time(0), 4, "start"],
+                    ["a", "r", "A", "Ask", time(10), 4, "asking"],
+                    ["b", "a", "B", "Db.Query", time(20), 2, "no such row"],
+                    ["r", "", "A", "Job.Run", time(100), 4, "done"],
+                ],
+            }],
+        })
+        .to_string();
+        let plain = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [{ "name": "Message", "type": "string" }],
+                "rows": [["hello"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace, "plain.ktt": plain }))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let not_a_trace = open("plain.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(not_a_trace.read_with(cx, |viewer, _| viewer.findings_strip().is_none()));
+
+        let viewer = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let strip = viewer
+            .read_with(cx, |viewer, _| viewer.findings_strip().cloned())
+            .expect("a trace shows its findings");
+        assert!(strip.read_with(cx, |strip, _| strip.count()) >= 1);
+        assert!(!strip.read_with(cx, |strip, _| strip.is_expanded()), "it starts closed");
+
+        let header = cx
+            .debug_bounds("findings-strip-header")
+            .map(|bounds| bounds.center())
+            .expect("the header shows");
+        cx.simulate_click(header, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(strip.read_with(cx, |strip, _| strip.is_expanded()));
+
+        let first = cx
+            .debug_bounds("finding-0")
+            .map(|bounds| bounds.center())
+            .expect("the first finding shows");
+        let failure_rows = strip
+            .read_with(cx, |strip, _| strip.finding(0).map(|finding| finding.rows.clone()))
+            .expect("a first finding");
+        assert_eq!(failure_rows, vec![2], "the failure began on the row of the error");
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Sequence, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(first, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Data);
+        let grid = viewer
+            .read_with(cx, |viewer, _| viewer.grid().cloned())
+            .expect("the grid");
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.selected_source_rows()),
+            vec![2],
+            "the rows of the finding are selected"
+        );
+        assert!(strip.read_with(cx, |strip, _| strip.note().is_none()));
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Structured, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let first = cx
+            .debug_bounds("finding-0")
+            .map(|bounds| bounds.center())
+            .expect("the first finding shows");
+        cx.simulate_click(first, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Structured);
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built");
+        assert_eq!(
+            structured.read_with(cx, |view, cx| view.tree().read(cx).selected()),
+            2,
+            "the activity where the failure began is selected"
+        );
+
+        grid.update(cx, |grid, cx| grid.set_search("no match anywhere".into(), cx));
+        cx.run_until_parked();
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Data, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let first = cx
+            .debug_bounds("finding-0")
+            .map(|bounds| bounds.center())
+            .expect("the first finding shows");
+        cx.simulate_click(first, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            strip.read_with(cx, |strip, _| strip.note().cloned()),
+            Some("Those rows are hidden by the filters or the search.".into())
+        );
     }
 }

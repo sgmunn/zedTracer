@@ -390,6 +390,33 @@ impl ResultGrid {
             .collect()
     }
 
+    /// Selects these source rows as whole rows and scrolls to the first, for a link from another
+    /// view. Rows the search, the filters or the scope hide cannot be selected. Returns how many
+    /// were selected, and changes nothing when that is none.
+    pub fn select_source_rows(
+        &mut self,
+        rows: &[usize],
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let wanted: std::collections::HashSet<usize> = rows.iter().copied().collect();
+        let positions: BTreeSet<usize> = self
+            .visible_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| wanted.contains(row))
+            .map(|(position, _)| position)
+            .collect();
+        let Some(first) = positions.first().copied() else {
+            return 0;
+        };
+        let selection = CellSelection::rows(first, first, self.column_order.len());
+        let added_rows: BTreeSet<usize> = positions.iter().copied().skip(1).collect();
+        self.set_selection_and_added_rows(Some(selection), added_rows, cx);
+        self.reveal_cell(first, 0, window, cx);
+        positions.len()
+    }
+
     /// The footer text: how many rows show out of how many there are, and what is selected.
     pub fn status_text(&self) -> String {
         let total = self.scope_row_count();
@@ -1901,6 +1928,50 @@ mod tests {
                 ResultGridEvent::SelectionChanged { rows: vec![199] },
                 ResultGridEvent::SelectionChanged { rows: Vec::new() },
             ]
+        );
+    }
+
+    /// A link from another view selects the rows it names, in display order, and leaves out
+    /// rows the view does not show.
+    #[gpui::test]
+    async fn source_rows_can_be_selected_from_outside(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 200, 6);
+        let selected = grid.update_in(cx, |grid, window, cx| {
+            grid.select_source_rows(&[150, 3, 10, 3], window, cx)
+        });
+        assert_eq!(selected, 3);
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.selected_source_rows()),
+            [3, 10, 150]
+        );
+
+        click(cx, "header-name-0", Modifiers::default());
+        click(cx, "header-name-0", Modifiers::default());
+        cx.run_until_parked();
+        grid.update_in(cx, |grid, window, cx| {
+            grid.select_source_rows(&[0, 199], window, cx)
+        });
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.selected_source_rows()),
+            [199, 0],
+            "descending, so 199 comes first"
+        );
+
+        grid.update(cx, |grid, cx| grid.set_scope(Some(Arc::new(vec![1, 2, 3])), cx));
+        cx.run_until_parked();
+        let selected = grid.update_in(cx, |grid, window, cx| {
+            grid.select_source_rows(&[2, 100], window, cx)
+        });
+        assert_eq!(selected, 1, "row 100 is outside the scope");
+        assert_eq!(grid.read_with(cx, |grid, _| grid.selected_source_rows()), [2]);
+        let nothing = grid.update_in(cx, |grid, window, cx| {
+            grid.select_source_rows(&[100, 101], window, cx)
+        });
+        assert_eq!(nothing, 0);
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.selected_source_rows()),
+            [2],
+            "nothing hidden is selected, and the selection stays"
         );
     }
 

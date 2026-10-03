@@ -94,6 +94,16 @@ impl ActivityTree {
         cx.notify();
     }
 
+    /// Opens the ancestors of an activity, selects it and scrolls it to the middle, for a link
+    /// from another view.
+    pub fn reveal(&mut self, activity: usize, cx: &mut Context<Self>) {
+        if self.state.reveal(activity) {
+            cx.emit(ActivityTreeEvent::SelectionChanged(activity));
+        }
+        self.reveal_selected(ScrollStrategy::Center);
+        cx.notify();
+    }
+
     fn reveal_selected(&self, strategy: ScrollStrategy) {
         if let Some(position) = self.state.position_of(self.state.selected()) {
             self.scroll_handle.scroll_to_item(position, strategy);

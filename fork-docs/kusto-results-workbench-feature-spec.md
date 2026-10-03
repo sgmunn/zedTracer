@@ -581,7 +581,7 @@ A short list of facts about the trace in front of you, each one linked to the ro
 | FND-8 | P2 | **Copy findings** as Markdown for a ticket, and as JSON for an agent. |
 | FND-9 | P2 | The strip remembers whether it was expanded, per window. |
 
-**Status.** The model (FND-2 to FND-4, FND-6, FND-7's computation) is built in `findings.rs`, with tests, and checked on both real traces: it reads as root cause with its path, the 4.2 s not covered by traced work, the critical path, the 25-call repeat and the handled errors, built in about 20 ms. Not built: the strip itself and selecting a finding (FND-1, FND-5), copying findings (FND-8) and remembering the expanded state (FND-9).
+**Status.** FND-1 to FND-7 are built: the model in `findings.rs` (`crates/kusto_results`) and the strip in `findings_strip.rs`, wired into the viewer (`crates/kusto_results_ui`), with tests, and checked on both real traces: the 6,413-row trace reads as root cause with its path, the 4.2 s not covered by traced work, the critical path, the 25-call repeat and the handled errors, built in about 20 ms. The strip starts closed and sits above every tab. Choosing a finding selects its rows in the Data tab (or its activity in the Structured tab); rows hidden by a filter or the search are named in a note. In the Sequence and Timeline tabs a choice switches to the Data tab, and highlighting there is the P2 part of FND-5. Not built: copying findings (FND-8) and remembering the expanded state (FND-9).
 
 ### 5.7 Waterfall (WFL)
 

@@ -2,6 +2,7 @@
 
 mod activity_tree;
 mod filter_popover;
+mod findings_strip;
 mod grid;
 mod history;
 mod inspector_text;
