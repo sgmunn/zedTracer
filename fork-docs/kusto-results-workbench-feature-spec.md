@@ -26,6 +26,7 @@ The KustoTraceTools VS Code extension (fork `dev/gregm` of `Kusto-Explorer-VsCod
 | Findings strip | Deferred (section 5.6) | A short list of facts about a trace, each linked to its rows. |
 | Waterfall (Timeline tab) | Deferred (section 5.7) | Where the time went, drawn natively. |
 | Message templates and structural rows | Deferred (section 5.8) | Grouping repeated messages and setting aside rows that carry no content. |
+| Focus on an activity | Deferred (section 5.9) | Rebuild every view from one activity and what is below it. |
 | Charts, `render`, graph and pivot views | Out | To be specified later. |
 | Connections explorer, scratch pads, formatting settings, Copilot schema tools | Out | Not part of this effort. |
 | Query editing (highlighting, completion, diagnostics) | Out | Covered by the Kusto extension spike in `extensions/kusto`. |
@@ -619,6 +620,25 @@ Repeated messages differ only in ids and numbers. Grouping them shows what a tra
 
 **Status.** TPL-1 is built: structural rows are dimmed in the grid and the Hide structural rows button, in the Data and Structured tabs, leaves them out of the view (off by default, a view only, with the count in the footer). Finding them over 500,000 rows takes about 9 ms. Not built: templates, the Pattern column, grouping and the rare-and-bad filter (TPL-2 to TPL-6).
 
+### 5.9 Focus on an activity (FOC)
+
+A trace can be thousands of activities, and the question is often about one step of it. Focus makes one activity the root: the Data, Structured, Sequence and Timeline tabs and the findings are all rebuilt from that activity and everything below it. It works because every view is built from one activity projection, which refers to events by their source row, so a focus is only a different set of rows fed to the same builder and the row numbers stay true. In Sample 2, focusing on `ListTablesWithSchemas` gives a trace of 4.57 s whose findings and axis are relative to it, not to the 4.72 s root.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| FOC-1 | P1 | **Focus on this activity** is offered by a right-click on a node of the activity tree, on a row of the Timeline, and on a row of a grid of a trace (the activity that row belongs to). A row with no activity id has none to focus on and does not offer it. |
+| FOC-2 | P1 | The **scope** of a focus is the chosen activity and every activity below it, and the source rows of all their events. Rows that belong to no such activity are left out. The chosen activity is a root and is not marked as an orphan (ACT-3): its caller being outside the focus is the point, not a data problem. |
+| FOC-3 | P1 | Every view is built from the scope: the Data tab shows only those rows, still numbered by their source row; the Structured tab, the Sequence tab and the Timeline are built from the activities in it; the findings (FND) are about it, and their shares and the axis are relative to the focused activity. The grid keeps its search, filters and sort; its selection is cleared, as when its rows change. |
+| FOC-4 | P1 | A **focus bar** above the tabs says what is focused (the marker and the activity id) and offers **Up one level**, which focuses the parent and is not offered for an activity that has none, and **Show whole trace**. With no focus the bar is not shown. |
+| FOC-5 | P1 | **Focus by id.** A **Focus…** button opens a field that takes an activity id, trimmed; it matches exactly, then ignoring case, and says so when there is no such activity. This is for an id found in a log or a ticket. |
+| FOC-6 | P1 | Focus is view state. It is not written to the result file (PER-6), and reloading the file clears it. It is computed away from the window (NFR-2); the full table is always kept, so Up one level and Show whole trace need no re-read. |
+| FOC-7 | P2 | A key binding for Focus on this activity and Up one level. |
+| FOC-8 | P2 | The focus is remembered per result for the session. |
+
+**Acceptance vectors (spec).** FOC-V1: focusing a leaf gives a one-activity trace in every tab. FOC-V2: focusing the root changes nothing but the bar. FOC-V3: the rows of a focus keep their source numbers and are exactly those of the activity and its descendants. FOC-V4: Up one level from a root is not offered. FOC-V5: an id that is not in the trace names it and leaves the focus as it was.
+
+**Status.** Not built.
+
 ## 6. Acceptance vectors
 
 Concrete cases each implementation must satisfy. Vectors marked **(VSC test)** come from the VS Code unit tests. Vectors marked **(spec)** are defined by this spec from reading the code, because VS Code has no test for them. Automated tests should reproduce all of them. Fixture files that exercise these cases, with expected results, are in `fork-docs/samples/` (see its README). Wire formats follow what the VS Code server emits: datetimes as ISO 8601 with seven fractional digits, timespans as `[-][d.]hh:mm:ss[.fffffff]`.
@@ -729,7 +749,7 @@ Every deliberate difference in one place. "Fix" means Zed does not reproduce the
 
 ## 8. Questions and decisions
 
-Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open. Q-21 to Q-26 belong to the timeline, findings, waterfall and template sections (5.5 to 5.8); Q-21 to Q-24 are decided and Q-25 and Q-26 are open.
+Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open. Q-21 to Q-26 belong to the timeline, findings, waterfall and template sections (5.5 to 5.8); Q-21 to Q-24 are decided and Q-25 and Q-26 are open. Q-27 to Q-29 belong to focus (5.9) and are decided.
 
 | # | Question | Decision |
 | --- | --- | --- |
@@ -759,3 +779,6 @@ Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are
 | Q-24 | Native waterfall or a Mermaid gantt? | Decided: native (section 5.7). |
 | Q-25 | What size of untraced time is a finding (FND-3)? | Open. 10% of the trace and at least 10 ms is a starting point; try it on more traces. |
 | Q-26 | Should structural rows be hidden by default (TPL-1)? | Open. They are a third of the rows, but hiding rows by default surprises. Dimmed and shown is the starting point. |
+| Q-27 | Does a focus scope the Data tab too (FOC-3)? | Decided: yes, with the source row numbers unchanged. |
+| Q-28 | Show the path from the root to the focus, or only a bar with Up one level (FOC-4)? | Decided: the bar with Up one level and Show whole trace. A path can follow if it is missed. |
+| Q-29 | Save the focus in the result file (FOC-6)? | Decided: no, it is view state. |
