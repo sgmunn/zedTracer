@@ -16,6 +16,7 @@ mod run_query;
 mod save_result;
 mod sequence_view;
 mod structured_view;
+mod waterfall_view;
 
 pub use activity_tree::{ActivityTree, ActivityTreeEvent};
 pub use filter_popover::{FilterChanged, FilterPopover};

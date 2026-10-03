@@ -592,7 +592,7 @@ The **Timeline** tab: where the time went. It is the natural next step from the 
 | --- | --- | --- |
 | WFL-1 | P1 | A **Timeline** tab is offered where the Sequence tab is (SEQ-1): a table with the activity columns and a readable timestamp. A missing role is named (TRC-6). |
 | WFL-2 | P1 | One row per activity in tree order (ACT-4), indented by depth, with a bar from its start to its end on one shared time axis, labelled in offsets from the start of the trace. The axis scrolls and zooms in time, and the rows scroll. |
-| WFL-3 | P1 | **Folding.** Most activities are too short to see: 1,234 of Sample 2's 1,314 are under 1 ms. An activity shorter than a threshold (default 1% of the trace's duration, a setting) is folded into its parent, whose row says how many it hides and expands on demand. These are never folded: an error origin and the chain from it to the root, an activity on the critical path, the selected activity, and a match of a search. |
+| WFL-3 | P1 | **Folding.** Most activities are too short to see: 1,234 of Sample 2's 1,314 are under 1 ms. An activity shorter than a threshold (default 1% of the trace's duration, the setting `kusto_results.waterfall.fold_share`) is folded into its parent, whose row says how many it hides and expands on demand. The chain from a failure to the root is never folded. The critical path needs no protection of its own: an activity that holds a meaningful share of it is at least that long, whereas every activity in a sequential run is "on" the path with no time of its own, and protecting them all left 132 of Sample 1's 164 rows and 910 of Sample 2's 1,314 (with only failures protected they are 32 and 21). Folding applies to rows, never to time: the part of a parent its folded children cover is not drawn as untraced. A **Show all** button opens every fold. |
 | WFL-4 | P1 | **Untraced time** (TLN-3) is drawn inside a parent's bar as a hatched part; children's bars are drawn over it. |
 | WFL-5 | P1 | Bars are coloured by actor. An error is a mark at its event; a handled error is a lighter mark. The warning marker follows ACT-10. |
 | WFL-6 | P1 | Parallel work shows as overlapping bars on separate rows, so concurrency can be read without extra lanes. |
@@ -602,7 +602,7 @@ The **Timeline** tab: where the time went. It is the natural next step from the 
 | WFL-10 | P2 | **Repetition** (TLN-5) can be shown as one row with a tick for each repeat. |
 | WFL-11 | P1 | The rows are virtualised and the folding default keeps a trace of 100k activities usable (NFR-1). The model is built in a background task (NFR-2). |
 
-**Status.** Not built.
+**Status.** WFL-1 to WFL-9 and WFL-11 are built: the model in `waterfall.rs` (`crates/kusto_results`, with tests, checked on both real traces) and a native view, `waterfall_view.rs`, with the Timeline tab in the viewer (`crates/kusto_results_ui`). It has the label column with duration, a time axis, zoom and pan, bars coloured by actor, hatched untraced time, error and handled-error marks, a critical-path emphasis toggle, folds, Show all, a tooltip, selection that the inspector follows, a double-click that opens the activity in the Structured tab, and a finding chosen in the tab reveals its activity. Tests check the layout (a bar's place and width), the folds, the selection and the links, but not how it looks, which has to be checked in a window. Not built: repetition collapsed to one row (WFL-10, P2), search matches never folding, and a keyboard path through the rows.
 
 ### 5.8 Message templates and structural rows (TPL)
 

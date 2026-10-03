@@ -17,6 +17,7 @@ use kusto_results::activity::build_projection_with;
 use kusto_results::findings::{Finding, Findings, FindingsOptions};
 use kusto_results::sequence::{SequenceOptions, build_sequence};
 use kusto_results::timeline::{Timeline, TimelineOptions};
+use kusto_results::waterfall::Waterfall;
 use kusto_results::trace_schema::TraceRole;
 use kusto_results::{NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
@@ -38,6 +39,7 @@ use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
 use crate::sequence_view::SequenceView;
 use crate::structured_view::StructuredView;
+use crate::waterfall_view::{WaterfallEvent, WaterfallView};
 
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
@@ -340,6 +342,8 @@ pub enum ViewMode {
     Structured,
     /// The calls between the actors of a trace, as a sequence diagram.
     Sequence,
+    /// Where the time went, as rows of bars.
+    Timeline,
     /// The query the result came from, to read.
     Query,
 }
@@ -355,6 +359,12 @@ enum Structured {
 enum Sequence {
     Building { _task: Task<()> },
     Ready(Entity<SequenceView>),
+}
+
+/// The timeline is built when it is first asked for, away from the window.
+enum TimelineState {
+    Building { _task: Task<()> },
+    Ready(Entity<WaterfallView>),
 }
 
 /// The findings are worked out when the result is first shown, away from the window.
@@ -381,6 +391,13 @@ pub struct ResultsViewer {
     sequence_options: SequenceOptions,
     findings: Option<FindingsState>,
     _findings_subscription: Option<Subscription>,
+    /// Whether the table has the columns the Timeline tab needs.
+    can_show_timeline: bool,
+    timeline_missing: Option<SharedString>,
+    timeline: Option<TimelineState>,
+    _timeline_subscription: Option<Subscription>,
+    /// An activity to reveal in the tree once the structured view is built.
+    pending_structured_reveal: Option<usize>,
     /// Whether rows that only say something started or ended are left out of the grids (TPL-1).
     hide_structural: bool,
     /// Whether the file says which query it came from, which can be shown and run again.
@@ -472,6 +489,11 @@ impl ResultsViewer {
             sequence_options: SequenceOptions::default(),
             findings: None,
             _findings_subscription: None,
+            can_show_timeline: false,
+            timeline_missing: None,
+            timeline: None,
+            _timeline_subscription: None,
+            pending_structured_reveal: None,
             hide_structural: false,
             can_show_query: false,
             query_view: None,
@@ -510,6 +532,11 @@ impl ResultsViewer {
             .map(|table| settings.trace_columns(table));
         self.can_show_structured = columns.is_some_and(|columns| columns.supports_activity());
         self.can_show_sequence = columns.is_some_and(|columns| columns.supports_sequence());
+        self.can_show_timeline = columns
+            .is_some_and(|columns| columns.supports_activity() && columns.timestamp.is_some());
+        self.timeline_missing = columns
+            .filter(|columns| columns.supports_activity() && columns.timestamp.is_none())
+            .map(|_| SharedString::from("Timeline needs: timestamp"));
         self.sequence_missing = columns
             .filter(|columns| columns.supports_activity() && !columns.supports_sequence())
             .map(|columns| {
@@ -530,6 +557,8 @@ impl ResultsViewer {
         self.structured = None;
         self._structured_subscription = None;
         self.sequence = None;
+        self.timeline = None;
+        self._timeline_subscription = None;
         self.can_show_query = self.grid.is_some()
             && result
                 .query
@@ -538,6 +567,7 @@ impl ResultsViewer {
         self.query_view = None;
         if self.mode == ViewMode::Structured && !self.can_show_structured
             || self.mode == ViewMode::Sequence && !self.can_show_sequence
+            || self.mode == ViewMode::Timeline && !self.can_show_timeline
             || self.mode == ViewMode::Query && !self.can_show_query
         {
             self.mode = ViewMode::Data;
@@ -545,6 +575,8 @@ impl ResultsViewer {
             self.build_structured(window, cx);
         } else if self.mode == ViewMode::Sequence {
             self.build_sequence(window, cx);
+        } else if self.mode == ViewMode::Timeline {
+            self.build_timeline(window, cx);
         } else if self.mode == ViewMode::Query {
             self.build_query_view(window, cx);
         }
@@ -641,6 +673,7 @@ impl ResultsViewer {
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         if mode == ViewMode::Structured && !self.can_show_structured
             || mode == ViewMode::Sequence && !self.can_show_sequence
+            || mode == ViewMode::Timeline && !self.can_show_timeline
             || mode == ViewMode::Query && !self.can_show_query
         {
             return;
@@ -652,10 +685,84 @@ impl ResultsViewer {
         if mode == ViewMode::Sequence && self.sequence.is_none() {
             self.build_sequence(window, cx);
         }
+        if mode == ViewMode::Timeline && self.timeline.is_none() {
+            self.build_timeline(window, cx);
+        }
         if mode == ViewMode::Query && self.query_view.is_none() {
             self.build_query_view(window, cx);
         }
         cx.notify();
+    }
+
+    /// Builds the timeline away from the window, then the view.
+    fn build_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let settings = ResultsSettings::get_global(cx);
+        let columns = result
+            .tables
+            .first()
+            .map(|table| settings.trace_columns(table));
+        let options = settings.waterfall.clone();
+        self.timeline = Some(TimelineState::Building {
+            _task: cx.spawn_in(window, async move |this, cx| {
+                let for_build = result.clone();
+                let built = cx
+                    .background_spawn(async move {
+                        let table = for_build.tables.first()?;
+                        let columns = columns?;
+                        let projection = build_projection_with(table, &columns)?;
+                        let waterfall = Waterfall::build(table, &projection, &columns, &options)?;
+                        Some((projection, waterfall))
+                    })
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    let Some((projection, waterfall)) = built else {
+                        this.timeline = None;
+                        this.can_show_timeline = false;
+                        this.mode = ViewMode::Data;
+                        cx.notify();
+                        return;
+                    };
+                    let view = cx.new(|_| {
+                        WaterfallView::new(result, Arc::new(projection), Arc::new(waterfall))
+                    });
+                    this._timeline_subscription = Some(cx.subscribe_in(
+                        &view,
+                        window,
+                        |this, _, event: &WaterfallEvent, window, cx| {
+                            let WaterfallEvent::OpenActivity(activity) = event;
+                            this.open_in_structured(*activity, window, cx);
+                        },
+                    ));
+                    this.timeline = Some(TimelineState::Ready(view));
+                    cx.notify();
+                })
+                .log_err();
+            }),
+        });
+    }
+
+    /// Shows an activity in the Structured tab, opening the branches above it.
+    fn open_in_structured(&mut self, activity: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(ViewMode::Structured, window, cx);
+        if self.mode != ViewMode::Structured {
+            return;
+        }
+        match self.structured_view().cloned() {
+            Some(view) => {
+                let tree = view.read(cx).tree().clone();
+                tree.update(cx, |tree, cx| tree.reveal(activity, cx));
+            }
+            None => self.pending_structured_reveal = Some(activity),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waterfall_view(&self) -> Option<&Entity<WaterfallView>> {
+        match &self.timeline {
+            Some(TimelineState::Ready(view)) => Some(view),
+            _ => None,
+        }
     }
 
     /// Works out the findings of a trace away from the window, then shows the strip.
@@ -736,6 +843,15 @@ impl ResultsViewer {
             {
                 let tree = view.read(cx).tree().clone();
                 tree.update(cx, |tree, cx| tree.reveal(activity, cx));
+                return None;
+            }
+        }
+        if self.mode == ViewMode::Timeline {
+            if let (Some(activity), Some(TimelineState::Ready(view))) =
+                (finding.activities.first().copied(), &self.timeline)
+            {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.reveal(activity, cx));
                 return None;
             }
         }
@@ -876,6 +992,10 @@ impl ResultsViewer {
                         grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
                     }
                     this._structured_subscription = Some(Self::save_layouts_of(&grid, cx));
+                    if let Some(activity) = this.pending_structured_reveal.take() {
+                        let tree = view.read(cx).tree().clone();
+                        tree.update(cx, |tree, cx| tree.reveal(activity, cx));
+                    }
                     this.structured = Some(Structured::Ready(view));
                     cx.notify();
                 })
@@ -887,7 +1007,14 @@ impl ResultsViewer {
 
 impl Render for ResultsViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match (
+        let body = match (self.mode, &self.timeline) {
+            (ViewMode::Timeline, Some(TimelineState::Ready(view))) => {
+                div().size_full().child(view.clone())
+            }
+            (ViewMode::Timeline, _) => div()
+                .p_4()
+                .child(ui::Label::new("Drawing the timeline…")),
+            _ => match (
             self.mode,
             &self.structured,
             &self.sequence,
@@ -911,6 +1038,7 @@ impl Render for ResultsViewer {
             (_, _, _, None, _) => div()
                 .p_4()
                 .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
+            },
         };
         let structural_rows = self
             .grid
@@ -995,6 +1123,24 @@ impl Render for ResultsViewer {
                                             this.toggle_collapsed_loops(window, cx)
                                         })),
                                 ),
+                            )
+                        })
+                        .when(self.can_show_timeline, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "timeline-tab".to_string()).child(
+                                    Button::new("results-timeline-tab", "Timeline")
+                                        .toggle_state(mode == ViewMode::Timeline)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_mode(ViewMode::Timeline, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .when_some(self.timeline_missing.clone(), |bar, missing| {
+                            bar.child(
+                                Label::new(missing)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
                             )
                         })
                         .when_some(self.sequence_missing.clone(), |bar, missing| {
@@ -2172,5 +2318,207 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(grid.read_with(cx, |grid, _| grid.visible_row_count()), 3);
         assert!(!structured_grid.read_with(cx, |grid, _| grid.hides_structural_rows()));
+    }
+
+    /// WFL-1 to WFL-9: a trace with times offers a Timeline tab that folds short activities,
+    /// selects an activity, links to the other tabs, and zooms.
+    #[gpui::test]
+    async fn the_timeline_tab_draws_a_trace_and_links_to_the_other_tabs(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let time = |millis: u32| {
+            format!("2026-01-01T00:00:{:02}.{:07}Z", millis / 1000, (millis % 1000) * 10_000)
+        };
+        let columns = json!([
+            { "name": "CurrentActivityId", "type": "string" },
+            { "name": "ParentActivityId", "type": "string" },
+            { "name": "ProcessName", "type": "string" },
+            { "name": "MarkerName", "type": "string" },
+            { "name": "TIMESTAMP", "type": "datetime" },
+            { "name": "Level", "type": "long" },
+            { "name": "MessageText", "type": "string" },
+        ]);
+        let trace = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": columns,
+                "rows": [
+                    ["r", "", "A", "Run", time(0), 4, "start"],
+                    ["r", "", "A", "Run", time(1000), 4, "end"],
+                    ["big", "r", "B", "Big", time(100), 4, "start"],
+                    ["big", "r", "B", "Big", time(900), 4, "end"],
+                    ["tiny", "big", "B", "Tiny", time(150), 4, "start"],
+                    ["tiny", "big", "B", "Tiny", time(155), 4, "end"],
+                    ["bad", "r", "A", "Fail", time(950), 2, "it broke"],
+                ],
+            }],
+        })
+        .to_string();
+        let untimed = json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "CurrentActivityId", "type": "string" },
+                    { "name": "ParentActivityId", "type": "string" },
+                ],
+                "rows": [["r", ""], ["a", "r"]],
+            }],
+        })
+        .to_string();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "trace.ktt": trace, "untimed.ktt": untimed }))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+        };
+
+        let without = open("untimed.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        assert!(!without.read_with(cx, |viewer, _| viewer.can_show_timeline));
+        assert_eq!(
+            without.read_with(cx, |viewer, _| viewer.timeline_missing.clone()),
+            Some("Timeline needs: timestamp".into())
+        );
+
+        let viewer = open("trace.ktt", cx)
+            .await
+            .expect("opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(viewer.read_with(cx, |viewer, _| viewer.can_show_timeline));
+        assert!(viewer.read_with(cx, |viewer, _| viewer.waterfall_view().is_none()), "built when asked for");
+
+        let tab = cx
+            .debug_bounds("timeline-tab")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Timeline);
+        let view = viewer
+            .read_with(cx, |viewer, _| viewer.waterfall_view().cloned())
+            .expect("the timeline is built");
+        let rows = view.read_with(cx, |view, _| view.rows().to_vec());
+        assert_eq!(rows.len(), 3, "Run, Big and the failure; Tiny is folded into Big");
+        assert_eq!(rows.iter().map(|row| row.folded).collect::<Vec<_>>(), vec![0, 1, 0]);
+
+        // Bars lie where their times put them: Run fills its row, and Big, which runs from 100 to
+        // 900 ms of a 1,000 ms trace, covers the 10% to 90% of its row.
+        let area = cx.debug_bounds("waterfall-bars-1").expect("the bars of Big's row");
+        let run = cx.debug_bounds("waterfall-bar-0").expect("Run's bar");
+        let big = cx.debug_bounds("waterfall-bar-1").expect("Big's bar");
+        let near = |left: gpui::Pixels, right: gpui::Pixels| (f32::from(left) - f32::from(right)).abs() < 2.0;
+        let width = area.size.width;
+        assert!(near(run.size.width, width), "Run spans the whole axis: {:?} of {:?}", run.size.width, width);
+        assert!(near(big.origin.x - area.origin.x, width * 0.1), "Big starts at 10%: {:?}", big.origin.x - area.origin.x);
+        assert!(near(big.size.width, width * 0.8), "Big is 80% wide: {:?} of {:?}", big.size.width, width);
+
+        let row = cx
+            .debug_bounds("waterfall-row-1")
+            .map(|bounds| bounds.center())
+            .expect("a row shows");
+        cx.simulate_click(row, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.selected()), Some(1));
+        let followed = cx.update(|_, cx| {
+            crate::row_details_panel::ActiveSelection::shared(cx).read(cx).rows.clone()
+        });
+        assert_eq!(followed, vec![2, 3], "the inspector follows the events of the activity");
+
+        let show_all = cx
+            .debug_bounds("waterfall-show-all")
+            .map(|bounds| bounds.center())
+            .expect("the button shows");
+        cx.simulate_click(show_all, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 4);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let show_all = cx
+            .debug_bounds("waterfall-show-all")
+            .map(|bounds| bounds.center())
+            .expect("the button shows");
+        cx.simulate_click(show_all, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 3, "folded again");
+
+        let (_, full_span) = view.read_with(cx, |view, _| view.view());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let zoom_in = cx
+            .debug_bounds("waterfall-zoom-in")
+            .map(|bounds| bounds.center())
+            .expect("the button shows");
+        cx.simulate_click(zoom_in, gpui::Modifiers::default());
+        cx.run_until_parked();
+        let (start, span) = view.read_with(cx, |view, _| view.view());
+        assert!(span < full_span && start > 0, "zoomed in about the middle: {start} {span}");
+        let fit = cx
+            .debug_bounds("waterfall-fit")
+            .map(|bounds| bounds.center())
+            .expect("the button shows");
+        cx.simulate_click(fit, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.view()), (0, full_span));
+
+        // A finding chosen in this tab selects its activity here.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let header = cx
+            .debug_bounds("findings-strip-header")
+            .map(|bounds| bounds.center())
+            .expect("the strip shows");
+        cx.simulate_click(header, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let first = cx
+            .debug_bounds("finding-0")
+            .map(|bounds| bounds.center())
+            .expect("the first finding shows");
+        cx.simulate_click(first, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Timeline);
+        assert_eq!(view.read_with(cx, |view, _| view.selected()), Some(3), "the activity where the failure began");
+
+        // A double-click on a row opens the activity in the Structured tab.
+        view.update(cx, |_, cx| cx.emit(WaterfallEvent::OpenActivity(1)));
+        cx.run_until_parked();
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Structured);
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built");
+        assert_eq!(
+            structured.read_with(cx, |view, cx| view.tree().read(cx).selected()),
+            1,
+            "the activity is revealed once the tree exists"
+        );
     }
 }
