@@ -11,10 +11,12 @@ use ui::prelude::*;
 
 pub(crate) struct SequenceView {
     markdown: Entity<Markdown>,
+    /// How many steps the diagram draws, so the tab can say when there are none.
+    steps: usize,
 }
 
 impl SequenceView {
-    pub(crate) fn new(mermaid: String, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(mermaid: String, steps: usize, cx: &mut Context<Self>) -> Self {
         let source = fenced(&mermaid);
         let markdown = cx.new(|cx| {
             Markdown::new_with_options(
@@ -28,7 +30,11 @@ impl SequenceView {
                 cx,
             )
         });
-        Self { markdown }
+        Self { markdown, steps }
+    }
+
+    pub(crate) fn steps(&self) -> usize {
+        self.steps
     }
 
     #[cfg(test)]

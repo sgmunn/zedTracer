@@ -1189,18 +1189,18 @@ impl ResultsViewer {
                         let columns = columns?;
                         let projection = build_projection_in(table, &columns, focus.as_deref())?;
                         build_sequence(table, &projection, &columns, &options)
-                            .map(|diagram| diagram.to_mermaid())
+                            .map(|diagram| (diagram.to_mermaid(), diagram.step_count()))
                     })
                     .await;
                 this.update_in(cx, |this, _, cx| {
-                    let Some(mermaid) = mermaid else {
+                    let Some((mermaid, steps)) = mermaid else {
                         this.sequence = None;
                         this.can_show_sequence = false;
                         this.mode = ViewMode::Data;
                         cx.notify();
                         return;
                     };
-                    let view = cx.new(|cx| SequenceView::new(mermaid, cx));
+                    let view = cx.new(|cx| SequenceView::new(mermaid, steps, cx));
                     this.sequence = Some(Sequence::Ready(view));
                     cx.notify();
                 })
@@ -1329,6 +1329,8 @@ impl Render for ResultsViewer {
         };
         let mode = self.mode;
         let steps = self.sequence_options.step_depth;
+        let no_steps = steps.is_some()
+            && matches!(&self.sequence, Some(Sequence::Ready(view)) if view.read(cx).steps() == 0);
         let collapse = self.sequence_options.collapse_repeats;
         let rerun = self.rerun_action(cx);
         let save = self.save_action(cx);
@@ -1379,7 +1381,16 @@ impl Render for ResultsViewer {
                                 Some(depth) => depth.to_string(),
                                 None => "off".to_string(),
                             };
-                            bar.child(
+                            bar.when(no_steps, |bar| {
+                                bar.child(
+                                    div().debug_selector(|| "sequence-no-steps".to_string()).child(
+                                        Label::new("no calls to group at this depth")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
+                                )
+                            })
+                            .child(
                                 div().debug_selector(|| "sequence-steps".to_string()).child(
                                     Button::new("results-sequence-steps", format!("Steps: {steps}"))
                                         .tooltip(ui::Tooltip::text(
@@ -2302,16 +2313,26 @@ mod tests {
             view.read_with(cx, |view, cx| view.source(cx).contains("rect"))
         };
         assert!(drawn_with_steps(cx), "one level below the root is the default");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("sequence-no-steps").is_none(), "there is a step, so nothing to say");
         let mut seen = Vec::new();
+        let mut said_so = Vec::new();
         for _ in 0..3 {
             viewer.update_in(cx, |viewer, window, cx| viewer.cycle_step_depth(window, cx));
             cx.run_until_parked();
             seen.push(drawn_with_steps(cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            said_so.push(cx.debug_bounds("sequence-no-steps").is_some());
         }
         assert_eq!(
+            said_so,
+            vec![true, true, false],
+            "the tab says so at depths 2 and 3, where nothing groups, and not with Steps off"
+        );
+        assert_eq!(
             seen,
-            vec![true, false, false],
-            "two levels still groups under Ask, three has no ancestor that deep, and off draws none"
+            vec![false, false, false],
+            "two levels is Ask, the caller itself, which the arrow already names; three has no ancestor that deep; off draws none"
         );
         viewer.update_in(cx, |viewer, window, cx| viewer.cycle_step_depth(window, cx));
         cx.run_until_parked();
