@@ -21,6 +21,8 @@ use crate::view::severity_level;
 /// already unreadable, and the limit keeps drawing from recursing as deep as a hostile trace.
 const MAX_CALL_NESTING: usize = 50;
 
+/// A call's own scope draws steps only when its calls fall under at least this many.
+const NESTED_STEP_GROUPS: usize = 2;
 const UNKNOWN_ACTOR: &str = "(unknown)";
 const TICKS_PER_MILLISECOND: f64 = 10_000.0;
 
@@ -503,21 +505,44 @@ impl<'a> Builder<'a> {
 
     /// The calls made directly by the root's own actor, grouped into steps.
     fn top_items(&mut self, root: usize, calls: &[usize]) -> Vec<Item> {
-        let Some(step_depth) = self.options.step_depth else {
-            let built = self.build_calls(calls, 0);
-            return self.collapse(built);
-        };
-        let mut groups: Vec<(Option<String>, Vec<usize>)> = Vec::new();
-        for call in calls {
-            let label = self.step_label(root, self.calls[*call].caller_activity, step_depth);
-            match groups.last_mut() {
-                Some((current, members)) if *current == label => members.push(*call),
-                _ => groups.push((label, vec![*call])),
+        self.items_of(root, calls, 0, 1)
+    }
+
+    /// Builds sibling calls into items, grouping them into steps by what in `base`'s branch made
+    /// them. Steps are drawn only where there are at least `minimum_groups` groups, so a scope
+    /// whose calls all come from one place does not get a band that separates nothing.
+    fn items_of(
+        &mut self,
+        base: usize,
+        calls: &[usize],
+        nesting: usize,
+        minimum_groups: usize,
+    ) -> Vec<Item> {
+        let grouped = self.options.step_depth.map(|step_depth| {
+            let mut groups: Vec<(Option<String>, Vec<usize>)> = Vec::new();
+            for call in calls {
+                let label = self.step_label(base, self.calls[*call].caller_activity, step_depth);
+                match groups.last_mut() {
+                    Some((current, members)) if *current == label => members.push(*call),
+                    _ => groups.push((label, vec![*call])),
+                }
             }
-        }
+            groups
+        });
+        let groups = match grouped {
+            Some(groups)
+                if groups.len() >= minimum_groups && groups.iter().any(|(label, _)| label.is_some()) =>
+            {
+                groups
+            }
+            _ => {
+                let built = self.build_calls(calls, nesting);
+                return self.collapse(built);
+            }
+        };
         let mut items = Vec::new();
         for (label, members) in groups {
-            let built = self.build_calls(&members, 0);
+            let built = self.build_calls(&members, nesting);
             let inner = self.collapse(built);
             match label {
                 Some(label) => items.push(Item::Step(Step {
@@ -530,8 +555,9 @@ impl<'a> Builder<'a> {
         items
     }
 
-    /// The marker of the ancestor `depth` levels below the root that is not itself a wrapper;
-    /// when that one is, the nearest descendant on the way to the caller that is not.
+    /// The marker of the ancestor `depth` levels below `root` that is not itself a wrapper; when
+    /// that one is, the nearest descendant on the way to the caller that is not. `None` when the
+    /// caller is too shallow to have one, and when the step would be the caller itself.
     fn step_label(&self, root: usize, caller: usize, depth: usize) -> Option<String> {
         let activities = &self.projection.activities;
         let target = activities[root].depth + depth;
@@ -544,11 +570,16 @@ impl<'a> Builder<'a> {
             chain.push(activity);
             current = activities[activity].parent;
         }
-        chain
-            .iter()
-            .rev()
-            .filter_map(|activity| self.marker_of(*activity))
-            .find(|marker| !self.is_wrapper(marker))
+        let step = chain.iter().rev().copied().find(|activity| {
+            self.marker_of(*activity)
+                .is_some_and(|marker| !self.is_wrapper(marker))
+        })?;
+        // The arrow already names the activity that makes the call, so a step that is that
+        // activity would only say it again.
+        if step == caller {
+            return None;
+        }
+        self.marker_of(step)
             .map(|marker| shorten(&short_marker(marker), self.options.label_characters))
     }
 
@@ -567,8 +598,11 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let nested = self.nested_calls[*index].clone();
-            let inner = self.build_calls(&nested, nesting + 1);
-            let items = self.collapse(inner);
+            let entry = self.calls[*index].kids.first().copied();
+            let items = match entry {
+                Some(entry) => self.items_of(entry, &nested, nesting + 1, NESTED_STEP_GROUPS),
+                None => Vec::new(),
+            };
             built.push(self.call(*index, items));
         }
         built
@@ -888,6 +922,23 @@ fn actor_order(frames: &[Frame], actor_count: usize) -> Vec<usize> {
 }
 
 impl SequenceDiagram {
+    /// How many steps the diagram draws, at every level.
+    pub fn step_count(&self) -> usize {
+        let mut count = 0;
+        let mut pending: Vec<&Item> = self.frames.iter().flat_map(|frame| frame.items.iter()).collect();
+        while let Some(item) = pending.pop() {
+            match item {
+                Item::Step(step) => {
+                    count += 1;
+                    pending.extend(step.items.iter());
+                }
+                Item::Call(call) => pending.extend(call.items.iter()),
+                Item::Repeat(_) => {}
+            }
+        }
+        count
+    }
+
     /// Mermaid `sequenceDiagram` text. Values are cleaned so the text always parses.
     pub fn to_mermaid(&self) -> String {
         let mut lines = vec!["sequenceDiagram".to_string(), "    autonumber".to_string()];
@@ -944,14 +995,14 @@ impl SequenceDiagram {
         lines.join("\n") + "\n"
     }
 
-    fn write_items(&self, items: &[Item], depth: usize, frame_actor: usize, lines: &mut Vec<String>) {
+    fn write_items(&self, items: &[Item], depth: usize, owner: usize, lines: &mut Vec<String>) {
         let indent = "    ".repeat(depth + 1);
         for item in items {
             match item {
                 Item::Call(call) => {
                     let (caller, callee) = (alias(call.caller), alias(call.callee));
                     lines.push(format!("{indent}{caller}->>+{callee}: {}", clean(&call.label)));
-                    self.write_items(&call.items, depth + 1, frame_actor, lines);
+                    self.write_items(&call.items, depth + 1, call.callee, lines);
                     self.write_notes(&call.notes, depth + 1, lines);
                     lines.push(format!(
                         "{indent}{callee}-->>-{caller}: {}{}",
@@ -984,10 +1035,10 @@ impl SequenceDiagram {
                     lines.push(format!("{indent}rect rgba(128, 128, 128, 0.12)"));
                     lines.push(format!(
                         "{indent}    Note over {}: {}",
-                        alias(frame_actor),
+                        alias(owner),
                         clean(&step.label)
                     ));
-                    self.write_items(&step.items, depth + 1, frame_actor, lines);
+                    self.write_items(&step.items, depth + 1, owner, lines);
                     lines.push(format!("{indent}end"));
                 }
             }
@@ -1558,6 +1609,54 @@ mod tests {
     }
 
     #[test]
+    fn a_step_that_is_the_caller_itself_is_not_drawn() {
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "Ask", 5),
+            event("k", "c", "B", "Entry", 8),
+        ]);
+        let result = diagram(&table);
+        assert_eq!(result.step_count(), 0, "Ask is the caller, and the arrow names it");
+        assert!(!result.to_mermaid().contains("rect"));
+    }
+
+    #[test]
+    fn a_call_scope_groups_its_own_calls_into_steps_when_they_come_from_different_places() {
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "CallB", 5),
+            event("k", "c", "B", "Entry", 8),
+            event("p1", "k", "B", "PhaseOne", 10),
+            event("w1", "p1", "B", "Fetch", 11),
+            event("x1", "w1", "C", "Serve", 12),
+            event("p2", "k", "B", "PhaseTwo", 20),
+            event("w2", "p2", "B", "Store", 21),
+            event("x2", "w2", "C", "Serve", 22),
+        ]);
+        let result = diagram(&table);
+        let text = result.to_mermaid();
+        assert!(text.contains("Note over a1: PhaseOne"), "{text}");
+        assert!(text.contains("Note over a1: PhaseTwo"), "steps inside B are noted on B: {text}");
+        assert_eq!(result.step_count(), 2, "B has two steps and the frame has none");
+    }
+
+    #[test]
+    fn a_call_scope_whose_calls_share_one_origin_is_not_split_into_a_step() {
+        let table = trace(vec![
+            event("r", "", "A", "Run", 0),
+            event("c", "r", "A", "CallB", 5),
+            event("k", "c", "B", "Entry", 8),
+            event("p1", "k", "B", "OnlyPhase", 10),
+            event("w1", "p1", "B", "Fetch", 11),
+            event("x1", "w1", "C", "Serve", 12),
+            event("w2", "p1", "B", "Store", 21),
+            event("x2", "w2", "C", "Serve", 22),
+        ]);
+        let result = diagram(&table);
+        assert_eq!(result.step_count(), 0, "one group is nothing to separate: {}", result.to_mermaid());
+    }
+
+    #[test]
     fn steps_can_be_turned_off() {
         let table = trace(vec![
             event("r", "", "A", "Run", 0),
@@ -1670,6 +1769,50 @@ mod tests {
             let drawn = mermaid.matches("->>").count();
             eprintln!("{name}: {} frames, {drawn} arrows drawn", diagram.frames.len());
             assert!(drawn > 0);
+        }
+    }
+
+    /// Needs the real traces in `fork-docs/samples`, which are not committed.
+    /// Run with `cargo test -p kusto_results --lib steps_of_real_traces -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn steps_of_real_traces() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fork-docs/samples");
+        for name in ["sample1.ktt", "sample2.ktt"] {
+            let Ok(text) = std::fs::read_to_string(root.join(name)) else {
+                eprintln!("{name} is not here, skipped");
+                continue;
+            };
+            let result = crate::result::ResultSet::from_json(&text).expect("a result file");
+            let table = &result.tables[0];
+            for depth in [None, Some(1), Some(2), Some(3), Some(4)] {
+                let options = SequenceOptions {
+                    step_depth: depth,
+                    ..SequenceOptions::default()
+                };
+                let diagram = diagram_with(table, &options).expect("a sequence");
+                fn collect(items: &[Item], level: usize, out: &mut Vec<String>) {
+                    for item in items {
+                        match item {
+                            Item::Step(step) => {
+                                out.push(format!("{}{} ({} items)", "  ".repeat(level), step.label, step.items.len()));
+                                collect(&step.items, level + 1, out);
+                            }
+                            Item::Call(call) => collect(&call.items, level + 1, out),
+                            Item::Repeat(_) => {}
+                        }
+                    }
+                }
+                let mut steps = Vec::new();
+                for frame in &diagram.frames {
+                    collect(&frame.items, 0, &mut steps);
+                }
+                let top_level = diagram.frames.iter().map(|frame| frame.items.len()).sum::<usize>();
+                eprintln!("{name} depth {depth:?}: {top_level} top-level items, {} steps", steps.len());
+                for step in &steps {
+                    eprintln!("    {step}");
+                }
+            }
         }
     }
 }
