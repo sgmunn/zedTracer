@@ -4,7 +4,7 @@
 //! file, so a result belongs to the tab that was opened for it and a late answer can never
 //! replace another run's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use editor::Editor;
 use fs::Fs;
 use gpui::{
     Action, App, AppContext as _, AsyncWindowContext, BackgroundExecutor, ClipboardItem, Context,
-    Entity, Task, TaskExt as _, WeakEntity, Window, actions,
+    Entity, EntityId, Global, Task, TaskExt as _, WeakEntity, Window, actions,
 };
 use gpui_util::ResultExt as _;
 use kusto_client::{
@@ -144,7 +144,7 @@ async fn write_defaults(fs: Arc<dyn Fs>, connection: &Connection) -> Result<()> 
 }
 
 pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
-    let runs = cx.new(|_| QueryRuns::default());
+    let runs = runs_of(&cx.entity(), cx);
     workspace.register_action({
         let runs = runs.clone();
         move |workspace, _: &RunQuery, window, cx| run_query(workspace, &runs, window, cx)
@@ -156,7 +156,8 @@ pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         }
     });
     workspace.register_action(move |workspace, _: &CancelQuery, _, cx| {
-        cancel_query(workspace, &runs, cx)
+        let editor = workspace.active_item_as::<Editor>(cx);
+        cancel_query(workspace, &runs, editor, cx)
     });
     workspace.register_action(|_, action: &CopyClientRequestId, _, cx| {
         copy_client_request_id(&action.id, cx)
@@ -164,6 +165,30 @@ pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
     workspace.register_action(|workspace, action: &ShowResult, window, cx| {
         show_saved_result(workspace, PathBuf::from(&action.path), window, cx)
     });
+}
+
+/// The runs of each workspace. A query editor that is not an item of a pane, such as a thread's,
+/// reaches them from here, so that its runs share the client, the tokens and the run log with
+/// the runs from files.
+#[derive(Default)]
+struct WorkspaceRuns(HashMap<EntityId, Entity<QueryRuns>>);
+
+impl Global for WorkspaceRuns {}
+
+fn runs_of(workspace: &Entity<Workspace>, cx: &mut App) -> Entity<QueryRuns> {
+    let workspace_id = workspace.entity_id();
+    if let Some(runs) = cx.default_global::<WorkspaceRuns>().0.get(&workspace_id) {
+        return runs.clone();
+    }
+    let runs = cx.new(|_| QueryRuns::default());
+    cx.default_global::<WorkspaceRuns>()
+        .0
+        .insert(workspace_id, runs.clone());
+    cx.observe_release(workspace, move |_, cx| {
+        cx.default_global::<WorkspaceRuns>().0.remove(&workspace_id);
+    })
+    .detach();
+    runs
 }
 
 fn copy_client_request_id(id: &str, cx: &mut App) {
@@ -183,22 +208,54 @@ fn show_saved_result(
         } else {
             Err(crate::history::deleted())
         };
-        display(&workspace, outcome, cx).await
+        display(&workspace, outcome, Destination::Configured, cx).await
     })
     .detach();
 }
 
 /// Cancels what the lens or the keyboard points at: the newest run of the query around the
-/// cursor, or else the newest run of all.
-fn cancel_query(workspace: &mut Workspace, runs: &Entity<QueryRuns>, cx: &mut Context<Workspace>) {
-    let query = workspace
-        .active_item_as::<Editor>(cx)
+/// cursor of `editor`, or else the newest run of all.
+fn cancel_query(
+    workspace: &mut Workspace,
+    runs: &Entity<QueryRuns>,
+    editor: Option<Entity<Editor>>,
+    cx: &mut Context<Workspace>,
+) {
+    let query = editor
         .and_then(|editor| editor.update(cx, |editor, cx| query_to_run(editor, cx)))
         .map(|query| query.text);
     let cancelled = runs.update(cx, |runs, cx| runs.cancel_newest(query.as_deref(), cx));
     if let Some(run_id) = cancelled {
         workspace.dismiss_toast(&NotificationId::composite::<QueryRuns>(run_id), cx);
     }
+}
+
+/// Cancels the run of the query around the cursor of a thread's editor, or else the newest run.
+pub(crate) fn cancel_thread_query(
+    workspace: &Entity<Workspace>,
+    editor: &Entity<Editor>,
+    cx: &mut App,
+) {
+    let runs = runs_of(workspace, cx);
+    workspace.update(cx, |workspace, cx| {
+        cancel_query(workspace, &runs, Some(editor.clone()), cx)
+    });
+}
+
+/// Runs the query around the cursor of a thread's editor, which is in no pane, and opens the
+/// result in a tab.
+pub(crate) fn run_thread_query(
+    workspace: &Entity<Workspace>,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let runs = runs_of(workspace, cx);
+    workspace.update(cx, |workspace, cx| {
+        if let Err(error) = start_run_in(workspace, &runs, editor, Destination::Tab, window, cx) {
+            workspace.show_error(error, cx);
+        }
+    });
 }
 
 fn run_query(
@@ -336,11 +393,21 @@ enum ParameterSource {
     Values(BTreeMap<String, String>),
 }
 
+/// Where a run's result is shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Destination {
+    /// The Results panel or a tab, as `kusto.results_location` says.
+    Configured,
+    /// A tab of its own, whatever the setting says.
+    Tab,
+}
+
 /// Everything a run needs to start.
 struct RunSpec {
     query: String,
     connection: Connection,
     parameters: ParameterSource,
+    destination: Destination,
 }
 
 fn start_run(
@@ -352,6 +419,17 @@ fn start_run(
     let editor = workspace
         .active_item_as::<Editor>(cx)
         .context("Open a Kusto query to run it.")?;
+    start_run_in(workspace, runs, &editor, Destination::Configured, window, cx)
+}
+
+fn start_run_in(
+    workspace: &mut Workspace,
+    runs: &Entity<QueryRuns>,
+    editor: &Entity<Editor>,
+    destination: Destination,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Result<()> {
     let query = editor
         .update(cx, |editor, cx| query_to_run(editor, cx))
         .context("There is no query at the cursor.")?;
@@ -365,6 +443,7 @@ fn start_run(
         query: query.text,
         connection: query.connection,
         parameters: ParameterSource::Profiles(parameter_files),
+        destination,
     };
     launch_run(workspace, runs, spec, window, cx)
 }
@@ -383,6 +462,7 @@ fn rerun_query(
             database: Some(action.database.clone()),
         },
         parameters: ParameterSource::Values(action.parameters.clone()),
+        destination: Destination::Configured,
     };
     if let Err(error) = launch_run(workspace, runs, spec, window, cx) {
         workspace.show_error(error, cx);
@@ -405,6 +485,7 @@ fn launch_run(
     )?;
     let query = spec.query;
     let parameter_source = spec.parameters;
+    let destination = spec.destination;
 
     let run_uuid = uuid::Uuid::new_v4();
     let request = QueryRequest {
@@ -509,7 +590,14 @@ fn launch_run(
             )
             .await;
             let succeeded = outcome.is_ok();
-            publish(&workspace, &toast_id, outcome.map(|saved| saved.path), cx).await;
+            publish(
+                &workspace,
+                &toast_id,
+                outcome.map(|saved| saved.path),
+                destination,
+                cx,
+            )
+            .await;
             if succeeded {
                 crate::history::prune_after_run(&workspace, fs, cx).await;
             }
@@ -548,26 +636,29 @@ async fn publish(
     workspace: &WeakEntity<Workspace>,
     toast_id: &NotificationId,
     outcome: Result<PathBuf>,
+    destination: Destination,
     cx: &mut AsyncWindowContext,
 ) {
     workspace
         .update_in(cx, |workspace, _, cx| workspace.dismiss_toast(toast_id, cx))
         .log_err();
-    display(workspace, outcome, cx).await;
+    display(workspace, outcome, destination, cx).await;
 }
 
 /// Shows a saved result, or why there is none: in the Results panel, or in a tab of its own.
 pub(crate) async fn display(
     workspace: &WeakEntity<Workspace>,
     outcome: Result<PathBuf>,
+    destination: Destination,
     cx: &mut AsyncWindowContext,
 ) {
-    let in_panel = workspace
-        .update_in(cx, |workspace, _, cx| {
-            KustoSettings::get_global(cx).results_location == KustoResultsLocation::Panel
-                && workspace.panel::<ResultsPanel>(cx).is_some()
-        })
-        .unwrap_or(false);
+    let in_panel = destination == Destination::Configured
+        && workspace
+            .update_in(cx, |workspace, _, cx| {
+                KustoSettings::get_global(cx).results_location == KustoResultsLocation::Panel
+                    && workspace.panel::<ResultsPanel>(cx).is_some()
+            })
+            .unwrap_or(false);
 
     if in_panel {
         let loaded = match outcome {
@@ -842,9 +933,9 @@ pub(crate) mod tests {
          "Rows":[[0,"QueryResult","PrimaryResult"],[1,"QueryStatus","QueryStatus"]]}]}"#;
 
     /// Every request the fake service received, as its path and body.
-    type Sent = Arc<Mutex<Vec<(String, String)>>>;
+    pub(crate) type Sent = Arc<Mutex<Vec<(String, String)>>>;
 
-    fn bodies(sent: &Sent, path: &str) -> Vec<String> {
+    pub(crate) fn bodies(sent: &Sent, path: &str) -> Vec<String> {
         sent.lock()
             .expect("test lock")
             .iter()
@@ -1021,7 +1112,10 @@ pub(crate) mod tests {
         });
     }
 
-    fn results_viewers(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> usize {
+    pub(crate) fn results_viewers(
+        workspace: &Entity<Workspace>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> usize {
         workspace.read_with(cx, |workspace, cx| {
             workspace.items_of_type::<ResultsViewer>(cx).count()
         })
@@ -1571,14 +1665,16 @@ pub(crate) mod tests {
     async fn cancelling_from_a_lens_stops_the_run_at_the_cursor_and_records_it(
         cx: &mut TestAppContext,
     ) {
-        let (workspace, _editor, sent, cx) = setup(cx, 0, ANSWER).await;
+        let (workspace, editor, sent, cx) = setup(cx, 0, ANSWER).await;
         let runs = cx.new(|_| QueryRuns::default());
         start(&workspace, &runs, cx);
         assert!(workspace.read_with(cx, |workspace, _| {
             workspace.has_notification(&NotificationId::composite::<QueryRuns>(1))
         }));
 
-        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        workspace.update(cx, |workspace, cx| {
+            cancel_query(workspace, &runs, Some(editor.clone()), cx)
+        });
         cx.run_until_parked();
 
         assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
@@ -1602,10 +1698,42 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn a_run_and_a_cancel_from_a_thread_share_the_workspaces_runs(cx: &mut TestAppContext) {
+        let (workspace, editor, _sent, cx) = setup(cx, 0, ANSWER).await;
+        let runs = cx.update(|_, cx| runs_of(&workspace, cx));
+
+        cx.update(|window, cx| run_thread_query(&workspace, &editor, window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            runs.read_with(cx, |runs, _| runs.active.len()),
+            1,
+            "the run is one of the workspace's runs"
+        );
+        assert!(workspace.read_with(cx, |workspace, _| {
+            workspace.has_notification(&NotificationId::composite::<QueryRuns>(1))
+        }));
+
+        cx.update(|_, cx| cancel_thread_query(&workspace, &editor, cx));
+        cx.run_until_parked();
+
+        assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
+        assert!(!workspace.read_with(cx, |workspace, _| {
+            workspace.has_notification(&NotificationId::composite::<QueryRuns>(1))
+        }));
+        assert_eq!(
+            cx.update(|_, cx| runs_of(&workspace, cx)),
+            runs,
+            "the workspace keeps one set of runs"
+        );
+    }
+
+    #[gpui::test]
     async fn cancelling_with_nothing_running_does_nothing(cx: &mut TestAppContext) {
-        let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        let (workspace, editor, sent, cx) = setup(cx, 200, ANSWER).await;
         let runs = cx.new(|_| QueryRuns::default());
-        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        workspace.update(cx, |workspace, cx| {
+            cancel_query(workspace, &runs, Some(editor.clone()), cx)
+        });
         cx.run_until_parked();
         assert!(bodies(&sent, "/v1/rest/mgmt").is_empty());
         assert!(run_log(&workspace, cx).await.is_empty());
@@ -1626,7 +1754,9 @@ pub(crate) mod tests {
         assert_eq!(runs.read_with(cx, |runs, _| runs.active.len()), 2);
 
         // The cursor is in the second query, so that is the one that is cancelled.
-        workspace.update(cx, |workspace, cx| cancel_query(workspace, &runs, cx));
+        workspace.update(cx, |workspace, cx| {
+            cancel_query(workspace, &runs, Some(editor.clone()), cx)
+        });
         cx.run_until_parked();
 
         let remaining = runs.read_with(cx, |runs, _| {

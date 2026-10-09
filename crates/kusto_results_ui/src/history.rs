@@ -28,7 +28,7 @@ use workspace::{ModalView, OpenOptions, OpenVisible, Workspace};
 
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsViewer;
-use crate::run_query::{KustoSettings, RerunQuery, display};
+use crate::run_query::{Destination, KustoSettings, RerunQuery, display};
 use crate::save_result::{SaveResult, suggested_local_file_name};
 
 actions!(
@@ -540,7 +540,7 @@ async fn show_row(
                 })
                 .log_err();
         }
-        outcome => display(workspace, outcome, cx).await,
+        outcome => display(workspace, outcome, Destination::Configured, cx).await,
     }
 }
 
