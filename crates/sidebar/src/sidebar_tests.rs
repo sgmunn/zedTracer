@@ -5,6 +5,7 @@ use agent_client_protocol::schema::{v1 as acp_v1, v2 as acp_v2};
 use agent_settings::AgentSettings;
 use agent_ui::{
     ThreadId,
+    query_thread_metadata_store::{TestQueryThreadMetadataDbName, QueryThreadMetadataStore},
     terminal_thread_metadata_store::{
         TerminalThreadMetadata, TerminalThreadMetadataStore, TestTerminalMetadataDbName,
     },
@@ -37,6 +38,9 @@ fn use_unique_metadata_databases(cx: &mut TestAppContext) {
         ));
         cx.set_global(TestTerminalMetadataDbName(format!(
             "SIDEBAR_TERMINAL_THREAD_METADATA_{test_database_id}"
+        )));
+        cx.set_global(TestQueryThreadMetadataDbName(format!(
+            "SIDEBAR_QUERY_THREAD_METADATA_{test_database_id}"
         )));
     });
 }
@@ -213,6 +217,12 @@ fn assert_remote_project_integration_sidebar_state(
                 panic!(
                     "unexpected sidebar terminal while simulating remote project integration flicker: title=`{}`",
                     terminal.metadata.title
+                );
+            }
+            ListEntry::QueryThread(query_thread) => {
+                panic!(
+                    "unexpected sidebar query thread while simulating remote project integration flicker: title=`{}`",
+                    query_thread.metadata.title
                 );
             }
         }
@@ -699,6 +709,11 @@ fn visible_entries_as_strings(
                     ListEntry::Terminal(terminal) => {
                         let title = terminal.metadata.display_title();
                         let worktree = format_linked_worktree_chips(&terminal.worktrees);
+                        format!("  {title}{worktree}{selected}")
+                    }
+                    ListEntry::QueryThread(query_thread) => {
+                        let title = &query_thread.metadata.title;
+                        let worktree = format_linked_worktree_chips(&query_thread.worktrees);
                         format!("  {title}{worktree}{selected}")
                     }
                 }
@@ -5767,7 +5782,9 @@ async fn test_rename_thread_from_sidebar_updates_title_override(cx: &mut TestApp
                     thread.metadata.thread_id,
                     thread.metadata.display_title(),
                 )),
-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
+                ListEntry::ProjectHeader { .. }
+                | ListEntry::Terminal(_)
+                | ListEntry::QueryThread(_) => None,
             })
             .expect("sidebar should have a thread entry")
     });
@@ -5853,7 +5870,9 @@ async fn test_rename_thread_from_sidebar_updates_title_override(cx: &mut TestApp
             .iter()
             .find_map(|entry| match entry {
                 ListEntry::Thread(thread) => Some(thread),
-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
+                ListEntry::ProjectHeader { .. }
+                | ListEntry::Terminal(_)
+                | ListEntry::QueryThread(_) => None,
             })
             .expect("renamed thread should match the search");
         let title = thread.metadata.display_title();
@@ -5892,7 +5911,9 @@ async fn test_rename_selected_thread_action_renames_selected_thread(cx: &mut Tes
             .enumerate()
             .find_map(|(ix, entry)| match entry {
                 ListEntry::Thread(thread) => Some((ix, thread.metadata.thread_id)),
-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
+                ListEntry::ProjectHeader { .. }
+                | ListEntry::Terminal(_)
+                | ListEntry::QueryThread(_) => None,
             })
             .expect("sidebar should have a thread entry")
     });
@@ -7993,6 +8014,12 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
                     panic!(
                         "unexpected sidebar terminal while opening linked worktree thread: title=`{}`",
                         terminal.metadata.title
+                    );
+                }
+                ListEntry::QueryThread(query_thread) => {
+                    panic!(
+                        "unexpected sidebar query thread while opening linked worktree thread: title=`{}`",
+                        query_thread.metadata.title
                     );
                 }
             }
@@ -15914,4 +15941,236 @@ fn sidebar_painted_background_at(position: Point<Pixels>, cx: &mut VisualTestCon
             .expect("solid background at pointer");
         u32::from(Rgba::from(color))
     })
+}
+
+fn new_query_thread(
+    panel: &Entity<AgentPanel>,
+    cx: &mut gpui::VisualTestContext,
+) -> agent_ui::query_thread_metadata_store::QueryThreadId {
+    panel.update_in(cx, |panel, window, cx| panel.new_query_thread(window, cx));
+    cx.run_until_parked();
+    panel
+        .read_with(cx, |panel, _| panel.active_query_thread_id())
+        .expect("the new query thread is active")
+}
+
+fn query_thread_index(
+    sidebar: &Entity<Sidebar>,
+    id: agent_ui::query_thread_metadata_store::QueryThreadId,
+    cx: &mut gpui::VisualTestContext,
+) -> usize {
+    sidebar.read_with(cx, |sidebar, _cx| {
+        sidebar
+            .contents
+            .entries
+            .iter()
+            .position(|entry| {
+                matches!(entry, ListEntry::QueryThread(query_thread) if query_thread.metadata.id == id)
+            })
+            .expect("the query thread is in the sidebar")
+    })
+}
+
+#[gpui::test]
+async fn test_query_threads_appear_in_sidebar_and_search(cx: &mut TestAppContext) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+
+    let id = new_query_thread(&panel, cx);
+
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]", "  Kusto query"]
+    );
+    sidebar.read_with(cx, |sidebar, _cx| {
+        assert!(
+            matches!(&sidebar.active_entry, Some(ActiveEntry::QueryThread { query_thread_id, .. }) if *query_thread_id == id),
+            "expected the query thread to be active, got {:?}",
+            sidebar.active_entry,
+        );
+    });
+
+    type_in_search(&sidebar, "kusto", cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]", "  Kusto query  <== selected"]
+    );
+
+    type_in_search(&sidebar, "missing", cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        Vec::<String>::new()
+    );
+}
+
+#[gpui::test]
+async fn test_clicking_a_query_thread_shows_it_in_the_panel(cx: &mut TestAppContext) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let fixture = SidebarClickFixture::new(&multi_workspace, cx);
+    let first = new_query_thread(&fixture.panel, cx);
+    let second = new_query_thread(&fixture.panel, cx);
+    assert_ne!(first, second);
+    assert_eq!(
+        fixture
+            .panel
+            .read_with(cx, |panel, _| panel.active_query_thread_id()),
+        Some(second)
+    );
+
+    fixture.click(query_thread_index(&fixture.sidebar, first, cx), cx);
+
+    assert_eq!(
+        fixture
+            .panel
+            .read_with(cx, |panel, _| panel.active_query_thread_id()),
+        Some(first)
+    );
+    fixture.sidebar.read_with(cx, |sidebar, _cx| {
+        assert_eq!(sidebar.selection, None);
+        assert!(
+            matches!(&sidebar.active_entry, Some(ActiveEntry::QueryThread { query_thread_id, .. }) if *query_thread_id == first),
+            "expected the clicked query thread to be active, got {:?}",
+            sidebar.active_entry,
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_closing_a_query_thread_row_forgets_it_and_keeps_its_file(cx: &mut TestAppContext) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+    let id = new_query_thread(&panel, cx);
+    let file = id.query_file();
+    let fs = project.read_with(cx, |project, _| project.fs().clone());
+    assert!(fs.is_file(&file).await);
+
+    focus_sidebar(&sidebar, cx);
+    let index = query_thread_index(&sidebar, id, cx);
+    sidebar.update_in(cx, |sidebar, _window, _cx| {
+        sidebar.selection = Some(index);
+    });
+    cx.dispatch_action(ArchiveSelectedThread);
+    cx.run_until_parked();
+
+    assert_eq!(panel.read_with(cx, |panel, _| panel.active_query_thread_id()), None);
+    sidebar.read_with(cx, |sidebar, _cx| {
+        assert!(sidebar.contents.entries.iter().all(|entry| {
+            !matches!(entry, ListEntry::QueryThread(query_thread) if query_thread.metadata.id == id)
+        }));
+    });
+    sidebar.read_with(cx, |_sidebar, cx| {
+        assert!(
+            QueryThreadMetadataStore::global(cx)
+                .read(cx)
+                .entry(id)
+                .is_none(),
+            "the thread is forgotten"
+        );
+    });
+    assert!(fs.is_file(&file).await, "its file stays");
+}
+
+#[gpui::test]
+async fn test_a_query_thread_row_that_the_panel_does_not_have_open_is_forgotten_too(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+    let kept = new_query_thread(&panel, cx);
+    let other = new_query_thread(&panel, cx);
+    panel.update_in(cx, |panel, window, cx| {
+        panel.close_query_thread(kept, window, cx)
+    });
+    cx.run_until_parked();
+    // Closing in the panel forgets the thread, so put its row back as it is after a restart:
+    // in the store, and not open.
+    let metadata = sidebar.read_with(cx, |sidebar, _cx| {
+        sidebar
+            .contents
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ListEntry::QueryThread(query_thread) if query_thread.metadata.id == other => {
+                    Some(query_thread.metadata.clone())
+                }
+                _ => None,
+            })
+            .expect("the other thread is listed")
+    });
+    let stored = agent_ui::query_thread_metadata_store::QueryThreadMetadata {
+        id: agent_ui::query_thread_metadata_store::QueryThreadId::new(),
+        title: "From before the restart".into(),
+        created_at: chrono::Utc::now(),
+        worktree_paths: metadata.worktree_paths,
+    };
+    let stored_id = stored.id;
+    cx.update(|_, cx| {
+        QueryThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(stored, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx)
+            .iter()
+            .filter(|entry| entry.contains("From before the restart"))
+            .count(),
+        1
+    );
+
+    focus_sidebar(&sidebar, cx);
+    let index = query_thread_index(&sidebar, stored_id, cx);
+    sidebar.update_in(cx, |sidebar, _window, _cx| {
+        sidebar.selection = Some(index);
+    });
+    cx.dispatch_action(ArchiveSelectedThread);
+    cx.run_until_parked();
+
+    assert!(
+        visible_entries_as_strings(&sidebar, cx)
+            .iter()
+            .all(|entry| !entry.contains("From before the restart"))
+    );
+    assert_eq!(
+        panel.read_with(cx, |panel, _| panel.active_query_thread_id()),
+        Some(other),
+        "the thread that is open stays open"
+    );
+}
+
+#[gpui::test]
+async fn test_renaming_a_query_thread_changes_its_row_and_its_stored_title(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+    let id = new_query_thread(&panel, cx);
+
+    sidebar.update_in(cx, |sidebar, _window, cx| {
+        sidebar.apply_query_thread_rename(id, "Slow requests".into(), cx)
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]", "  Slow requests"]
+    );
+    sidebar.read_with(cx, |_sidebar, cx| {
+        assert_eq!(
+            QueryThreadMetadataStore::global(cx)
+                .read(cx)
+                .entry(id)
+                .map(|entry| entry.title.to_string())
+                .as_deref(),
+            Some("Slow requests")
+        );
+    });
 }

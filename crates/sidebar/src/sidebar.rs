@@ -5,6 +5,9 @@ use action_log::DiffStats;
 use agent::{ThreadStore, ZED_AGENT_ID};
 use agent_client_protocol::schema::v2 as acp;
 use agent_settings::{AgentSettings, THREADS_LIST_MAX_WIDTH, THREADS_LIST_MIN_WIDTH};
+use agent_ui::query_thread_metadata_store::{
+    QueryThreadId, QueryThreadMetadata, QueryThreadMetadataStore,
+};
 use agent_ui::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, terminal_title_prefix,
 };
@@ -17,8 +20,8 @@ use agent_ui::threads_archive_view::{
 };
 use agent_ui::{
     AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, AgentThreadSource,
-    ArchiveSelectedThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewTerminalThread,
-    NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
+    ArchiveSelectedThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewQueryThread,
+    NewTerminalThread, NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
     ThreadTitleRegenerationResult, channels_with_threads, import_threads_from_other_channels,
 };
 use agent_ui::{MessageEditorEvent, StateChange, thread_worktree_archive};
@@ -116,6 +119,7 @@ enum SerializedSidebarView {
 enum NewEntryTarget {
     LastCreatedKind,
     Terminal,
+    QueryThread,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -159,14 +163,18 @@ enum ActiveEntry {
         terminal_id: TerminalId,
         workspace: Entity<Workspace>,
     },
+    QueryThread {
+        query_thread_id: QueryThreadId,
+        workspace: Entity<Workspace>,
+    },
 }
 
 impl ActiveEntry {
     fn workspace(&self) -> &Entity<Workspace> {
         match self {
-            ActiveEntry::Thread { workspace, .. } | ActiveEntry::Terminal { workspace, .. } => {
-                workspace
-            }
+            ActiveEntry::Thread { workspace, .. }
+            | ActiveEntry::Terminal { workspace, .. }
+            | ActiveEntry::QueryThread { workspace, .. } => workspace,
         }
     }
 
@@ -197,6 +205,12 @@ impl ActiveEntry {
             (ActiveEntry::Terminal { terminal_id, .. }, ListEntry::Terminal(terminal)) => {
                 *terminal_id == terminal.metadata.terminal_id
             }
+            (
+                ActiveEntry::QueryThread {
+                    query_thread_id, ..
+                },
+                ListEntry::QueryThread(query_thread),
+            ) => *query_thread_id == query_thread.metadata.id,
             _ => false,
         }
     }
@@ -376,6 +390,16 @@ struct TerminalEntry {
     highlight_positions: Vec<usize>,
 }
 
+/// A row for a query thread. Query threads are listed for workspaces that are open, because
+/// their files are opened by the workspace's agent panel.
+#[derive(Clone)]
+struct QueryThreadEntry {
+    metadata: QueryThreadMetadata,
+    workspace: Entity<Workspace>,
+    worktrees: Vec<ThreadItemWorktreeInfo>,
+    highlight_positions: Vec<usize>,
+}
+
 impl ThreadEntry {
     /// Updates this thread entry with active thread information.
     ///
@@ -408,12 +432,14 @@ enum ListEntry {
     },
     Thread(Arc<ThreadEntry>),
     Terminal(TerminalEntry),
+    QueryThread(QueryThreadEntry),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenameTarget {
     Thread(ThreadId),
     Terminal(TerminalId),
+    QueryThread(QueryThreadId),
 }
 
 impl RenameTarget {
@@ -426,6 +452,10 @@ impl RenameTarget {
             ListEntry::Terminal(terminal) => Some((
                 Self::Terminal(terminal.metadata.terminal_id),
                 terminal.metadata.editable_title(),
+            )),
+            ListEntry::QueryThread(query_thread) => Some((
+                Self::QueryThread(query_thread.metadata.id),
+                query_thread.metadata.title.clone(),
             )),
             ListEntry::ProjectHeader { .. } => None,
         }
@@ -441,6 +471,10 @@ enum ActivatableEntry {
         metadata: TerminalThreadMetadata,
         workspace: ThreadEntryWorkspace,
     },
+    QueryThread {
+        metadata: QueryThreadMetadata,
+        workspace: Entity<Workspace>,
+    },
 }
 
 impl ActivatableEntry {
@@ -453,6 +487,10 @@ impl ActivatableEntry {
                 metadata: terminal.metadata.clone(),
                 workspace: terminal.workspace.clone(),
             }),
+            ListEntry::QueryThread(query_thread) => Some(Self::QueryThread {
+                metadata: query_thread.metadata.clone(),
+                workspace: query_thread.workspace.clone(),
+            }),
             ListEntry::ProjectHeader { .. } => None,
         }
     }
@@ -463,7 +501,9 @@ impl ListEntry {
     fn session_id(&self) -> Option<&acp::SessionId> {
         match self {
             ListEntry::Thread(thread_entry) => thread_entry.metadata.session_id.as_ref(),
-            ListEntry::Terminal(_) | ListEntry::ProjectHeader { .. } => None,
+            ListEntry::Terminal(_)
+            | ListEntry::QueryThread(_)
+            | ListEntry::ProjectHeader { .. } => None,
         }
     }
 
@@ -481,6 +521,7 @@ impl ListEntry {
                 ThreadEntryWorkspace::Open(workspace) => vec![workspace.clone()],
                 ThreadEntryWorkspace::Closed { .. } => Vec::new(),
             },
+            ListEntry::QueryThread(query_thread) => vec![query_thread.workspace.clone()],
             ListEntry::ProjectHeader { key, .. } => {
                 multi_workspace.workspaces_for_project_group(key, cx)
             }
@@ -497,6 +538,12 @@ impl From<ThreadEntry> for ListEntry {
 impl From<TerminalEntry> for ListEntry {
     fn from(terminal: TerminalEntry) -> Self {
         ListEntry::Terminal(terminal)
+    }
+}
+
+impl From<QueryThreadEntry> for ListEntry {
+    fn from(query_thread: QueryThreadEntry) -> Self {
+        ListEntry::QueryThread(query_thread)
     }
 }
 
@@ -524,6 +571,7 @@ enum EntryShape {
     },
     Thread(ThreadId),
     Terminal(TerminalId),
+    QueryThread(QueryThreadId),
 }
 
 impl SidebarContents {
@@ -922,6 +970,13 @@ impl Sidebar {
         )
         .detach();
 
+        if let Some(query_thread_store) = QueryThreadMetadataStore::try_global(cx) {
+            cx.observe(&query_thread_store, |this, _store, cx| {
+                this.schedule_update_entries(false, cx);
+            })
+            .detach();
+        }
+
         let channels_with_threads = channels_with_threads(cx);
         cx.spawn(async move |this, cx| {
             let channels = channels_with_threads.await;
@@ -1144,6 +1199,11 @@ impl Sidebar {
                 store_cx,
             );
         });
+        if let Some(query_thread_store) = QueryThreadMetadataStore::try_global(cx) {
+            query_thread_store.update(cx, |store, store_cx| {
+                store.change_worktree_paths(&old_folder_paths, &apply_path_changes, store_cx);
+            });
+        }
     }
 
     fn subscribe_to_agent_panel(
@@ -1257,6 +1317,11 @@ impl Sidebar {
         if let Some(terminal_id) = panel.active_terminal_id() {
             self.active_entry = Some(ActiveEntry::Terminal {
                 terminal_id,
+                workspace: active_workspace,
+            });
+        } else if let Some(query_thread_id) = panel.active_query_thread_id() {
+            self.active_entry = Some(ActiveEntry::QueryThread {
+                query_thread_id,
                 workspace: active_workspace,
             });
         } else if let Some(thread_id) = panel.active_thread_id(cx) {
@@ -1377,6 +1442,9 @@ impl Sidebar {
             this.update_in(cx, |this, window, cx| match target {
                 NewEntryTarget::LastCreatedKind => this.create_new_entry(&workspace, window, cx),
                 NewEntryTarget::Terminal => this.create_new_terminal(&workspace, window, cx),
+                NewEntryTarget::QueryThread => {
+                    this.create_new_query_thread(&workspace, window, cx)
+                }
             })?;
             anyhow::Ok(())
         })
@@ -1427,6 +1495,7 @@ impl Sidebar {
         let mut project_header_indices: Vec<usize> = Vec::new();
         let mut seen_thread_ids: HashSet<agent_ui::ThreadId> = HashSet::new();
         let mut seen_terminal_ids: HashSet<TerminalId> = HashSet::new();
+        let mut seen_query_thread_ids: HashSet<QueryThreadId> = HashSet::new();
 
         let has_open_projects = workspaces
             .iter()
@@ -1593,6 +1662,33 @@ impl Sidebar {
                     .has_notification
                     .then_some(terminal.metadata.terminal_id)
             }));
+
+            let mut query_threads = Vec::new();
+            if let Some(query_thread_store) = QueryThreadMetadataStore::try_global(cx) {
+                for ws in group_workspaces {
+                    let ws_paths = workspace_path_list(ws, cx);
+                    if ws_paths.paths().is_empty() {
+                        continue;
+                    }
+                    for metadata in query_thread_store
+                        .read(cx)
+                        .entries_for_path(&ws_paths)
+                        .cloned()
+                    {
+                        if !seen_query_thread_ids.insert(metadata.id) {
+                            continue;
+                        }
+                        let worktrees =
+                            worktree_info_from_thread_paths(&metadata.worktree_paths, &branch_by_path);
+                        query_threads.push(QueryThreadEntry {
+                            metadata,
+                            workspace: ws.clone(),
+                            worktrees,
+                            highlight_positions: Vec::new(),
+                        });
+                    }
+                }
+            }
             if group_key.path_list().paths().is_empty() {
                 continue;
             }
@@ -1853,7 +1949,8 @@ impl Sidebar {
                 }
             }
 
-            let has_visible_rows = !threads.is_empty() || !terminals.is_empty();
+            let has_visible_rows =
+                !threads.is_empty() || !terminals.is_empty() || !query_threads.is_empty();
             let has_stored_thread_rows = !should_load_threads && !has_visible_rows && {
                 let store = ThreadMetadataStore::global(cx).read(cx);
                 store
@@ -1927,7 +2024,34 @@ impl Sidebar {
                     }
                 }
 
-                if matched_threads.is_empty() && matched_terminals.is_empty() && !workspace_matched
+                let mut matched_query_threads: Vec<QueryThreadEntry> = Vec::new();
+                for mut query_thread in query_threads {
+                    let mut query_thread_matched = false;
+                    if let Some(positions) =
+                        fuzzy_match_positions(&query, query_thread.metadata.title.as_ref())
+                    {
+                        query_thread.highlight_positions = positions;
+                        query_thread_matched = true;
+                    }
+                    let mut worktree_matched = false;
+                    for worktree in &mut query_thread.worktrees {
+                        let Some(name) = worktree.worktree_name.as_ref() else {
+                            continue;
+                        };
+                        if let Some(positions) = fuzzy_match_positions(&query, name) {
+                            worktree.highlight_positions = positions;
+                            worktree_matched = true;
+                        }
+                    }
+                    if workspace_matched || query_thread_matched || worktree_matched {
+                        matched_query_threads.push(query_thread);
+                    }
+                }
+
+                if matched_threads.is_empty()
+                    && matched_terminals.is_empty()
+                    && matched_query_threads.is_empty()
+                    && !workspace_matched
                 {
                     continue;
                 }
@@ -1955,6 +2079,7 @@ impl Sidebar {
                 Self::push_entries_by_display_time(
                     &mut entries,
                     matched_terminals,
+                    matched_query_threads,
                     matched_threads,
                     &mut current_session_ids,
                     &mut current_thread_ids,
@@ -2005,6 +2130,7 @@ impl Sidebar {
                 Self::push_entries_by_display_time(
                     &mut entries,
                     terminals,
+                    query_threads,
                     threads,
                     &mut current_session_ids,
                     &mut current_thread_ids,
@@ -2126,6 +2252,9 @@ impl Sidebar {
             },
             ListEntry::Thread(thread) => EntryShape::Thread(thread.metadata.thread_id),
             ListEntry::Terminal(terminal) => EntryShape::Terminal(terminal.metadata.terminal_id),
+            ListEntry::QueryThread(query_thread) => {
+                EntryShape::QueryThread(query_thread.metadata.id)
+            }
         })
     }
 
@@ -2210,7 +2339,12 @@ impl Sidebar {
             .contents
             .entries
             .iter()
-            .position(|entry| matches!(entry, ListEntry::Thread(_) | ListEntry::Terminal(_)))
+            .position(|entry| {
+                matches!(
+                    entry,
+                    ListEntry::Thread(_) | ListEntry::Terminal(_) | ListEntry::QueryThread(_)
+                )
+            })
             .or_else(|| {
                 if self.contents.entries.is_empty() {
                     None
@@ -2276,6 +2410,9 @@ impl Sidebar {
             ListEntry::Thread(thread) => self.render_thread(ix, thread, is_active, is_selected, cx),
             ListEntry::Terminal(terminal) => {
                 self.render_terminal(ix, terminal, is_active, is_selected, cx)
+            }
+            ListEntry::QueryThread(query_thread) => {
+                self.render_query_thread(ix, query_thread, is_active, is_selected, cx)
             }
         };
 
@@ -3486,6 +3623,9 @@ impl Sidebar {
                     RenameTarget::Terminal(terminal_id) => {
                         self.apply_terminal_rename(terminal_id, new_title, cx);
                     }
+                    RenameTarget::QueryThread(query_thread_id) => {
+                        self.apply_query_thread_rename(query_thread_id, new_title, cx);
+                    }
                 }
             }
             editor::EditorEvent::Blurred => {
@@ -3552,6 +3692,31 @@ impl Sidebar {
             TerminalThreadMetadataStore::global(cx).update(cx, |store, cx| {
                 store.rename_terminal(terminal_id, title, cx);
             });
+        }
+    }
+
+    fn apply_query_thread_rename(
+        &mut self,
+        query_thread_id: QueryThreadId,
+        title: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let mut found = false;
+        if let Some(multi_workspace) = self.multi_workspace.upgrade() {
+            let workspaces: Vec<_> = multi_workspace.read(cx).workspaces().cloned().collect();
+            for workspace in workspaces {
+                if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx)
+                    && agent_panel.update(cx, |agent_panel, cx| {
+                        agent_panel.rename_query_thread(query_thread_id, title.clone(), cx)
+                    })
+                {
+                    found = true;
+                }
+            }
+        }
+
+        if !found && let Some(store) = QueryThreadMetadataStore::try_global(cx) {
+            store.update(cx, |store, cx| store.rename(query_thread_id, title, cx));
         }
     }
 
@@ -3679,6 +3844,11 @@ impl Sidebar {
                 let metadata = terminal.metadata.clone();
                 let workspace = terminal.workspace.clone();
                 self.activate_terminal_entry(metadata, workspace, false, window, cx);
+            }
+            ListEntry::QueryThread(query_thread) => {
+                let metadata = query_thread.metadata.clone();
+                let workspace = query_thread.workspace.clone();
+                self.activate_query_thread_in_workspace(&workspace, metadata, false, window, cx);
             }
         }
     }
@@ -4410,7 +4580,9 @@ impl Sidebar {
                     self.update_entries(cx);
                 }
             }
-            Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => {
+            Some(
+                ListEntry::Thread(_) | ListEntry::Terminal(_) | ListEntry::QueryThread(_),
+            ) => {
                 for i in (0..ix).rev() {
                     if let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(i)
                     {
@@ -4437,7 +4609,9 @@ impl Sidebar {
         // Find the group header for the current selection.
         let header_ix = match self.contents.entries.get(ix) {
             Some(ListEntry::ProjectHeader { .. }) => Some(ix),
-            Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => (0..ix).rev().find(|&i| {
+            Some(
+                ListEntry::Thread(_) | ListEntry::Terminal(_) | ListEntry::QueryThread(_),
+            ) => (0..ix).rev().find(|&i| {
                 matches!(
                     self.contents.entries.get(i),
                     Some(ListEntry::ProjectHeader { .. })
@@ -4581,6 +4755,13 @@ impl Sidebar {
                     window,
                     cx,
                 );
+                true
+            }
+            ActivatableEntry::QueryThread {
+                metadata,
+                workspace,
+            } => {
+                self.activate_query_thread_in_workspace(workspace, metadata.clone(), false, window, cx);
                 true
             }
         }
@@ -5787,6 +5968,11 @@ impl Sidebar {
                 let workspace = terminal.workspace.clone();
                 self.close_terminal(&metadata, &workspace, window, cx);
             }
+            Some(ListEntry::QueryThread(query_thread)) => {
+                let metadata = query_thread.metadata.clone();
+                let workspace = query_thread.workspace.clone();
+                self.close_query_thread(&metadata, &workspace, window, cx);
+            }
             _ => {}
         }
     }
@@ -5833,6 +6019,7 @@ impl Sidebar {
     fn push_entries_by_display_time(
         entries: &mut Vec<ListEntry>,
         terminals: Vec<TerminalEntry>,
+        query_threads: Vec<QueryThreadEntry>,
         threads: Vec<Arc<ThreadEntry>>,
         current_session_ids: &mut HashSet<acp::SessionId>,
         current_thread_ids: &mut HashSet<agent_ui::ThreadId>,
@@ -5844,6 +6031,7 @@ impl Sidebar {
                 }
                 ListEntry::Thread(thread) => Sidebar::thread_display_time(&thread.metadata),
                 ListEntry::Terminal(terminal) => terminal.metadata.created_at,
+                ListEntry::QueryThread(query_thread) => query_thread.metadata.created_at,
                 ListEntry::ProjectHeader { .. } => unreachable!(),
             }
         }
@@ -5851,6 +6039,7 @@ impl Sidebar {
         let row_entries = terminals
             .into_iter()
             .map(ListEntry::Terminal)
+            .chain(query_threads.into_iter().map(ListEntry::QueryThread))
             .chain(threads.into_iter().map(ListEntry::Thread))
             .sorted_by_key(|right| std::cmp::Reverse(display_time(right)));
 
@@ -5948,6 +6137,7 @@ impl Sidebar {
                         timestamp,
                     }))
                 }
+                ListEntry::QueryThread(_) => None,
                 ListEntry::Terminal(terminal) => {
                     let timestamp: SharedString =
                         format_history_entry_timestamp(terminal.metadata.created_at).into();
@@ -6182,6 +6372,30 @@ impl Sidebar {
                                 if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                                     panel.update(cx, |panel, cx| {
                                         panel.activate_terminal(terminal_id, false, window, cx);
+                                    });
+                                }
+                            });
+                        }
+                        Some(ActiveEntry::QueryThread {
+                            query_thread_id,
+                            workspace,
+                        }) => {
+                            let query_thread_id = *query_thread_id;
+                            let workspace = workspace.clone();
+                            this.active_entry = Some(ActiveEntry::QueryThread {
+                                query_thread_id,
+                                workspace: workspace.clone(),
+                            });
+                            this.update_entries(cx);
+                            workspace.update(cx, |workspace, cx| {
+                                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.activate_query_thread(
+                                            query_thread_id,
+                                            false,
+                                            window,
+                                            cx,
+                                        );
                                     });
                                 }
                             });
@@ -6722,6 +6936,208 @@ impl Sidebar {
             .into_any_element()
     }
 
+    fn render_query_thread(
+        &self,
+        ix: usize,
+        query_thread: &QueryThreadEntry,
+        is_active: bool,
+        is_focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = ElementId::from(format!("query-thread-{}", query_thread.metadata.id));
+        let timestamp = format_history_entry_timestamp(query_thread.metadata.created_at);
+        let is_hovered = self.hovered_thread_index == Some(ix);
+        let color = cx.theme().colors();
+        let sidebar_bg = color.panel_background;
+        let button_hover_bg = color.element_background;
+        let button_active_bg = color.element_active;
+        let metadata = query_thread.metadata.clone();
+        let workspace = query_thread.workspace.clone();
+        let focus_handle = self.focus_handle.clone();
+        let worktrees = apply_worktree_label_mode(
+            query_thread.worktrees.clone(),
+            cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
+        );
+        let query_thread_id = query_thread.metadata.id;
+        let is_renaming = self.rename_target == Some(RenameTarget::QueryThread(query_thread_id));
+        let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
+
+        let query_thread_item = ThreadItem::new(id, query_thread.metadata.title.clone())
+            .base_bg(sidebar_bg)
+            .icon(IconName::DatabaseZap)
+            .worktrees(worktrees)
+            .timestamp(timestamp)
+            .highlight_positions(query_thread.highlight_positions.clone())
+            .selected(is_active)
+            .focused(is_focused)
+            .hovered(is_hovered)
+            .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
+                if *is_hovered {
+                    this.hovered_thread_index = Some(ix);
+                } else if this.hovered_thread_index == Some(ix) {
+                    this.hovered_thread_index = None;
+                }
+                cx.notify();
+            }))
+            .when_some(rename_title_editor, |this, title_editor| {
+                this.is_truncated(false).title_slot(title_editor)
+            })
+            .when(is_hovered && !is_renaming, |this| {
+                this.action_slot(
+                    IconButton::new("close-query-thread", IconName::Close)
+                        .hover_background(button_hover_bg)
+                        .active_background(button_active_bg)
+                        .icon_size(IconSize::Small)
+                        .icon_color(Color::Muted)
+                        .tooltip({
+                            let focus_handle = focus_handle.clone();
+                            move |_window, cx| {
+                                Tooltip::for_action_in(
+                                    "Close Kusto Query",
+                                    &ArchiveSelectedThread,
+                                    &focus_handle,
+                                    cx,
+                                )
+                            }
+                        })
+                        .on_click(cx.listener({
+                            let metadata = metadata.clone();
+                            let workspace = workspace.clone();
+                            move |this, _, window, cx| {
+                                this.close_query_thread(&metadata, &workspace, window, cx);
+                            }
+                        })),
+                )
+            })
+            .on_click(cx.listener({
+                move |this, _, window, cx| {
+                    this.selection = None;
+                    this.activate_query_thread_in_workspace(
+                        &workspace,
+                        metadata.clone(),
+                        false,
+                        window,
+                        cx,
+                    );
+                }
+            }));
+
+        let context_menu_id = SharedString::from(format!("query-thread-context-menu-{ix}"));
+        let rename_title = query_thread.metadata.title.clone();
+        let sidebar = cx.weak_entity();
+
+        right_click_menu(context_menu_id)
+            .trigger(move |_, _, _| query_thread_item)
+            .menu(move |window, cx| {
+                let sidebar = sidebar.clone();
+                let rename_title = rename_title.clone();
+                ContextMenu::build(window, cx, move |menu, _window, _cx| {
+                    menu.entry("Rename Title", None, move |window, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| {
+                                sidebar.start_renaming_entry(
+                                    ix,
+                                    RenameTarget::QueryThread(query_thread_id),
+                                    rename_title.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .ok();
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    fn activate_query_thread_in_workspace(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        metadata: QueryThreadMetadata,
+        retain: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
+            return;
+        };
+
+        self.active_entry = Some(ActiveEntry::QueryThread {
+            query_thread_id: metadata.id,
+            workspace: workspace.clone(),
+        });
+
+        multi_workspace.update(cx, |multi_workspace, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+            if retain {
+                multi_workspace.retain_active_workspace(cx);
+            }
+        });
+
+        Self::load_query_thread_in_workspace(workspace, &metadata, window, cx);
+
+        self.update_entries(cx);
+    }
+
+    fn load_query_thread_in_workspace(
+        workspace: &Entity<Workspace>,
+        metadata: &QueryThreadMetadata,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+            agent_panel.update(cx, |panel, cx| {
+                panel.restore_query_thread(metadata.clone(), true, window, cx);
+            });
+            workspace.update(cx, |workspace, cx| {
+                workspace.focus_panel::<AgentPanel>(window, cx);
+            });
+            return;
+        }
+
+        let workspace = workspace.downgrade();
+        let metadata = metadata.clone();
+        let mut async_window_cx = window.to_async(cx);
+        cx.spawn(async move |_cx| {
+            let panel = AgentPanel::load(workspace.clone(), async_window_cx.clone()).await?;
+
+            workspace.update_in(&mut async_window_cx, |workspace, window, cx| {
+                let panel = workspace.panel::<AgentPanel>(cx).unwrap_or_else(|| {
+                    workspace.add_panel(panel.clone(), window, cx);
+                    panel.clone()
+                });
+                panel.update(cx, |panel, cx| {
+                    panel.restore_query_thread(metadata, true, window, cx);
+                });
+                workspace.focus_panel::<AgentPanel>(window, cx);
+            })?;
+
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
+    /// Forgets the thread; its query file stays where it is.
+    fn close_query_thread(
+        &mut self,
+        metadata: &QueryThreadMetadata,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query_thread_id = metadata.id;
+        if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+            agent_panel.update(cx, |panel, cx| {
+                panel.close_query_thread(query_thread_id, window, cx);
+            });
+        }
+        // The panel only knows threads it has open, and a row can be for one it does not.
+        if let Some(store) = QueryThreadMetadataStore::try_global(cx) {
+            store.update(cx, |store, cx| store.delete(query_thread_id, cx));
+        }
+        self.update_entries(cx);
+    }
+
     fn render_filter_input(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .min_w_0()
@@ -6822,6 +7238,27 @@ impl Sidebar {
             }
         } else if let Some(workspace) = self.active_workspace(cx) {
             self.create_new_terminal(&workspace, window, cx);
+        }
+    }
+
+    fn new_query_thread(
+        &mut self,
+        _: &NewQueryThread,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+
+        if let Some(key) = self.selected_group_key() {
+            self.set_group_expanded(&key, true, cx);
+            self.selection = None;
+            if let Some(workspace) = self.workspace_for_group(&key, cx) {
+                self.create_new_query_thread(&workspace, window, cx);
+            } else {
+                self.open_workspace_and_create_entry(&key, NewEntryTarget::QueryThread, window, cx);
+            }
+        } else if let Some(workspace) = self.active_workspace(cx) {
+            self.create_new_query_thread(&workspace, window, cx);
         }
     }
 
@@ -7110,11 +7547,39 @@ impl Sidebar {
         });
     }
 
+    fn create_new_query_thread(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if workspace_path_list(workspace, cx).paths().is_empty() {
+            return;
+        }
+
+        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
+            return;
+        };
+
+        multi_workspace.update(cx, |multi_workspace, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+        });
+
+        workspace.update(cx, |workspace, cx| {
+            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                panel.update(cx, |panel, cx| panel.new_query_thread(window, cx));
+            }
+            workspace.focus_panel::<AgentPanel>(window, cx);
+        });
+    }
+
     fn selected_group_key(&self) -> Option<ProjectGroupKey> {
         let ix = self.selection?;
         match self.contents.entries.get(ix) {
             Some(ListEntry::ProjectHeader { key, .. }) => Some(key.clone()),
-            Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => {
+            Some(
+                ListEntry::Thread(_) | ListEntry::Terminal(_) | ListEntry::QueryThread(_),
+            ) => {
                 (0..ix)
                     .rev()
                     .find_map(|i| match self.contents.entries.get(i) {
@@ -7246,7 +7711,9 @@ impl Sidebar {
             .iter()
             .enumerate()
             .filter_map(|(ix, entry)| match entry {
-                ListEntry::Thread(_) | ListEntry::Terminal(_) => Some(ix),
+                ListEntry::Thread(_) | ListEntry::Terminal(_) | ListEntry::QueryThread(_) => {
+                    Some(ix)
+                }
                 _ => None,
             })
             .collect();
@@ -7302,6 +7769,11 @@ impl Sidebar {
                 let metadata = terminal.metadata.clone();
                 let workspace = terminal.workspace.clone();
                 self.activate_terminal_entry(metadata, workspace, true, window, cx);
+            }
+            ListEntry::QueryThread(query_thread) => {
+                let metadata = query_thread.metadata.clone();
+                let workspace = query_thread.workspace.clone();
+                self.activate_query_thread_in_workspace(&workspace, metadata, true, window, cx);
             }
             ListEntry::ProjectHeader { .. } => {}
         }
@@ -7978,6 +8450,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::rename_selected_thread))
             .on_action(cx.listener(Self::new_thread_in_group))
             .on_action(cx.listener(Self::new_terminal_thread))
+            .on_action(cx.listener(Self::new_query_thread))
             .on_action(cx.listener(Self::toggle_archive))
             .on_action(cx.listener(Self::focus_sidebar_filter))
             .on_action(cx.listener(Self::on_toggle_thread_switcher))
