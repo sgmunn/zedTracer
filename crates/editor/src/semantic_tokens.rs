@@ -568,7 +568,7 @@ mod tests {
             LanguageConfig {
                 name: "Query".into(),
                 matcher: LanguageMatcher {
-                    path_suffixes: vec!["qry".to_string()],
+                    path_suffixes: vec!["qry".into()],
                     ..Default::default()
                 }
                 .into(),
