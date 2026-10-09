@@ -26,6 +26,7 @@ kusto_client.workspace = true
 kusto_results.workspace = true
 language.workspace = true
 log.workspace = true
+lsp.workspace = true
 markdown.workspace = true
 menu.workspace = true
 multi_buffer.workspace = true
@@ -49,6 +50,7 @@ editor = { workspace = true, features = ["test-support"] }
 investigation.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 language = { workspace = true, features = ["test-support"] }
+lsp = { workspace = true, features = ["test-support"] }
 picker = { workspace = true, features = ["test-support"] }
 project = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }

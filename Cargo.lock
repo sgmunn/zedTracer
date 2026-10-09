@@ -9475,6 +9475,7 @@ dependencies = [
  "kusto_results",
  "language",
  "log",
+ "lsp",
  "markdown",
  "menu",
  "multi_buffer",

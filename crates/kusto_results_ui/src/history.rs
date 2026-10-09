@@ -167,6 +167,18 @@ async fn load_rows(fs: &dyn Fs) -> Vec<Row> {
 /// What a query with nothing in it is called.
 pub(crate) const NO_QUERY_TEXT: &str = "(no query text)";
 
+/// A line of code without the `cluster('…').database('…').` that a copy of a query puts in front
+/// of a name, which says nothing about what the query is.
+fn without_qualification(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("cluster(") else {
+        return line;
+    };
+    let Some((_, rest)) = rest.split_once(").database(") else {
+        return line;
+    };
+    rest.split_once(").").map_or(line, |(_, name)| name)
+}
+
 /// What tells a query apart in the list: the comments it starts with, which people write for that
 /// purpose, then its first line of code. Directives that say where it runs are not comments to
 /// read.
@@ -182,7 +194,7 @@ pub(crate) fn title(query: &str) -> String {
                 }
             }
             None => {
-                code = Some(line);
+                code = Some(without_qualification(line));
                 break;
             }
         }
@@ -630,6 +642,11 @@ mod tests {
             title("T\n// a later comment"),
             "T",
             "only comments at the start count"
+        );
+        assert_eq!(
+            title("cluster('help.kusto.windows.net').database('Samples').StormEvents\n| take 1"),
+            "StormEvents",
+            "the cluster and database a copy puts in front of a name are not what the query is"
         );
         assert_eq!(title("// only a note"), "only a note");
         assert_eq!(title("//\n"), "(no query text)");

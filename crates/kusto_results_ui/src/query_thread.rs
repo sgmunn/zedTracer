@@ -23,7 +23,8 @@ use workspace::Workspace;
 
 use crate::query_parameters::{SelectParameterProfile, select_thread_parameter_profile};
 use crate::run_query::{
-    CancelQuery, RunQuery, ShowResult, cancel_thread_query, run_thread_query, show_thread_result,
+    CancelQuery, CopyQuery, RunQuery, ShowResult, cancel_thread_query, copy_thread_query,
+    run_thread_query, show_thread_result,
 };
 
 const SAVE_DELAY: Duration = Duration::from_millis(500);
@@ -148,6 +149,12 @@ impl QueryThread {
         }
     }
 
+    fn copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            copy_thread_query(&workspace, &self.editor, window, cx);
+        }
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             cancel_thread_query(&workspace, &self.editor, cx);
@@ -180,6 +187,7 @@ impl Render for QueryThread {
             .size_full()
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| this.run(window, cx)))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this, _: &CopyQuery, window, cx| this.copy(window, cx)))
             .on_action(cx.listener(|this, action: &ShowResult, window, cx| {
                 this.show_result(action, window, cx)
             }))
@@ -303,6 +311,23 @@ mod tests {
         assert_eq!(
             fs.load(path).await.expect("the file is there"),
             "StormEvents\n| take 5"
+        );
+    }
+
+    #[gpui::test]
+    async fn copying_from_a_thread_copies_the_query_of_that_thread(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let thread = open(&workspace, "one", cx).await;
+        write(&thread, "Traces\n| take 1", cx);
+
+        thread.update_in(cx, |thread, window, cx| thread.copy(window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nTraces\n| take 1"
+            )
         );
     }
 

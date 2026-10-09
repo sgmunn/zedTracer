@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use editor::Editor;
 use fs::Fs;
@@ -19,8 +19,9 @@ use gpui::{
 use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, HistoryLimits, KustoClient,
-    QueryRequest, RUN_LOG_FILE, RunRecord, TokenProvider, append_record, connection_for_selection,
-    parameters_for_query, resolve_query_at,
+    Qualified, QueryRequest, RUN_LOG_FILE, RunRecord, TokenProvider, append_record,
+    connection_for_selection, declared_parameters, parameters_for_query, portable_query,
+    resolve_query_at,
 };
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
@@ -30,6 +31,7 @@ use settings::{KustoResultsLocation, RegisterSetting, Settings, SettingsStore};
 use workspace::notifications::{DetachAndPromptErr as _, NotificationId};
 use workspace::{OpenOptions, OpenVisible, Toast, Workspace};
 
+use crate::qualify_query;
 use crate::query_parameters::{self, ParameterFiles};
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsFile;
@@ -40,7 +42,11 @@ actions!(
         /// Runs the selected text, or the query around the cursor, on the configured cluster.
         RunQuery,
         /// Cancels the running query around the cursor, or the newest running query.
-        CancelQuery
+        CancelQuery,
+        /// Copies the query around the cursor so that it means the same wherever it is pasted:
+        /// its tables and functions qualified with the cluster and database, and its parameters
+        /// given the values they would run with.
+        CopyQuery
     ]
 );
 
@@ -159,6 +165,12 @@ pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         let editor = workspace.active_item_as::<Editor>(cx);
         cancel_query(workspace, &runs, editor, cx)
     });
+    workspace.register_action(|workspace, _: &CopyQuery, window, cx| {
+        match workspace.active_item_as::<Editor>(cx) {
+            Some(editor) => copy_query(workspace, &editor, window, cx),
+            None => workspace.show_error(anyhow!("Open a Kusto query to copy it."), cx),
+        }
+    });
     workspace.register_action(|_, action: &CopyClientRequestId, _, cx| {
         copy_client_request_id(&action.id, cx)
     });
@@ -199,6 +211,65 @@ fn runs_of(workspace: &Entity<Workspace>, cx: &mut App) -> Entity<QueryRuns> {
 
 fn copy_client_request_id(id: &str, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
+}
+
+/// Copies the query around the cursor of a thread's editor, which is in no pane.
+pub(crate) fn copy_thread_query(
+    workspace: &Entity<Workspace>,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace.update(cx, |workspace, cx| {
+        copy_query(workspace, editor, window, cx)
+    });
+}
+
+fn copy_query(
+    workspace: &mut Workspace,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(query) = editor.update(cx, |editor, cx| query_to_run(editor, cx)) else {
+        workspace.show_error(anyhow!("There is no query at the cursor."), cx);
+        return;
+    };
+    let files = {
+        let project = workspace.project().clone();
+        editor.update(cx, |editor, cx| {
+            ParameterFiles::of_editor(editor, project.read(cx), cx)
+        })
+    };
+    let server = qualify_query::language_server(workspace.project().read(cx), cx);
+    let fs = workspace.app_state().fs.clone();
+    cx.spawn_in(window, async move |workspace, cx| {
+        let text = async {
+            let values = parameters_of_query(fs.as_ref(), &files, &query.text).await?;
+            let qualified = qualify_query::qualify(server, &query.text, &query.connection).await;
+            Ok::<_, anyhow::Error>(portable_query(
+                &query.text,
+                &query.connection,
+                &values,
+                qualified.as_ref(),
+            ))
+        }
+        .await;
+        workspace
+            .update(cx, |workspace, cx| match text {
+                Ok(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    workspace.show_toast(
+                        Toast::new(NotificationId::unique::<CopyQuery>(), "Copied the query")
+                            .autohide(),
+                        cx,
+                    );
+                }
+                Err(error) => workspace.show_error(error, cx),
+            })
+            .log_err();
+    })
+    .detach();
 }
 
 /// Shows a result that a lens in a thread's editor names, in a tab like the thread's own runs.
@@ -502,6 +573,7 @@ fn launch_run(
     let database = spec.connection.database.clone().context(
         "This query has no database. Add // :setDefaultDb(\"…\") above it, or set `kusto.database` in your settings.",
     )?;
+    let connection = spec.connection.clone();
     let query = spec.query;
     let parameter_source = spec.parameters;
     let destination = spec.destination;
@@ -547,6 +619,12 @@ fn launch_run(
 
     let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let log_lock = runs.read(cx).log_lock.clone();
+    let server = qualify_query::language_server(workspace.project().read(cx), cx);
+    let qualified = cx.background_spawn({
+        let query = request.query.clone();
+        let connection = connection.clone();
+        async move { qualify_query::qualify(server, &query, &connection).await }
+    });
     let task = cx.spawn_in(window, {
         let runs = runs.downgrade();
         let request = request.clone();
@@ -576,9 +654,16 @@ fn launch_run(
 
             let parameters = match &parameter_source {
                 ParameterSource::Profiles(files) => {
-                    parameters_of_run(fs.as_ref(), files, &request).await
+                    parameters_of_query(fs.as_ref(), files, &request.query).await
                 }
-                ParameterSource::Values(values) => Ok(values.clone()),
+                ParameterSource::Values(values) => {
+                    let declared = declared_parameters(&request.query);
+                    Ok(values
+                        .iter()
+                        .filter(|(name, _)| declared.contains(name))
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect())
+                }
             };
             let request = QueryRequest {
                 parameters: parameters.as_ref().cloned().unwrap_or_default(),
@@ -591,6 +676,8 @@ fn launch_run(
                     save_run(
                         client,
                         request,
+                        connection,
+                        qualified,
                         fs.clone(),
                         run_uuid,
                         cx.background_executor().clone(),
@@ -638,14 +725,14 @@ fn launch_run(
 }
 
 /// The values for the parameters the query declares, from the active profile of the file that applies.
-async fn parameters_of_run(
+async fn parameters_of_query(
     fs: &dyn Fs,
     files: &ParameterFiles,
-    request: &QueryRequest,
+    query: &str,
 ) -> Result<BTreeMap<String, String>> {
     let loaded = query_parameters::load(fs, files).await?;
     Ok(parameters_for_query(
-        &request.query,
+        query,
         loaded.profiles.active_profile(),
     ))
 }
@@ -770,17 +857,28 @@ struct SavedRun {
     duration_ms: u64,
 }
 
-/// Runs the query and writes its result to the history folder.
+/// Runs the query and writes its result to the history folder. The file keeps the query as it is
+/// copied, which says where it ran and with what values, and not as it was written. The language
+/// server was asked to qualify it when the run started, so its answer is waiting by now.
 async fn save_run(
     client: Arc<KustoClient>,
     request: QueryRequest,
+    connection: Connection,
+    qualified: Task<Option<Qualified>>,
     fs: Arc<dyn Fs>,
     run_uuid: uuid::Uuid,
     executor: BackgroundExecutor,
 ) -> Result<SavedRun> {
     let (json, rows, duration_ms) = executor
         .spawn(async move {
-            let result = client.execute(&request).await?;
+            let mut result = client.execute(&request).await?;
+            let qualified = qualified.await;
+            result.query = Some(portable_query(
+                &request.query,
+                &connection,
+                &request.parameters,
+                qualified.as_ref(),
+            ));
             let started = std::time::Instant::now();
             let json = result.to_json()?;
             log::info!("kusto: serialised the result in {:?}", started.elapsed());
@@ -908,6 +1006,7 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     use fs::FakeFs;
+    use futures::StreamExt as _;
     use futures::future::BoxFuture;
     use gpui::{BorrowAppContext as _, Focusable as _, Global, TestAppContext};
     use http_client::{AsyncBody, FakeHttpClient, Response};
@@ -1834,6 +1933,237 @@ pub(crate) mod tests {
         assert!(panel.read_with(cx, |panel, _| panel.shown_error().is_some()));
     }
 
+    const WITH_CONNECTION_COMMENT_TAKE_1: &str = "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nStormEvents\n| take 1";
+
+    fn copy(
+        workspace: &Entity<Workspace>,
+        editor: &Entity<Editor>,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        workspace.update_in(cx, |workspace, window, cx| {
+            copy_query(workspace, editor, window, cx)
+        });
+        cx.run_until_parked();
+    }
+
+    fn clipboard_text(cx: &mut gpui::VisualTestContext) -> Option<String> {
+        cx.read_from_clipboard().and_then(|item| item.text())
+    }
+
+    #[gpui::test]
+    async fn copying_a_query_says_where_it_runs_when_no_server_qualified_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        copy(&workspace, &editor, cx);
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(WITH_CONNECTION_COMMENT_TAKE_1)
+        );
+    }
+
+    #[gpui::test]
+    async fn a_copied_query_has_the_values_of_the_active_profile_for_its_parameters(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml":
+                "active: B\nprofiles:\n  A:\n    raid: from-a\n  B:\n    raid: from-b\n" } }),
+        )
+        .await;
+        copy(&workspace, &editor, cx);
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = 'from-b';\nStormEvents\n| where Id == raid"
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn a_run_keeps_the_values_of_its_parameters_in_the_query_of_the_file(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml":
+                "active: B\nprofiles:\n  B:\n    raid: from-b\n" } }),
+        )
+        .await;
+        use_editor_tabs(cx);
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("a results tab");
+        let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
+        assert_eq!(
+            result.query.as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = 'from-b';\nStormEvents\n| where Id == raid"
+            )
+        );
+        let body = query_body(&sent).await;
+        assert_eq!(
+            body["csl"],
+            DECLARING.trim_end(),
+            "the service still gets the query as written, with native parameters"
+        );
+        assert_eq!(
+            result
+                .parameters
+                .as_ref()
+                .and_then(|values| values.get("raid")),
+            Some(&json!("from-b")),
+            "the values are still kept beside it"
+        );
+    }
+
+    fn kusto_language() -> Arc<language::Language> {
+        Arc::new(language::Language::new(
+            language::LanguageConfig {
+                name: "Kusto".into(),
+                matcher: language::LanguageMatcher {
+                    path_suffixes: vec!["kql".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        ))
+    }
+
+    /// A Kusto language server that answers `kusto.qualifyQuery` by putting a cluster and database
+    /// in front of the query, and records what it was asked.
+    async fn with_qualifying_server(
+        workspace: &Entity<Workspace>,
+        complete: bool,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Arc<Mutex<Vec<serde_json::Value>>> {
+        let asked: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let registry = workspace.read_with(cx, |workspace, cx| {
+            workspace.project().read(cx).languages().clone()
+        });
+        registry.add(kusto_language());
+        let mut servers = registry.register_fake_lsp(
+            "Kusto",
+            language::FakeLspAdapter {
+                name: "kusto-lsp",
+                initializer: Some(Box::new({
+                    let asked = asked.clone();
+                    move |server| {
+                        let asked = asked.clone();
+                        server.set_request_handler::<lsp::request::ExecuteCommand, _, _>(
+                            move |params, _| {
+                                let asked = asked.clone();
+                                async move {
+                                    let question = params.arguments[0].clone();
+                                    let text = question["text"].as_str().unwrap_or_default().to_string();
+                                    asked.lock().expect("test lock").push(question);
+                                    Ok(Some(json!({
+                                        "text": if complete {
+                                            format!("cluster('help.kusto.windows.net').database('Samples').{text}")
+                                        } else {
+                                            text
+                                        },
+                                        "complete": complete,
+                                    })))
+                                }
+                            },
+                        );
+                    }
+                })),
+                ..Default::default()
+            },
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        servers.next().await.expect("the language server starts");
+        cx.run_until_parked();
+        asked
+    }
+
+    #[gpui::test]
+    async fn the_language_server_qualifies_the_query_that_is_copied(cx: &mut TestAppContext) {
+        let (workspace, editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let asked = with_qualifying_server(&workspace, true, cx).await;
+
+        copy(&workspace, &editor, cx);
+
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some("cluster('help.kusto.windows.net').database('Samples').StormEvents\n| take 1"),
+            "the names are qualified, so there is no comment about where it ran"
+        );
+        assert_eq!(
+            asked.lock().expect("test lock").as_slice(),
+            [json!({
+                "text": "StormEvents\n| take 1",
+                "cluster": "https://help.kusto.windows.net",
+                "database": "Samples",
+            })]
+        );
+    }
+
+    #[gpui::test]
+    async fn a_server_that_could_not_qualify_leaves_the_comment_about_where_it_ran(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        with_qualifying_server(&workspace, false, cx).await;
+
+        copy(&workspace, &editor, cx);
+
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(WITH_CONNECTION_COMMENT_TAKE_1)
+        );
+    }
+
+    #[gpui::test]
+    async fn the_query_of_a_run_is_qualified_by_the_language_server_too(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
+        use_editor_tabs(cx);
+        with_qualifying_server(&workspace, true, cx).await;
+
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("a results tab");
+        let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
+        assert_eq!(
+            result.query.as_deref(),
+            Some("cluster('help.kusto.windows.net').database('Samples').StormEvents\n| take 1")
+        );
+        let body = query_body(&sent).await;
+        assert_eq!(
+            body["csl"], "StormEvents\n| take 1",
+            "the service gets the query as it was written"
+        );
+    }
+
+    #[gpui::test]
+    async fn copying_with_no_query_at_the_cursor_says_so(cx: &mut TestAppContext) {
+        let (workspace, editor, _sent, cx) = setup_with(cx, 200, ANSWER, "// only a note\n").await;
+        copy(&workspace, &editor, cx);
+        assert_eq!(clipboard_text(cx), None);
+    }
+
     #[gpui::test]
     async fn copying_a_client_request_id_puts_it_on_the_clipboard(cx: &mut TestAppContext) {
         cx.update(|cx| copy_client_request_id("ZedTracer;abc", cx));
@@ -1959,7 +2289,11 @@ pub(crate) mod tests {
             })
             .expect("a results tab");
         let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
-        assert_eq!(result.query.as_deref(), Some("StormEvents\n| take 1"));
+        assert_eq!(
+            result.query.as_deref(),
+            Some(WITH_CONNECTION_COMMENT_TAKE_1),
+            "the file keeps the query as it is copied, which says where it ran"
+        );
         assert_eq!(result.cluster.as_deref(), Some("help.kusto.windows.net"));
         assert_eq!(result.database.as_deref(), Some("Samples"));
         assert!(
