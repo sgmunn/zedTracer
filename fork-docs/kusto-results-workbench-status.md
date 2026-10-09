@@ -15,6 +15,7 @@ Bring the results side of the KustoTraceTools VS Code fork (`/Users/gregm/Projec
 | `kusto-results-workbench-design.md` | Goals, conceptual model, wireframes W-1..W-12, delivery phases A to F. |
 | `kusto-results-workbench-architecture.md` | Part 1: crate split, core crate contents, decisions AD-1..AD-9, measured baseline, known gaps. |
 | `kusto-results-workbench-architecture-2-spikes.md` | Part 2: spike results S1..S6 and UI decisions UI-1..UI-7. |
+| `kusto-code-references-design.md` | From a trace row to the code that wrote it, resolved on demand from local repositories (no stored index); what was measured, the options, and the design of `crates/kusto_code`. |
 | `samples/README.md` | Fixtures and expected-results files; `generate_samples.py` regenerates them. |
 
 ## Code
