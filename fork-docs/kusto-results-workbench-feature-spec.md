@@ -657,7 +657,7 @@ An investigation is a handful of related queries. Today they live in a file the 
 
 **Status.** THR-1 to THR-7 are built, and THR-V1 to THR-V4 are tests. `QueryThread` (`query_thread.rs`) is the editor, `QueryThreadMetadataStore` (`agent_ui`) keeps the title and the project folders, `agent_panel/query_threads.rs` shows the editor as a surface of the agent panel, and the sidebar lists the thread with a database icon, a close button, a rename in the right-click menu and a match in the search box. An editor in the panel has no workspace, which a lens click needs, so the thread gives its editor one (`Editor::set_workspace`) and answers the two lens actions that the workspace would answer from the active pane item: Results and Params.
 
-Seen in a real window: completion works in a thread's editor, lens clicks work, and the Results lens sits next to Run. Fixed in the language server with tests but not yet seen in a window: the row count on the Results lens (`Results (1,240 rows)`), and the Params lens naming the project's active profile for a thread's file.
+Seen in a real window: completion works in a thread's editor, lens clicks work, the Results lens sits next to Run and says how many rows the result has (`Results (1,240 rows)`), and the Params lens names the project's active profile for a thread's file.
 
 **Not built, or not settled.** This is the one list; the status document and the README point here.
 
