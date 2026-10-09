@@ -586,15 +586,18 @@ class CodeLensTest(unittest.TestCase):
 
         first = self.titles(lenses, 0)
         self.assertEqual(first[0], "▶ Run")
-        self.assertEqual(first[1], "Results", "next to Run, which the long lenses after it cannot push away")
+        self.assertEqual(
+            first[1], "Results (1,240 rows)",
+            "next to Run, which the long lenses after it cannot push away",
+        )
         self.assertTrue(first[2].startswith("Last run: "), first)
-        self.assertTrue(first[2].endswith("took 1.8 s, 1,240 rows"), first)
+        self.assertTrue(first[2].endswith("took 1.8 s"), first)
         self.assertEqual(first[3:], ["Copy CID"])
         self.assertEqual(self.titles(lenses, 3), ["▶ Run"], "another query has no history")
 
         by_title = {lens["command"]["title"]: lens["command"] for lens in lenses}
         self.assertEqual(
-            by_title["Results"]["arguments"],
+            by_title["Results (1,240 rows)"]["arguments"],
             ["kusto::ShowResult", {"path": "/history/a.ktt"}],
         )
         self.assertEqual(
@@ -639,13 +642,30 @@ class CodeLensTest(unittest.TestCase):
         self.record("started", "id-2", "T1\n| take 1")
         first = self.titles(self.lenses(), 0)
         self.assertRegex(first[0], SPINNING)
-        self.assertEqual(first[1:3], ["Cancel", "Results"])
+        self.assertEqual(first[1:3], ["Cancel", "Results (7 rows)"])
         self.assertTrue(first[3].startswith("Last run: "), first)
+
+    def test_one_row_is_not_plural_and_a_result_without_a_count_has_none(self):
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=1, path="/history/a.ktt")
+        self.assertEqual(self.titles(self.lenses(), 0)[1], "Results (1 row)")
+
+        self.record("finished", "id-2", "T1\n| take 1", durationMs=900, path="/history/b.ktt")
+        titles = self.titles(self.lenses(), 0)
+        self.assertEqual(titles[1], "Results")
+        self.assertTrue(titles[2].endswith("took 900 ms"), titles)
+
+    def test_the_rows_stay_on_the_last_run_lens_when_the_run_left_no_result_to_show(self):
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7)
+        titles = self.titles(self.lenses(), 0)
+        self.assertTrue(titles[1].startswith("Last run: "), titles)
+        self.assertTrue(titles[1].endswith("took 900 ms, 7 rows"), titles)
+        self.assertFalse([title for title in titles if title.startswith("Results")], titles)
 
     def test_a_failed_last_run_has_no_results_lens(self):
         self.record("started", "id-1", "T1\n| take 1")
         self.record("failed", "id-1", "T1\n| take 1", message="bad table")
-        self.assertNotIn("Results", self.titles(self.lenses(), 0))
+        titles = self.titles(self.lenses(), 0)
+        self.assertFalse([title for title in titles if title.startswith("Results")], titles)
 
     def test_the_server_asks_for_fresh_lenses_when_a_run_ends(self):
         self.record("started", "id-1", "T1\n| take 1")
@@ -658,7 +678,8 @@ class CodeLensTest(unittest.TestCase):
             self.request(8, "textDocument/codeLens", {"textDocument": {"uri": URI}}), 0
         )
         self.assertEqual(titles[0], "▶ Run")
-        self.assertTrue(titles[2].endswith("took 500 ms, 3 rows"), titles)
+        self.assertEqual(titles[1], "Results (3 rows)")
+        self.assertTrue(titles[2].endswith("took 500 ms"), titles)
 
     def test_the_running_lens_shows_the_elapsed_time(self):
         self.record("started", "id-1", "T1\n| take 1", minutes_ago=2)
@@ -701,8 +722,8 @@ class CodeLensTest(unittest.TestCase):
         self.record("cancelled", "id-2", "T1\n| take 1")
         titles = self.titles(self.lenses(), 0)
         self.assertEqual(titles[0], "▶ Run")
-        self.assertEqual(titles[1], "Results")
-        self.assertTrue(titles[2].endswith("took 900 ms, 7 rows"), titles)
+        self.assertEqual(titles[1], "Results (7 rows)")
+        self.assertTrue(titles[2].endswith("took 900 ms"), titles)
 
     def test_a_run_that_never_reported_an_end_stops_counting_as_running(self):
         self.record("started", "id-1", "T1\n| take 1", minutes_ago=60)

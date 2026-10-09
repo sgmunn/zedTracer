@@ -1,8 +1,8 @@
 using System.Globalization;
 
 /// <summary>
-/// The lenses above each query: Run, or Running and Cancel, then Results when the last run left
-/// one, and what the last run of the same query did. A lens that has to do something in the editor names one of Zed's actions through
+/// The lenses above each query: Run, or Running and Cancel, then Results (with its row count) when
+/// the last run left one, and what the last run of the same query did. A lens that has to do something in the editor names one of Zed's actions through
 /// `zed.dispatchAction`; the rest only show text.
 /// </summary>
 internal static class CodeLenses
@@ -49,8 +49,8 @@ internal static class CodeLenses
             }
             // Next to Run, so that it stays within reach when the lenses after it, the connection
             // above all, are longer than the editor is wide.
-            if (state?.Last is { Failure: null, ResultPath: { } path })
-                Add("Results", DispatchActionCommand, "kusto::ShowResult", new { path });
+            if (state?.Last is { Failure: null, ResultPath: { } path } shown)
+                Add(ResultsTitle(shown), DispatchActionCommand, "kusto::ShowResult", new { path });
             Add(Describe(connection), ConnectionCommand);
             if (schemaOf(connection) is { } schema)
             {
@@ -68,7 +68,8 @@ internal static class CodeLenses
                 }
                 else
                 {
-                    Add(Describe(last), NoopCommand);
+                    // The rows are on the Results lens when there is one.
+                    Add(Describe(last, withRows: last.ResultPath is null), NoopCommand);
                 }
                 Add("Copy CID", DispatchActionCommand, "kusto::CopyClientRequestId", new { id = last.RunId });
             }
@@ -141,7 +142,14 @@ internal static class CodeLenses
             ? "no cluster"
             : connection.Database is { } database ? $"{host} / {database}" : $"{host} / no database";
 
-    private static string Describe(FinishedRun run)
+    /// <summary>`Results (1,240 rows)`: what clicking shows, and how much of it there is.</summary>
+    public static string ResultsTitle(FinishedRun run) =>
+        run.Rows is { } rows ? $"Results ({RowCount(rows)})" : "Results";
+
+    private static string RowCount(long rows) =>
+        $"{rows.ToString("N0", CultureInfo.InvariantCulture)} {(rows == 1 ? "row" : "rows")}";
+
+    private static string Describe(FinishedRun run, bool withRows)
     {
         var parts = new List<string>();
         if (run.StartedAt is { } started)
@@ -150,8 +158,8 @@ internal static class CodeLenses
             parts.Add(milliseconds < 1000
                 ? $"took {milliseconds} ms"
                 : $"took {milliseconds / 1000.0:0.0} s");
-        if (run.Rows is { } rows)
-            parts.Add($"{rows.ToString("N0", CultureInfo.InvariantCulture)} {(rows == 1 ? "row" : "rows")}");
+        if (withRows && run.Rows is { } rows)
+            parts.Add(RowCount(rows));
         return "Last run: " + string.Join(", ", parts);
     }
 
