@@ -1128,6 +1128,30 @@ class ParameterLensTest(unittest.TestCase):
         self.open_document(self.DECLARING)
         self.assertEqual(self.title(), "Params: Mine")
 
+    def outside_the_project(self):
+        """Opens documents from a folder the project does not contain, as a query thread's file is."""
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        folder = Path(outside.name).resolve()
+        self.uri = (folder / "thread.kql").as_uri()
+        return folder
+
+    def test_a_file_outside_the_project_uses_the_projects_profiles(self):
+        self.outside_the_project()
+        self.write(self.shared, self.PROFILES)
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: A")
+
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: B"))
+        self.assertEqual(self.title_becomes("Params: B"), "Params: B", "a change is followed")
+
+    def test_a_file_beside_a_file_outside_the_project_still_comes_first(self):
+        folder = self.outside_the_project()
+        self.write(self.shared, self.PROFILES)
+        self.write(folder / "thread.parameters.yaml", "active: Mine\nprofiles:\n  Mine:\n    raid: x\n")
+        self.open_document(self.DECLARING)
+        self.assertEqual(self.title(), "Params: Mine")
+
     def test_a_file_that_cannot_be_read_is_named(self):
         self.write(self.shared, "active: [")
         self.open_document(self.DECLARING)

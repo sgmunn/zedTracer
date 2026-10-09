@@ -44,7 +44,10 @@ internal static partial class QueryParameters
         documentUri.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
         || documentUri.EndsWith(".yml", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The files to look in for a document, nearest first.</summary>
+    /// <summary>
+    /// The files to look in for a document, nearest first: the `.parameters.yaml` beside it, and the
+    /// project's `.kusto/parameters.yaml`, from the workspace folder that holds it or else the first.
+    /// </summary>
     public static IReadOnlyList<string> FilesFor(string documentUri, IReadOnlyList<string> workspaceFolders)
     {
         var files = new List<string>();
@@ -57,7 +60,10 @@ internal static partial class QueryParameters
             .Where(folder => path.StartsWith(folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
                 StringComparison.Ordinal))
             .OrderByDescending(folder => folder.Length)
-            .FirstOrDefault();
+            .FirstOrDefault()
+            // A file outside every folder, such as a query thread's, is still served for the project,
+            // and the editor takes the profiles of the project's first folder for it too.
+            ?? workspaceFolders.FirstOrDefault();
         if (folder is not null)
             files.Add(Path.Combine(folder, ".kusto", "parameters.yaml"));
         return files;
