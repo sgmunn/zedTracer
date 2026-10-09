@@ -165,8 +165,12 @@ impl ParameterFiles {
             sidecar: file
                 .as_local()
                 .and_then(|file| sidecar_path(&file.abs_path(cx))),
+            // A file outside the project, such as a thread's, is in a worktree of its own whose
+            // root is the file, so the project's profiles are in its first visible worktree.
             workspace: project
                 .worktree_for_id(file.worktree_id(cx), cx)
+                .filter(|worktree| worktree.read(cx).is_visible())
+                .or_else(|| project.visible_worktrees(cx).next())
                 .map(|worktree| worktree.read(cx).abs_path().join(WORKSPACE_PARAMETERS_PATH)),
         }
     }
@@ -710,6 +714,45 @@ mod tests {
         let made = ParameterProfiles::parse(&text).expect("it is a valid file");
         let shared = ParameterProfiles::parse(SHARED).expect("a valid file");
         assert_eq!(made, shared);
+    }
+
+    #[gpui::test]
+    async fn a_file_outside_the_project_finds_the_projects_profiles(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            "",
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml": SHARED } }),
+        )
+        .await;
+        fs_of(&workspace, cx)
+            .as_fake()
+            .insert_tree("/elsewhere", json!({ "thread.kql": DECLARING }))
+            .await;
+        let project = workspace.read_with(cx, |workspace, _| workspace.project().clone());
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer("/elsewhere/thread.kql", cx)
+            })
+            .await
+            .expect("the file opens");
+        let editor = workspace.update_in(cx, |_, window, cx| {
+            cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx))
+        });
+
+        let files = editor.read_with(cx, |editor, cx| {
+            ParameterFiles::of_editor(editor, project.read(cx), cx)
+        });
+
+        assert_eq!(
+            files.workspace,
+            Some(PathBuf::from("/root/.kusto/parameters.yaml"))
+        );
+        assert_eq!(
+            files.sidecar,
+            Some(PathBuf::from("/elsewhere/thread.parameters.yaml"))
+        );
     }
 
     #[gpui::test]
