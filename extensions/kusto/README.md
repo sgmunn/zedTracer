@@ -303,12 +303,12 @@ Turn code lenses on in Zed settings (they are off by default):
 { "code_lens": "on" }
 ```
 
-Above each query (a run of non-blank lines) the server shows **▶ Run**, which runs that query. While the
+Above each query (a run of non-blank lines) the lenses are on two lines. The first line is what to do. It starts with **▶ Run**, which runs that query. While the
 query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second
 until nothing is running) and **Cancel** instead. Once the query has been run and left a result, **Results**
 comes straight after them, with the number of rows the result has, for example `Results (1,240 rows)` (it shows that
-run's saved result in the Results panel, or in a tab in a query thread). It is placed ahead of the connection, schema and parameter lenses so that it stays in reach when
-those are longer than the editor is wide. After them, the same lens row shows what the last run did, for example
+run's saved result in the Results panel, or in a tab in a query thread), and a query that declares parameters ends the line with **Params**.
+The second line is where the query runs and what it did: the connection, the schema lens, then what the last run did, for example
 `Last run: 10:42:11, took 1.8 s`, and **Copy CID** (copies the run's client request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
 
@@ -324,6 +324,9 @@ A lens acts through `zed.dispatchAction`, a lens command this fork of Zed handle
 arguments are the name of a Zed action (`kusto::RunQuery`, `kusto::CancelQuery`, `kusto::ShowResult`,
 `kusto::CopyClientRequestId`, `kusto::SelectParameterProfile`) and, optionally, the data the action takes. Zed moves the cursor to the lens
 before it runs the action, so `RunQuery` and `CancelQuery` act on that query.
+
+A lens is on the first line unless its `data` says `{"zedLine": 1}` (a number for each further line), which this fork of Zed reads to
+put it on a line below. The lenses of one line are joined with ` | `, so the server decides how many lines there are and what goes on each.
 
 After updating, run `./install-server.sh`, then **Zed: Rebuild Dev Extension**, then restart Zed.
 
