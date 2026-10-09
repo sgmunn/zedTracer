@@ -496,6 +496,7 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "jsonschema",
+ "kusto_results_ui",
  "language",
  "language_model",
  "language_models",
