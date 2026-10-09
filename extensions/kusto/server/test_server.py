@@ -2012,6 +2012,120 @@ class SchemaDiagnosticsTest(unittest.TestCase):
         self.assertEqual(cleared, [], "the open file was checked again against the new schema")
 
 
+class PortableQueryTest(unittest.TestCase):
+    """A copy of a query that finds its tables and functions wherever it is run."""
+
+    HOST = "help.kusto.windows.net"
+    ENTITIES = {
+        "Samples": [
+            ("Table", "StormEvents", "", "", "", "State:string, StartTime:datetime, DamageProperty:long"),
+            ("Function", "StatesOver", "", "(minimum:long)",
+             "{ StormEvents | summarize n = count() by State | where n > minimum }", ""),
+            ("Function", "Home", "", "()", "{ database('Samples') }", ""),
+        ]
+    }
+    PREFIX = "cluster('help.kusto.windows.net').database('Samples')."
+
+    def setUp(self):
+        self.clusters = []
+        self.process = None
+        self.next_request = 40
+
+    tearDown = SchemaTest.tearDown
+    fake = SchemaTest.fake
+    start = SchemaTest.start
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+
+    def begin(self, entities=None):
+        cluster = self.fake(["Samples"], entities or self.ENTITIES)
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"})
+        self.send(None, "initialized", {})
+        return cluster
+
+    def qualify(self, text, cluster="help", database="Samples", complete=True, timeout=15):
+        """The answer once the schema has arrived, which it does in the background."""
+        deadline = time.time() + timeout
+        while True:
+            self.next_request += 1
+            request_id = self.next_request
+            self.send(request_id, "workspace/executeCommand", {
+                "command": "kusto.qualifyQuery",
+                "arguments": [{"text": text, "cluster": cluster, "database": database}],
+            })
+            result = self.receive_where(
+                lambda message: message.get("id") == request_id and "result" in message
+            )["result"]
+            if result["complete"] == complete or time.time() > deadline:
+                return result
+            time.sleep(0.1)
+
+    def test_a_table_of_the_database_gets_the_cluster_and_database(self):
+        self.begin()
+        result = self.qualify("StormEvents\n| where State == 'X'\n| take 1")
+        self.assertEqual(
+            result["text"],
+            f"{self.PREFIX}StormEvents\n| where State == 'X'\n| take 1",
+        )
+
+    def test_a_function_of_the_database_gets_them_too_wherever_it_is_called(self):
+        self.begin()
+        result = self.qualify("let n = 5;\nStatesOver(n)\n| union (StormEvents | take 1)")
+        self.assertEqual(
+            result["text"],
+            f"let n = 5;\n{self.PREFIX}StatesOver(n)\n| union ({self.PREFIX}StormEvents | take 1)",
+        )
+
+    def test_what_comes_after_a_dot_is_left_to_what_is_before_it(self):
+        self.begin()
+        result = self.qualify("Home().StormEvents | take 1")
+        self.assertEqual(result["text"], f"{self.PREFIX}Home().StormEvents | take 1")
+
+    def test_a_name_that_is_already_qualified_stays_as_it_is(self):
+        self.begin()
+        text = "cluster('help').database('Samples').StormEvents | take 1"
+        self.assertEqual(self.qualify(text)["text"], text)
+
+    def test_a_let_variable_or_a_column_with_the_name_of_a_table_is_not_a_table(self):
+        self.begin()
+        shadowed = "let StormEvents = datatable(a:int)[1];\nStormEvents | take 1"
+        self.assertEqual(self.qualify(shadowed)["text"], shadowed)
+        column = "datatable(StormEvents:string)['a'] | project StormEvents"
+        self.assertEqual(self.qualify(column)["text"], column)
+
+    def test_a_query_with_nothing_to_qualify_is_complete_and_unchanged(self):
+        self.begin()
+        result = self.qualify("print 1")
+        self.assertEqual(result, {"text": "print 1", "complete": True})
+
+    def test_a_control_command_is_left_alone(self):
+        self.begin()
+        result = self.qualify(".show tables")
+        self.assertEqual(result, {"text": ".show tables", "complete": True})
+
+    def test_without_the_schema_the_query_is_as_it_was_and_not_complete(self):
+        cluster = self.fake(["Samples"], self.ENTITIES)
+        cluster.stop()
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"})
+        self.send(None, "initialized", {})
+        result = self.qualify("StormEvents | take 1", complete=False, timeout=1)
+        self.assertEqual(result, {"text": "StormEvents | take 1", "complete": False})
+
+    def test_another_database_is_qualified_with_its_own_name(self):
+        cluster = self.fake(["Samples", "Other"], {
+            **self.ENTITIES,
+            "Other": [("Table", "Requests", "", "", "", "RequestId:guid")],
+        })
+        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"})
+        self.send(None, "initialized", {})
+        result = self.qualify("Requests | take 1", database="Other")
+        self.assertEqual(
+            result["text"],
+            "cluster('help.kusto.windows.net').database('Other').Requests | take 1",
+        )
+
+
 class SchemaCacheTest(SchemaTest):
     """Schema kept on disk: used at once, replaced from the cluster when old."""
 

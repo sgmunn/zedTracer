@@ -93,7 +93,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(", ":" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
-                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand } },
+                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand, PortableQuery.Command } },
                         hoverProvider = true,
                         semanticTokensProvider = new
                         {
@@ -175,6 +175,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "textDocument/semanticTokens/full":
                 return GetSemanticTokens(parameters);
             case "workspace/executeCommand":
+                if (parameters.TryGetProperty("command", out var portable)
+                    && portable.GetString() == PortableQuery.Command)
+                    return QualifyQuery(parameters);
                 // The lenses that only show text name a command so that Zed treats them as clickable.
                 if (parameters.TryGetProperty("command", out var command)
                     && command.GetString() == CodeLenses.RefreshSchemaCommand)
@@ -278,6 +281,34 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             schema.Defaults,
             query => QueryParameters.Describe(query, profiles),
             schema.StatusOf);
+    }
+
+    /// <summary>
+    /// `kusto.qualifyQuery` takes `{ text, cluster, database }` and answers `{ text, complete }`: the
+    /// query with the cluster and database written in front of the names that its own database has.
+    /// </summary>
+    private object? QualifyQuery(JsonElement parameters)
+    {
+        if (!parameters.TryGetProperty("arguments", out var arguments)
+            || arguments.ValueKind != JsonValueKind.Array || arguments.GetArrayLength() == 0
+            || arguments[0].ValueKind != JsonValueKind.Object)
+            return null;
+        string? Field(string name) =>
+            arguments[0].TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        var text = Field("text");
+        if (text is null)
+            return null;
+        var connection = new Connection(Field("cluster") ?? schema.Defaults.Cluster, Field("database") ?? schema.Defaults.Database);
+        if (connection.Host is not { } host || connection.Database is not { } database)
+            return new { text, complete = false };
+        var schemaIsLoaded = schema.IsLoaded(connection.Cluster, connection.Database);
+        if (!schemaIsLoaded)
+            // Not for this answer, which cannot wait for the network, but the next copy has it.
+            schema.EnsureReference(connection.Cluster, connection.Database);
+        var result = PortableQuery.Qualify(text, schema.GlobalsFor(connection), host, database, schemaIsLoaded);
+        return new { text = result.Text, complete = result.Complete };
     }
 
     /// <summary>Fetches the schema again, and says in a message in the editor how that went.</summary>
