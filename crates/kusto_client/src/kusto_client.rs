@@ -7,6 +7,7 @@
 mod directives;
 mod history;
 mod parameters;
+mod portable_query;
 mod query_text;
 mod response;
 mod run_log;
@@ -38,6 +39,9 @@ pub use history::{
 pub use parameters::{
     ParameterProfiles, Profile, WORKSPACE_PARAMETERS_PATH, declared_parameters,
     parameters_for_query, sidecar_path, template, with_active_profile,
+};
+pub use portable_query::{
+    Qualified, portable_query, with_connection_comment, with_parameter_values,
 };
 pub use query_text::{command_text, is_control_command, query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};

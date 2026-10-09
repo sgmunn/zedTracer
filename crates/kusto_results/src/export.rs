@@ -304,7 +304,7 @@ const BRACKETED_NAMES: &[&str] = &[
 
 /// A KQL string literal: single-quoted, or double-quoted when the text holds a single quote.
 /// Backslashes and control characters are escaped; other characters are kept as they are.
-fn string_literal(text: &str) -> String {
+pub fn string_literal(text: &str) -> String {
     let quote = if text.contains('\'') { '"' } else { '\'' };
     let mut literal = String::with_capacity(text.len() + 2);
     literal.push(quote);
