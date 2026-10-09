@@ -1,9 +1,11 @@
 using System.Globalization;
 
 /// <summary>
-/// The lenses above each query: Run, or Running and Cancel, then Results (with its row count) when
-/// the last run left one, and what the last run of the same query did. A lens that has to do something in the editor names one of Zed's actions through
-/// `zed.dispatchAction`; the rest only show text.
+/// The lenses above each query, on two lines. The first is what to do: Run, or Running and Cancel,
+/// then Results (with its row count) when the last run left one, and the parameter profile. The
+/// second is where the query runs and what the last run of the same query did. A lens that has to do
+/// something in the editor names one of Zed's actions through `zed.dispatchAction`; the rest only
+/// show text.
 /// </summary>
 internal static class CodeLenses
 {
@@ -35,8 +37,15 @@ internal static class CodeLenses
                 start = new { line = block.FirstLine, character = 0 },
                 end = new { line = block.FirstLine, character = 0 }
             };
-            void Add(string title, string command, params object[] arguments) =>
-                lenses.Add(new { range, command = new { title, command, arguments } });
+            // Zed puts a lens on the second line when its `data` says `zedLine: 1`.
+            var line = 0;
+            void Add(string title, string command, params object[] arguments)
+            {
+                var lensCommand = new { title, command, arguments };
+                lenses.Add(line == 0
+                    ? (object)new { range, command = lensCommand }
+                    : new { range, command = lensCommand, data = new { zedLine = line } });
+            }
 
             if (state?.Running is { } running)
             {
@@ -47,18 +56,19 @@ internal static class CodeLenses
             {
                 Add("▶ Run", DispatchActionCommand, "kusto::RunQuery");
             }
-            // Next to Run, so that it stays within reach when the lenses after it, the connection
-            // above all, are longer than the editor is wide.
+            // Next to Run, so that it stays within reach whatever the width of the editor.
             if (state?.Last is { Failure: null, ResultPath: { } path } shown)
                 Add(ResultsTitle(shown), DispatchActionCommand, "kusto::ShowResult", new { path });
+            if (parameters(block.Text) is { } parametersTitle)
+                Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
+
+            line = 1;
             Add(Describe(connection), ConnectionCommand);
             if (schemaOf(connection) is { } schema)
             {
                 // Zed asks the server to run this one, since it is not an action of the editor.
                 Add(SchemaTitle(schema, now), RefreshSchemaCommand, connection.Cluster ?? "", connection.Database ?? "");
             }
-            if (parameters(block.Text) is { } parametersTitle)
-                Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
 
             if (state?.Last is { } last)
             {

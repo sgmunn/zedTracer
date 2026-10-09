@@ -576,6 +576,32 @@ class CodeLensTest(unittest.TestCase):
         self.assertEqual(command["command"], "zed.dispatchAction")
         self.assertEqual(command["arguments"], ["kusto::RunQuery"])
 
+    def test_where_the_query_runs_and_the_last_run_are_on_a_second_line(self):
+        self.record("started", "id-1", "T1 | take 1")
+        self.record(
+            "finished", "id-1", "T1 | take 1",
+            durationMs=1840, rows=1240, path="/history/a.ktt",
+        )
+        lenses = self.lenses("T1\n| take 1\n")
+
+        def titles_on(display_line):
+            return [
+                lens["command"]["title"]
+                for lens in lenses
+                if (lens.get("data") or {}).get("zedLine", 0) == display_line
+            ]
+
+        self.assertEqual(titles_on(0), ["▶ Run", "Results (1,240 rows)"])
+        second = titles_on(1)
+        self.assertEqual(second[0], "help.kusto.windows.net / Samples")
+        self.assertTrue(second[1].startswith("↻ Schema: "), second)
+        self.assertTrue(second[2].startswith("Last run: "), second)
+        self.assertEqual(second[3:], ["Copy CID"])
+        self.assertEqual(
+            {lens["range"]["start"]["line"] for lens in lenses}, {0},
+            "both lines are above the first line of the query",
+        )
+
     def test_the_last_run_of_the_same_query_is_shown_even_when_it_was_reformatted(self):
         self.record("started", "id-1", "T1 | take 1")
         self.record(
