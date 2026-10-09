@@ -202,6 +202,27 @@ understood and repeated, so it needs nothing from the history:
 Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
 database. Files written before parameters were kept in them simply run without values.
 
+## Query threads
+
+A query thread keeps the queries of one investigation together without a file to name or a long file of
+unrelated queries. It is an entry in the Threads sidebar, beside agent threads and terminals, and the agent panel
+shows its query editor. Make one from the agent panel's new thread menu (**Kusto query**) or with `agent: new query thread`
+in the command palette; it is offered for local projects.
+
+The editor is an ordinary Kusto editor, with colours, completion, diagnostics and lenses, and holds as many queries as
+you write, separated by blank lines. F5 or Shift-Enter runs the query at the cursor, or the selection, and the result
+opens as a tab in the editor area, whatever `kusto.results_location` says, so a large trace gets the whole window.
+Each run opens its own tab, and the history, rerun and the lenses see it like any other run.
+
+The queries are a file, `<id>.kql` in the `kusto/threads` folder of Zed's data folder, saved half a second after you
+stop typing. A thread finds its parameter profiles beside that file (`<id>.parameters.yaml`) and in the project's
+`.kusto/parameters.yaml`. The default title is `Kusto query`; **Rename Title** in the right-click menu of its row changes it.
+Closing a thread (the button on its row, or the archive key) forgets it and leaves its file, so a query worth keeping
+is one you copy into a `.kql` file in the project.
+
+Not yet: a thread is not restored as the shown entry when Zed starts (click its row), and only the threads of projects
+that are open are listed.
+
 ## Schema from your clusters
 
 The server signs in with `az account get-access-token`, so run `az login`

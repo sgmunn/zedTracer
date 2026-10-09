@@ -1,6 +1,6 @@
 # Kusto Results Workbench: status and handoff
 
-Read this first in a new session. Last updated after the code lenses and per-query analysis. Everything is committed on `feature/kusto-syntax-spike`; `git log` shows it in logical commits.
+Read this first in a new session. Last updated after query threads (first slice). Everything is committed on `feature/kusto-syntax-spike`; `git log` shows it in logical commits.
 
 ## Goal
 
@@ -144,6 +144,17 @@ Per-query lenses above each blank-line-separated query, from the language server
 - **Actions** in `run_query.rs`: `kusto::CancelQuery` (cancels the newest running query at the cursor, else the newest run), `kusto::ShowResult { path }` (shows any saved result in the panel, or a tab), `kusto::CopyClientRequestId { id }`. Lenses that only show text name `kusto.noop`, which the server accepts, so that Zed makes them clickable.
 - Not built: Select, Copy and Format lenses (RUN-9), a lens for a query the server cannot tell apart from another with the same text, and two Zed windows writing the log at the same moment can lose a record.
 
+## Query threads (THR, first slice)
+
+A thread in the Threads sidebar whose surface in the agent panel is a Kusto query editor, with its results opening as tabs in the editor area (spec section 5.10). Decided with the user: the queries of a thread are a `.kql` file in the user data directory (a query worth keeping is moved into a project), and results always open as tabs whatever `kusto.results_location` says.
+
+- `crates/kusto_results_ui/src/query_thread.rs`: `QueryThread` is the editor over `<data dir>/kusto/threads/<id>.kql`, made empty on first use and opened with `Project::open_local_buffer`, so the file is in an invisible worktree and the editor registers it with the language server like any file (an `Editor` registers its visible buffers when it has a project). The editor is in no pane, so nothing would save it: the thread saves 500 ms after the last edit. Its view handles `kusto::RunQuery` and `kusto::CancelQuery`, which is what F5, Shift+Enter (the `.kql` extension gives the panel's editor those bindings) and the lenses dispatch.
+- `run_query.rs`: `runs_of` keeps each workspace's `QueryRuns` in a global, so a run from a thread shares the client, the tokens and the run log with every other run, and a run or a cancel can start from a given editor instead of the active item (`run_thread_query`, `cancel_thread_query`). `Destination::Tab` makes a result open as a tab. `query_parameters.rs`: `ParameterFiles::of_editor` takes the project's profile file from the first visible worktree when the file's own worktree is not visible (it was looked for at `<file>.kql/.kusto/parameters.yaml`); a file beside the thread's own is still found.
+- `crates/agent_ui`: `query_thread_metadata_store.rs` (table `sidebar_query_threads`: id, title, created time and the project folders; found by those folders and following them when they change; no remote connection), `agent_panel/query_threads.rs` (`new_query_thread`, `restore_query_thread`, `activate_query_thread`, `close_query_thread`, `rename_query_thread`; the panel code that is not in the new module is `BaseView::QueryThread`, `VisibleSurface::QueryThread` and the places that match on them), the action `agent::NewQueryThread`, and a Kusto query entry in the new thread menu. Offered for local projects only.
+- `crates/sidebar`: `ListEntry::QueryThread`, `ActiveEntry::QueryThread`, `RenameTarget::QueryThread`, a row with the `DatabaseZap` icon, search by title and worktree, close (hover button or archive key: the thread is forgotten and its file stays), Rename Title, and `NewQueryThread`.
+- Tests: `query_thread::tests` (file made, text kept, debounced save, tab whatever the setting, only the thread's own query, active profile of the project), `run_query::tests::a_run_and_a_cancel_from_a_thread_share_the_workspaces_runs`, `query_parameters::tests::a_file_outside_the_project_finds_the_projects_profiles`, the store tests, the panel tests (`test_new_query_thread_…`, `test_closing_a_query_thread_…`, `test_restoring_a_query_thread_…`) and five sidebar tests. Run `cargo test -p kusto_results_ui -p agent_ui -p sidebar --lib`.
+- Not built: restoring a thread as the active entry when Zed starts (its row is there and a click opens it); rows for projects that are not open (a row needs the workspace's panel); the ctrl-tab switcher; picking a neighbour when the shown thread is closed; the worktree-archive checks terminals have; remote projects. Not seen in a real window: that the language server attaches to the editor in the panel and that a lens's Run reaches the thread; both are expected from the code.
+
 ## Known issue: large results are very slow to download in a debug build
 
 Judge speed in a release build (`cargo run --release -p zed`, or `--profile release-fast`). In a debug build (`cargo run -p zed`) a result of about 13 MB took 250 to 290 seconds to download; in a release build the same query matches VS Code (about 2 seconds).
@@ -193,6 +204,7 @@ Most of this ran on GPUI's test platform and the language server's own tests: no
 
 ## Next steps
 
+0. The user tries a query thread in a real window: make one from the new thread menu, check colours, completion and the lenses, run with F5, and see the result open as a tab. Then restore on start, which the terminals have and the threads do not yet.
 1. The user looks at the Results panel, the lenses and the spinner in a real window; fix what shows up. If the spinner flickers, refresh once a second instead.
 2. Persisting the token audience on disk, and a palette command for refreshing the schema. The `kusto` settings, directives, the schema cache and its refresh lens are done; see the decisions above.
 3. Look at the parameter lens and picker in a real window; then import profiles from the clipboard (the VS Code `Group1…` JSON import) if it is missed.

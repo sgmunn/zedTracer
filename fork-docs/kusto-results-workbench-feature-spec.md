@@ -646,7 +646,7 @@ An investigation is a handful of related queries. Today they live in a file the 
 | ID | Pri | Requirement |
 | --- | --- | --- |
 | THR-1 | P1 | **A new kind of thread.** The Threads sidebar offers a query thread beside the agent and terminal threads, grouped by project as they are, with a title the user can rename. Selecting it shows its query editor in the agent panel. |
-| THR-2 | P1 | **The queries are a file.** A thread's text is a `.kql` file in `<data dir>/kusto/threads`, named by the thread's id. It is created empty with the thread and saved like any file, so the thread is that file plus its title and comes back after a restart with the same text. A query worth keeping is moved into a `.kql` file in a project. |
+| THR-2 | P1 | **The queries are a file.** A thread's text is a `.kql` file in `<data dir>/kusto/threads`, named by the thread's id. It is created empty with the thread and saved shortly after each edit, because the editor is in no pane to save it, so the thread is that file plus its title and comes back after a restart with the same text. A query worth keeping is moved into a `.kql` file in a project. |
 | THR-3 | P1 | **An ordinary Kusto editor.** The editor has the language server's colours, completion, diagnostics and code lenses, and holds as many queries as the user writes, each run from the cursor or a selection (RUN-1). Run, Cancel and the lenses' actions act on the thread's editor while it is focused, wherever it is shown. |
 | THR-4 | P1 | **Results open in the editor area.** A run from a thread opens its result in a tab, whatever `kusto.results_location` says (SET-2), because a thread is for exploring results too large for a panel. Each completed run opens its own tab (RUN-7). |
 | THR-5 | P1 | **The same runs.** A run from a thread uses the same client, tokens, history and run log as a run from a file, so the lenses' last-run details, the history and Rerun all see it. |
@@ -655,7 +655,7 @@ An investigation is a handful of related queries. Today they live in a file the 
 
 **Acceptance vectors (spec).** THR-V1: a run from a thread opens a results tab with `results_location` set to the panel. THR-V2: two threads hold different text and a run in one runs only its own query. THR-V3: a thread reopened after a restart has the text it had. THR-V4: the project's active parameter profile supplies the values of a query run from a thread.
 
-**Status.** Not built.
+**Status.** THR-1 to THR-7 are built, and THR-V1 to THR-V4 are tests. `QueryThread` (`query_thread.rs`) is the editor, `QueryThreadMetadataStore` (`agent_ui`) keeps the title and the project folders, `agent_panel/query_threads.rs` shows the editor as a surface of the agent panel, and the sidebar lists the thread with a database icon, a close button, a rename in the right-click menu and a match in the search box. Not built: restoring a thread as the active entry when Zed starts (its row is there, a click opens it), rows for projects that are not open, the ctrl-tab switcher, choosing a neighbour to show when the shown thread is closed, remote projects (a thread is not offered), and nobody has run it in a real window, so that the language server attaches to the editor in the panel, and that a lens reaches the thread's Run, are expected from the code and not seen.
 
 ## 6. Acceptance vectors
 
