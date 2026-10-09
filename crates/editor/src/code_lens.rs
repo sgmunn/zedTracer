@@ -23,10 +23,12 @@ use crate::{
 static EMPTY_LENS_FALLBACK_TITLE: SharedString = SharedString::new_static("0 references");
 const CODE_LENS_SEPARATOR: &str = " | ";
 
+/// One rendered line of lenses. A row has more than one when its server asks for it.
 #[derive(Clone, Debug)]
 struct CodeLensLine {
     position: Anchor,
     indent_column: u32,
+    display_line: u32,
     items: Vec<CodeLensItem>,
 }
 
@@ -34,6 +36,20 @@ struct CodeLensLine {
 struct CodeLensItem {
     title: Option<SharedString>,
     action: CodeAction,
+    display_line: u32,
+}
+
+/// The line, counted from the top of the lenses above a row, that a lens is shown on. A server
+/// that wants a second line puts `{"zedLine": 1}` in the lens's `data`; with none, a lens is on
+/// the first. `data` is the server's own payload, so a server that uses it for resolve must
+/// carry the key along.
+fn display_line_of(lens: &lsp::CodeLens) -> u32 {
+    lens.data
+        .as_ref()
+        .and_then(|data| data.get("zedLine"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|line| u32::try_from(line).ok())
+        .unwrap_or(0)
 }
 
 pub(super) struct CodeLensBlock {
@@ -348,13 +364,17 @@ impl Editor {
                     CodeLensItem {
                         title,
                         action: action.clone(),
+                        display_line: display_line_of(lens),
                     },
                 ));
             }
         }
 
         let mut new_lines_by_row = group_lenses_by_row(all_lenses, snapshot)
-            .map(|line| (MultiBufferRow(line.position.to_point(snapshot).row), line))
+            .map(|line| {
+                let row = MultiBufferRow(line.position.to_point(snapshot).row);
+                ((row, line.display_line), line)
+            })
             .collect::<HashMap<_, _>>();
 
         let editor_handle = cx.entity().downgrade();
@@ -364,15 +384,16 @@ impl Editor {
         let mut kept_blocks = Vec::new();
         let mut renderers_to_replace = HashMap::default();
         let mut blocks_to_remove = HashSet::default();
-        let mut covered_rows = HashSet::default();
+        let mut covered_lines = HashSet::default();
 
         for old in old_blocks {
             let row = MultiBufferRow(old.anchor.to_point(snapshot).row);
-            let Some(new_line) = new_lines_by_row.remove(&row) else {
+            let line_key = (row, old.line.display_line);
+            let Some(new_line) = new_lines_by_row.remove(&line_key) else {
                 blocks_to_remove.insert(old.block_id);
                 continue;
             };
-            covered_rows.insert(row);
+            covered_lines.insert(line_key);
             let new_all_pending = new_line
                 .items
                 .iter()
@@ -400,8 +421,8 @@ impl Editor {
         }
 
         let mut to_insert = Vec::new();
-        for (row, new_line) in new_lines_by_row {
-            if covered_rows.contains(&row) {
+        for (line_key, new_line) in new_lines_by_row {
+            if covered_lines.contains(&line_key) {
                 continue;
             }
             let anchor = new_line.position;
@@ -410,7 +431,9 @@ impl Editor {
                 height: Some(1),
                 style: BlockStyle::Spacer,
                 render: build_code_lens_renderer(new_line.clone(), editor_handle.clone()),
-                priority: 0,
+                // Blocks above one row are ordered by priority, so this keeps the lines in order
+                // whichever of them is inserted first.
+                priority: new_line.display_line as usize,
             };
             to_insert.push((props, anchor, new_line));
         }
@@ -613,19 +636,20 @@ fn group_lenses_by_row(
 ) -> impl Iterator<Item = CodeLensLine> {
     lenses
         .into_iter()
-        .into_group_map_by(|(position, _)| {
+        .into_group_map_by(|(position, item)| {
             let row = position.to_point(snapshot).row;
-            MultiBufferRow(row)
+            (MultiBufferRow(row), item.display_line)
         })
         .into_iter()
-        .sorted_by_key(|(row, _)| *row)
-        .filter_map(|(row, entries)| {
+        .sorted_by_key(|(key, _)| *key)
+        .filter_map(|((row, display_line), entries)| {
             let position = entries.first()?.0;
             let items = entries.into_iter().map(|(_, item)| item).collect();
             let indent_column = snapshot.indent_size_for_line(row).len;
             Some(CodeLensLine {
                 position,
                 indent_column,
+                display_line,
                 items,
             })
         })
@@ -747,7 +771,7 @@ mod tests {
         time::Duration,
     };
 
-    use collections::HashSet;
+    use collections::{HashMap, HashSet};
     use futures::StreamExt;
     use gpui::TestAppContext;
     use indoc::indoc;
@@ -759,7 +783,8 @@ mod tests {
 
     use super::{CODE_LENS_SEPARATOR, displayed_title};
     use crate::{
-        Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT,
+        DisplayRow, Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT,
+        display_map::Block,
         editor_tests::{init_test, update_test_editor_settings},
         test::editor_lsp_test_context::EditorLspTestContext,
     };
@@ -1931,6 +1956,86 @@ mod tests {
         assert_eq!(*dispatched.lock().expect("test lock"), 1);
     }
 
+    #[gpui::test]
+    async fn test_code_lens_server_can_ask_for_a_second_line(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.code_lens = Some(CodeLens::On);
+        });
+
+        let mut cx = EditorLspTestContext::new_typescript(
+            lsp::ServerCapabilities {
+                code_lens_provider: Some(lsp::CodeLensOptions {
+                    resolve_provider: None,
+                }),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+        let mut code_lens_request =
+            cx.set_request_handler::<lsp::request::CodeLensRequest, _, _>(move |_, _, _| async {
+                let lens = |title: &str, line: Option<u64>| lsp::CodeLens {
+                    range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 19)),
+                    command: Some(lsp::Command {
+                        title: title.to_owned(),
+                        command: "lens_cmd".to_owned(),
+                        arguments: None,
+                    }),
+                    data: line.map(|line| serde_json::json!({ "zedLine": line })),
+                };
+                // The second line's lenses come between the first line's, to show that the
+                // order they are sent in does not decide the line.
+                Ok(Some(vec![
+                    lens("Run", None),
+                    lens("help.kusto.windows.net / Samples", Some(1)),
+                    lens("Results", Some(0)),
+                    lens("Last run: 12:00:01", Some(1)),
+                ]))
+            });
+
+        cx.set_state("ˇfunction hello() {}");
+        assert!(code_lens_request.next().await.is_some());
+        cx.run_until_parked();
+
+        let lines_from_top = cx.update_editor(|editor, _, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let titles_of_block = editor
+                .code_lens
+                .as_ref()
+                .into_iter()
+                .flat_map(|state| state.blocks.values().flatten())
+                .map(|block| {
+                    let titles = block
+                        .line
+                        .items
+                        .iter()
+                        .filter_map(displayed_title)
+                        .map(|title| title.to_string())
+                        .collect::<Vec<_>>()
+                        .join(CODE_LENS_SEPARATOR);
+                    (block.block_id, titles)
+                })
+                .collect::<HashMap<_, _>>();
+            snapshot
+                .blocks_in_range(DisplayRow(0)..DisplayRow(10))
+                .filter_map(|(_, block)| match block {
+                    Block::Custom(custom) => titles_of_block.get(&custom.id).cloned(),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(
+            lines_from_top,
+            vec![
+                "Run | Results".to_string(),
+                "help.kusto.windows.net / Samples | Last run: 12:00:01".to_string(),
+            ],
+            "the lenses name their line, and the first line is the upper one"
+        );
+    }
+
     fn code_lens_assertion_text(editor: &Editor, cx: &ui::App) -> String {
         let snapshot = editor.buffer().read(cx).snapshot(cx);
         let mut blocks = editor
@@ -1938,7 +2043,12 @@ mod tests {
             .as_ref()
             .map(|state| state.blocks.values().flatten().collect::<Vec<_>>())
             .unwrap_or_default();
-        blocks.sort_by_key(|block| block.anchor.to_point(&snapshot).row);
+        blocks.sort_by_key(|block| {
+            (
+                block.anchor.to_point(&snapshot).row,
+                block.line.display_line,
+            )
+        });
 
         let lens_label = "Lenses";
         let line_label = "Line";
