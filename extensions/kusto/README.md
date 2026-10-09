@@ -307,10 +307,10 @@ Above each query (a run of non-blank lines) the lenses are on two lines. The fir
 query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second
 until nothing is running) and **Cancel** instead. Once the query has been run and left a result, **Results**
 comes straight after them, with the number of rows the result has, for example `Results (1,240 rows)` (it shows that
-run's saved result in the Results panel, or in a tab in a query thread), and a query that declares parameters ends the line with **Params**.
-The second line is where the query runs and what it did: the connection, the schema lens, then what the last run did, for example
-`Last run: 10:42:11, took 1.8 s`, and **Copy CID** (copies the run's client request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
+run's saved result in the Results panel, or in a tab in a query thread), then **Params** for a query that declares parameters, then what the last run did, for example
+`Last run: 10:42:11, took 1.8 s`. A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
+The second line is where the query runs: the connection, the schema lens, and **Copy CID** (copies the last run's client request id).
 
 The lenses come from a log the editor keeps: every run appends a line when it starts and when it ends
 to `kusto/history/runs.jsonl` in Zed's data folder, and the server watches that file and asks Zed to

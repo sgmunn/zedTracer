@@ -1,11 +1,11 @@
 using System.Globalization;
 
 /// <summary>
-/// The lenses above each query, on two lines. The first is what to do: Run, or Running and Cancel,
-/// then Results (with its row count) when the last run left one, and the parameter profile. The
-/// second is where the query runs and what the last run of the same query did. A lens that has to do
-/// something in the editor names one of Zed's actions through `zed.dispatchAction`; the rest only
-/// show text.
+/// The lenses above each query, on two lines. The first is what to do and what happened: Run, or
+/// Running and Cancel, then Results (with its row count) when the last run left one, the parameter
+/// profile, and what the last run of the same query did. The second is where the query runs, and
+/// Copy CID for the last run. A lens that has to do something in the editor names one of Zed's
+/// actions through `zed.dispatchAction`; the rest only show text.
 /// </summary>
 internal static class CodeLenses
 {
@@ -61,15 +61,6 @@ internal static class CodeLenses
                 Add(ResultsTitle(shown), DispatchActionCommand, "kusto::ShowResult", new { path });
             if (parameters(block.Text) is { } parametersTitle)
                 Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
-
-            line = 1;
-            Add(Describe(connection), ConnectionCommand);
-            if (schemaOf(connection) is { } schema)
-            {
-                // Zed asks the server to run this one, since it is not an action of the editor.
-                Add(SchemaTitle(schema, now), RefreshSchemaCommand, connection.Cluster ?? "", connection.Database ?? "");
-            }
-
             if (state?.Last is { } last)
             {
                 if (last.Failure is { } failure)
@@ -81,8 +72,17 @@ internal static class CodeLenses
                     // The rows are on the Results lens when there is one.
                     Add(Describe(last, withRows: last.ResultPath is null), NoopCommand);
                 }
-                Add("Copy CID", DispatchActionCommand, "kusto::CopyClientRequestId", new { id = last.RunId });
             }
+
+            line = 1;
+            Add(Describe(connection), ConnectionCommand);
+            if (schemaOf(connection) is { } schema)
+            {
+                // Zed asks the server to run this one, since it is not an action of the editor.
+                Add(SchemaTitle(schema, now), RefreshSchemaCommand, connection.Cluster ?? "", connection.Database ?? "");
+            }
+            if (state?.Last is { } lastRun)
+                Add("Copy CID", DispatchActionCommand, "kusto::CopyClientRequestId", new { id = lastRun.RunId });
         }
         return lenses.ToArray();
     }

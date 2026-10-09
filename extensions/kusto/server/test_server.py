@@ -576,7 +576,7 @@ class CodeLensTest(unittest.TestCase):
         self.assertEqual(command["command"], "zed.dispatchAction")
         self.assertEqual(command["arguments"], ["kusto::RunQuery"])
 
-    def test_where_the_query_runs_and_the_last_run_are_on_a_second_line(self):
+    def test_the_last_run_is_on_the_first_line_and_where_the_query_runs_on_the_second(self):
         self.record("started", "id-1", "T1 | take 1")
         self.record(
             "finished", "id-1", "T1 | take 1",
@@ -591,12 +591,14 @@ class CodeLensTest(unittest.TestCase):
                 if (lens.get("data") or {}).get("zedLine", 0) == display_line
             ]
 
-        self.assertEqual(titles_on(0), ["▶ Run", "Results (1,240 rows)"])
+        first = titles_on(0)
+        self.assertEqual(first[:2], ["▶ Run", "Results (1,240 rows)"])
+        self.assertTrue(first[2].startswith("Last run: "), first)
+        self.assertEqual(len(first), 3)
         second = titles_on(1)
         self.assertEqual(second[0], "help.kusto.windows.net / Samples")
         self.assertTrue(second[1].startswith("↻ Schema: "), second)
-        self.assertTrue(second[2].startswith("Last run: "), second)
-        self.assertEqual(second[3:], ["Copy CID"])
+        self.assertEqual(second[2:], ["Copy CID"])
         self.assertEqual(
             {lens["range"]["start"]["line"] for lens in lenses}, {0},
             "both lines are above the first line of the query",
