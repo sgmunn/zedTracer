@@ -655,7 +655,28 @@ An investigation is a handful of related queries. Today they live in a file the 
 
 **Acceptance vectors (spec).** THR-V1: a run from a thread opens a results tab with `results_location` set to the panel. THR-V2: two threads hold different text and a run in one runs only its own query. THR-V3: a thread reopened after a restart has the text it had. THR-V4: the project's active parameter profile supplies the values of a query run from a thread.
 
-**Status.** THR-1 to THR-7 are built, and THR-V1 to THR-V4 are tests. `QueryThread` (`query_thread.rs`) is the editor, `QueryThreadMetadataStore` (`agent_ui`) keeps the title and the project folders, `agent_panel/query_threads.rs` shows the editor as a surface of the agent panel, and the sidebar lists the thread with a database icon, a close button, a rename in the right-click menu and a match in the search box. Not built: restoring a thread as the active entry when Zed starts (its row is there, a click opens it), rows for projects that are not open, the ctrl-tab switcher, choosing a neighbour to show when the shown thread is closed, remote projects (a thread is not offered), and a real window showed the language server attaches to the editor in the panel (completion works) and that a lens click did nothing, because an editor in no pane has no workspace and the click needs one. The thread now gives its editor one, and the lenses that name an action the workspace answers from the active pane item (Results, Params) are answered by the thread. The click itself has not been tried in a window since; tests cover the pieces.
+**Status.** THR-1 to THR-7 are built, and THR-V1 to THR-V4 are tests. `QueryThread` (`query_thread.rs`) is the editor, `QueryThreadMetadataStore` (`agent_ui`) keeps the title and the project folders, `agent_panel/query_threads.rs` shows the editor as a surface of the agent panel, and the sidebar lists the thread with a database icon, a close button, a rename in the right-click menu and a match in the search box. An editor in the panel has no workspace, which a lens click needs, so the thread gives its editor one (`Editor::set_workspace`) and answers the two lens actions that the workspace would answer from the active pane item: Results and Params.
+
+Seen in a real window: completion works in a thread's editor, lens clicks work, and the Results lens sits next to Run. Fixed in the language server with tests but not yet seen in a window: the row count on the Results lens (`Results (1,240 rows)`), and the Params lens naming the project's active profile for a thread's file.
+
+**Not built, or not settled.** This is the one list; the status document and the README point here.
+
+| Item | State | Notes |
+| --- | --- | --- |
+| Restoring a thread as the shown entry when Zed starts | Not done | Terminals are (`last_active_terminal_id` is saved with the panel). A thread's row is there and a click opens it. |
+| Threads of projects that are not open | Not done | A row is listed for an open workspace only, because that workspace's agent panel opens the file. Terminals open the workspace first. |
+| The ctrl-tab switcher | Not done | About an hour of work in `thread_switcher.rs` and `sidebar.rs`, no other crate. Previewing a thread opens its editor and registers its file with the language server. |
+| A neighbour to show when the shown thread is closed | Not done | The panel shows a new draft thread. Terminals show the neighbouring row. |
+| Archiving or closing a linked-worktree workspace | Not done | The checks that keep a worktree or workspace a terminal still uses (`path_is_referenced_by_terminal`, `workspace_has_terminal_metadata_except`) do not know threads, so a thread's row goes with the workspace and its entry stays in the store. |
+| Remote and collab projects | Not done | A thread is not offered there, because its file and its runs are on this machine. There is no test for the case. |
+| `kusto: open parameters` and `kusto: open query parameters` from a thread | Not done | From the command palette they use the active pane item, not the thread's file. The Params lens works. |
+| Renaming by clicking the title in the panel | Not done | Only the sidebar renames a thread (right-click, or the rename key on a selected row). The panel's title is a label, and its rename action handles terminals only. |
+| The sidebar's "+" remembering Kusto | Not done | "+" makes an agent thread or a terminal, whichever was made last. A thread is made from the new thread menu, the `agent: new query thread` action or the sidebar's action, because the panel's entry kinds have no query thread. |
+| A default key binding for `agent: new query thread` | Open | None today. |
+| Telemetry for a thread | Open | A terminal reports when it starts. A thread reports nothing. |
+| Dropping files into a thread's editor, and the panel's font size actions | Not done | Both do nothing for a thread. Minor. |
+| What happens to a thread's file when the thread is closed | Open | Q-32. The file is kept. |
+| A project with several folders | Not verified | The server uses the first workspace folder for the Params lens of a file outside them, and the editor uses the project's first visible folder. They agree for one folder. |
 
 ## 6. Acceptance vectors
 

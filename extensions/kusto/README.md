@@ -221,8 +221,9 @@ stop typing. A thread finds its parameter profiles beside that file (`<id>.param
 Closing a thread (the button on its row, or the archive key) forgets it and leaves its file, so a query worth keeping
 is one you copy into a `.kql` file in the project.
 
-Not yet: a thread is not restored as the shown entry when Zed starts (click its row), and only the threads of projects
-that are open are listed.
+Not yet: a thread is not restored as the shown entry when Zed starts (click its row), only the threads of projects
+that are open are listed, the ctrl-tab switcher does not include threads, and a thread is renamed from the sidebar
+only. The full list is in section 5.10 of `fork-docs/kusto-results-workbench-feature-spec.md`.
 
 ## Schema from your clusters
 
