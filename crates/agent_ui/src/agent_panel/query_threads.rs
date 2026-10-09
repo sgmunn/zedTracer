@@ -100,6 +100,24 @@ impl AgentPanel {
         cx.notify();
     }
 
+    /// Renames the thread if this panel has it, and says whether it does.
+    pub fn rename_query_thread(
+        &mut self,
+        id: QueryThreadId,
+        title: SharedString,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.query_threads.contains_key(&id) {
+            return false;
+        }
+        if let Some(store) = QueryThreadMetadataStore::try_global(cx) {
+            store.update(cx, |store, cx| store.rename(id, title, cx));
+        }
+        cx.emit(AgentPanelEvent::EntryChanged);
+        cx.notify();
+        true
+    }
+
     fn open_query_thread(
         &mut self,
         id: QueryThreadId,

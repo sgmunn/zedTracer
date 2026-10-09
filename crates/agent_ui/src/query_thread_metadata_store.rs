@@ -200,6 +200,32 @@ impl QueryThreadMetadataStore {
         cx.notify();
     }
 
+    /// Follows a project whose folders changed, so that its threads are still found by them.
+    pub fn change_worktree_paths(
+        &mut self,
+        current_folder_paths: &PathList,
+        mutate: impl Fn(&mut WorktreePaths),
+        cx: &mut Context<Self>,
+    ) {
+        let ids: Vec<_> = self
+            .query_threads_by_paths
+            .get(current_folder_paths)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            if let Some(mut metadata) = self.query_threads.get(&id).cloned() {
+                mutate(&mut metadata.worktree_paths);
+                self.save_internal(metadata);
+            }
+        }
+        cx.notify();
+    }
+
     fn save_internal(&mut self, metadata: QueryThreadMetadata) {
         if let Some(existing) = self.query_threads.get(&metadata.id) {
             if existing.folder_paths() != metadata.folder_paths()
@@ -585,6 +611,41 @@ mod tests {
             });
         });
         assert_eq!(title_of(cx).as_deref(), Some("Slow requests"));
+    }
+
+    #[gpui::test]
+    async fn a_thread_follows_its_projects_folders_when_they_change(cx: &mut TestAppContext) {
+        init_test(cx);
+        let old_folder_paths = PathList::new(&[Path::new("/repo")]);
+        let new_folder_paths = PathList::new(&[Path::new("/repo"), Path::new("/extra")]);
+        let saved = metadata("Slow requests", WorktreePaths::from_folder_paths(&old_folder_paths));
+        let id = saved.id;
+        cx.update(|cx| {
+            QueryThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(saved, cx));
+        });
+
+        cx.update(|cx| {
+            QueryThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                store.change_worktree_paths(
+                    &old_folder_paths,
+                    |paths| paths.add_path(Path::new("/extra"), Path::new("/extra")),
+                    cx,
+                );
+            });
+        });
+
+        cx.update(|cx| {
+            let store = QueryThreadMetadataStore::global(cx);
+            let store = store.read(cx);
+            assert_eq!(store.entries_for_path(&old_folder_paths).count(), 0);
+            assert_eq!(
+                store
+                    .entries_for_path(&new_folder_paths)
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
+                vec![id]
+            );
+        });
     }
 
     #[gpui::test]
