@@ -310,7 +310,30 @@ comes straight after them, with the number of rows the result has, for example `
 run's saved result in the Results panel, or in a tab in a query thread), then **Params** for a query that declares parameters, then what the last run did, for example
 `Last run: 10:42:11, took 1.8 s`. A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
-The second line is where the query runs: the connection, the schema lens, and **Copy CID** (copies the last run's client request id).
+The second line starts with **Copy**, which copies the query (see below), then says where the query runs: the connection, the schema lens, and **Copy CID** (copies the last run's client request id).
+
+### Copying a query
+
+**Copy** puts the query on the clipboard written so that it means the same wherever it is pasted, in another tool or in a message:
+
+- A table, function, materialized view or external table of the query's own database is written with its cluster and database,
+  `cluster('help.kusto.windows.net').database('Samples').StormEvents`, and so is a function that returns a database, as in
+  `ASAz().ASTrace`, which becomes `cluster('…').database('…').ASAz().ASTrace`. Names that are already qualified, columns, `let`
+  variables and what comes after a dot are left as they are. The language server decides this with the schema, so it needs the schema
+  of the database to have loaded (the `↻ Schema` lens says when).
+- When the server is not running, has no schema for the database yet, or does not answer within five seconds, the query is not
+  changed except for two lines above it, `// :setDefaultCluster("…")` and `// :setDefaultDb("…")`, the directives a Kusto editor here
+  reads, so the cluster and database are known.
+- A `declare query_parameters(...)` statement becomes a `let` for each parameter, with the value the run would use: the active profile's, else the declared default
+  (`let raid = 'abc-123';`, `let count = long(5);`). A parameter with neither stays declared. Values are written as literals of the
+  declared type, and a string is quoted, so a value cannot change what the query does.
+- A control command (`.show tables`) is copied as it is.
+
+The clipboard holds plain text, without colours, because Zed's clipboard has no rich text.
+
+The same text is the **Query** a run keeps in its `.ktt` file and shows in the Query tab. The service is still sent the query as you
+wrote it, with its parameters as native query parameters, and the run log, the history list and the Rerun in the history keep the text you wrote.
+Rerun in a result tab runs the text the file keeps.
 
 The lenses come from a log the editor keeps: every run appends a line when it starts and when it ends
 to `kusto/history/runs.jsonl` in Zed's data folder, and the server watches that file and asks Zed to
@@ -321,7 +344,7 @@ end, such as when Zed was closed while it ran, stops counting as running after 1
 about the last 200 runs.
 
 A lens acts through `zed.dispatchAction`, a lens command this fork of Zed handles in the editor: its
-arguments are the name of a Zed action (`kusto::RunQuery`, `kusto::CancelQuery`, `kusto::ShowResult`,
+arguments are the name of a Zed action (`kusto::RunQuery`, `kusto::CancelQuery`, `kusto::CopyQuery`, `kusto::ShowResult`,
 `kusto::CopyClientRequestId`, `kusto::SelectParameterProfile`) and, optionally, the data the action takes. Zed moves the cursor to the lens
 before it runs the action, so `RunQuery` and `CancelQuery` act on that query.
 
