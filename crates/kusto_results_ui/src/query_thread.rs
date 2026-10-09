@@ -5,11 +5,12 @@
 //! each edit.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use editor::Editor;
-use fs::CreateOptions;
+use fs::{CreateOptions, Fs};
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Styled as _, Subscription, Task, WeakEntity, Window,
@@ -41,16 +42,17 @@ pub struct QueryThread {
 
 impl QueryThread {
     /// Opens the query file at `path`, making it and its folder first when they do not exist.
+    ///
+    /// The workspace is passed as a handle, and its project and file system beside it, because a
+    /// thread is usually made from inside an update of the workspace, which cannot be read then.
     pub fn open(
-        workspace: &Entity<Workspace>,
+        workspace: WeakEntity<Workspace>,
+        project: Entity<Project>,
+        fs: Arc<dyn Fs>,
         path: PathBuf,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<Entity<Self>>> {
-        let (project, fs) = workspace.read_with(cx, |workspace, _| {
-            (workspace.project().clone(), workspace.app_state().fs.clone())
-        });
-        let workspace = workspace.downgrade();
         window.spawn(cx, async move |cx| {
             if let Some(folder) = path.parent() {
                 fs.create_dir(folder)
@@ -179,9 +181,14 @@ mod tests {
         cx: &mut VisualTestContext,
     ) -> Entity<QueryThread> {
         let path = PathBuf::from(format!("/data/kusto/threads/{name}.kql"));
-        cx.update(|window, cx| QueryThread::open(workspace, path, window, cx))
-            .await
-            .expect("the thread opens")
+        let (project, fs) = workspace.read_with(cx, |workspace, _| {
+            (workspace.project().clone(), workspace.app_state().fs.clone())
+        });
+        cx.update(|window, cx| {
+            QueryThread::open(workspace.downgrade(), project, fs, path, window, cx)
+        })
+        .await
+        .expect("the thread opens")
     }
 
     fn write(thread: &Entity<QueryThread>, text: &str, cx: &mut VisualTestContext) {

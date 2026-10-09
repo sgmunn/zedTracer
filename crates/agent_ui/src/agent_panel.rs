@@ -15030,4 +15030,33 @@ mod tests {
             assert_eq!(panel.active_query_thread_id(), Some(id));
         });
     }
+
+    #[gpui::test]
+    async fn test_new_query_thread_can_be_made_while_the_workspace_is_updating(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, panel, mut cx) = setup_workspace_panel(cx).await;
+        cx.update(|_, cx| {
+            QueryThreadMetadataStore::init_global(cx);
+        });
+        cx.run_until_parked();
+
+        // The new thread menu and the `NewQueryThread` action both make the thread from inside an
+        // update of the workspace, so the thread cannot read the workspace to open its file.
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            let panel = workspace
+                .panel::<AgentPanel>(cx)
+                .expect("agent panel should be registered in workspace");
+            panel.update(cx, |panel, cx| panel.new_query_thread(window, cx));
+            workspace.focus_panel::<AgentPanel>(window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            panel
+                .read_with(&cx, |panel, _| panel.active_query_thread_id())
+                .is_some(),
+            "the query thread is made and shown"
+        );
+    }
 }

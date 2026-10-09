@@ -126,10 +126,15 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let opening = QueryThread::open(&workspace, id.query_file(), window, cx);
+        let workspace = self.workspace.clone();
+        let opening = QueryThread::open(
+            workspace.clone(),
+            self.project.clone(),
+            self.fs.clone(),
+            id.query_file(),
+            window,
+            cx,
+        );
         cx.spawn_in(window, async move |this, cx| match opening.await {
             Ok(thread) => {
                 this.update_in(cx, |this, window, cx| {
@@ -138,7 +143,9 @@ impl AgentPanel {
                 .log_err();
             }
             Err(error) => {
-                workspace.update(cx, |workspace, cx| workspace.show_error(error, cx));
+                workspace
+                    .update(cx, |workspace, cx| workspace.show_error(error, cx))
+                    .log_err();
             }
         })
         .detach();

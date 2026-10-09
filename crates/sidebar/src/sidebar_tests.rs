@@ -16174,3 +16174,29 @@ async fn test_renaming_a_query_thread_changes_its_row_and_its_stored_title(
         );
     });
 }
+
+#[gpui::test]
+async fn test_new_query_thread_action_makes_a_thread_in_the_selected_project(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+    assert_eq!(panel.read_with(cx, |panel, _| panel.active_query_thread_id()), None);
+
+    focus_sidebar(&sidebar, cx);
+    cx.dispatch_action(NewQueryThread);
+    cx.run_until_parked();
+
+    assert!(
+        panel
+            .read_with(cx, |panel, _| panel.active_query_thread_id())
+            .is_some(),
+        "the action makes a query thread and shows it"
+    );
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]", "  Kusto query"]
+    );
+}
