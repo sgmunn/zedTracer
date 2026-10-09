@@ -163,7 +163,13 @@ pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         copy_client_request_id(&action.id, cx)
     });
     workspace.register_action(|workspace, action: &ShowResult, window, cx| {
-        show_saved_result(workspace, PathBuf::from(&action.path), window, cx)
+        show_saved_result(
+            workspace,
+            PathBuf::from(&action.path),
+            Destination::Configured,
+            window,
+            cx,
+        )
     });
 }
 
@@ -195,9 +201,22 @@ fn copy_client_request_id(id: &str, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
 }
 
+/// Shows a result that a lens in a thread's editor names, in a tab like the thread's own runs.
+pub(crate) fn show_thread_result(
+    workspace: &Entity<Workspace>,
+    path: PathBuf,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace.update(cx, |workspace, cx| {
+        show_saved_result(workspace, path, Destination::Tab, window, cx)
+    });
+}
+
 fn show_saved_result(
     workspace: &mut Workspace,
     path: PathBuf,
+    destination: Destination,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -208,7 +227,7 @@ fn show_saved_result(
         } else {
             Err(crate::history::deleted())
         };
-        display(&workspace, outcome, Destination::Configured, cx).await
+        display(&workspace, outcome, destination, cx).await
     })
     .detach();
 }
@@ -1783,7 +1802,7 @@ pub(crate) mod tests {
         assert!(panel.read_with(cx, |panel, _| panel.shown_viewer().is_none()));
 
         workspace.update_in(cx, |workspace, window, cx| {
-            show_saved_result(workspace, PathBuf::from(path), window, cx)
+            show_saved_result(workspace, PathBuf::from(path), Destination::Configured, window, cx)
         });
         cx.run_until_parked();
 
@@ -1803,7 +1822,13 @@ pub(crate) mod tests {
             .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
             .expect("the panel is added");
         workspace.update_in(cx, |workspace, window, cx| {
-            show_saved_result(workspace, PathBuf::from("/gone/result.ktt"), window, cx)
+            show_saved_result(
+                workspace,
+                PathBuf::from("/gone/result.ktt"),
+                Destination::Configured,
+                window,
+                cx,
+            )
         });
         cx.run_until_parked();
         assert!(panel.read_with(cx, |panel, _| panel.shown_error().is_some()));

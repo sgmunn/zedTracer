@@ -21,7 +21,10 @@ use language::{Buffer, BufferEvent};
 use project::Project;
 use workspace::Workspace;
 
-use crate::run_query::{CancelQuery, RunQuery, cancel_thread_query, run_thread_query};
+use crate::query_parameters::{SelectParameterProfile, select_thread_parameter_profile};
+use crate::run_query::{
+    CancelQuery, RunQuery, ShowResult, cancel_thread_query, run_thread_query, show_thread_result,
+};
 
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -87,7 +90,10 @@ impl QueryThread {
         cx: &mut Context<Self>,
     ) -> Self {
         let editor = cx.new(|cx| {
-            Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
+            let mut editor = Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx);
+            // No pane adds this editor to the workspace, and a lens does nothing without one.
+            editor.set_workspace(workspace.clone());
+            editor
         });
         let buffer_subscription = cx.subscribe(&buffer, |this, _, event, cx| {
             if matches!(event, BufferEvent::Edited { .. }) {
@@ -147,6 +153,18 @@ impl QueryThread {
             cancel_thread_query(&workspace, &self.editor, cx);
         }
     }
+
+    fn show_result(&mut self, action: &ShowResult, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            show_thread_result(&workspace, PathBuf::from(&action.path), window, cx);
+        }
+    }
+
+    fn select_parameter_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            select_thread_parameter_profile(&workspace, &self.editor, window, cx);
+        }
+    }
 }
 
 impl Focusable for QueryThread {
@@ -162,6 +180,12 @@ impl Render for QueryThread {
             .size_full()
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| this.run(window, cx)))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this, action: &ShowResult, window, cx| {
+                this.show_result(action, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectParameterProfile, window, cx| {
+                this.select_parameter_profile(window, cx)
+            }))
             .child(self.editor.clone())
     }
 }
@@ -306,6 +330,64 @@ mod tests {
             results_viewers(&workspace, cx),
             2,
             "each run opens its own tab"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_threads_editor_acts_on_the_workspace(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let thread = open(&workspace, "one", cx).await;
+
+        let editor = thread.read_with(cx, |thread, _| thread.editor().clone());
+
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.workspace()),
+            Some(workspace),
+            "a lens does nothing in an editor without one"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_result_a_lens_names_opens_in_a_tab_whatever_the_setting_says(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let panel = workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
+            .expect("the panel is added");
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        let thread = open(&workspace, "one", cx).await;
+        write(&thread, "Traces\n| take 1", cx);
+        run(&thread, cx);
+        assert_eq!(results_viewers(&workspace, cx), 1);
+
+        // The result of the run is already in a tab, which showing it again would only
+        // bring forward, so the lens names a copy.
+        let history = crate::history::history_folder();
+        let mut saved = fs.read_dir(&history).await.expect("the history folder");
+        let result = futures::StreamExt::next(&mut saved)
+            .await
+            .expect("the run was saved")
+            .expect("the file is listed");
+        let copy = PathBuf::from("/data/an-earlier-run.ktt");
+        fs.copy_file(&result, &copy, fs::CopyOptions::default())
+            .await
+            .expect("the result is copied");
+        thread.update_in(cx, |thread, window, cx| {
+            thread.show_result(
+                &ShowResult {
+                    path: copy.to_string_lossy().into_owned(),
+                },
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        assert_eq!(results_viewers(&workspace, cx), 2, "the earlier result is a tab");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.shown_viewer().is_none()),
+            "the panel shows nothing"
         );
     }
 

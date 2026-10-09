@@ -210,10 +210,32 @@ fn files_of_active_editor(
     let editor = workspace
         .active_item_as::<Editor>(cx)
         .context("Open a Kusto query to use its parameters.")?;
+    Ok(files_of_editor(workspace, &editor, cx))
+}
+
+fn files_of_editor(
+    workspace: &Workspace,
+    editor: &Entity<Editor>,
+    cx: &mut Context<Workspace>,
+) -> ParameterFiles {
     let project = workspace.project().clone();
-    Ok(editor.update(cx, |editor, cx| {
+    editor.update(cx, |editor, cx| {
         ParameterFiles::of_editor(editor, project.read(cx), cx)
-    }))
+    })
+}
+
+/// Chooses the profile for the queries of a thread's editor, which is in no pane for the
+/// workspace to find as its active item.
+pub(crate) fn select_thread_parameter_profile(
+    workspace: &Entity<Workspace>,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace.update(cx, |workspace, cx| {
+        let files = files_of_editor(workspace, editor, cx);
+        select_parameter_profile_of(workspace, files, window, cx)
+    });
 }
 
 fn select_parameter_profile(
@@ -225,6 +247,15 @@ fn select_parameter_profile(
         Ok(files) => files,
         Err(error) => return workspace.show_error(error, cx),
     };
+    select_parameter_profile_of(workspace, files, window, cx)
+}
+
+fn select_parameter_profile_of(
+    workspace: &mut Workspace,
+    files: ParameterFiles,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let fs = workspace.app_state().fs.clone();
     cx.spawn_in(window, async move |workspace, cx| {
         let loaded = load(fs.as_ref(), &files).await;
@@ -752,6 +783,51 @@ mod tests {
         assert_eq!(
             files.sidecar,
             Some(PathBuf::from("/elsewhere/thread.parameters.yaml"))
+        );
+    }
+
+    #[gpui::test]
+    async fn a_thread_chooses_a_profile_for_its_own_editor_though_it_is_in_no_pane(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, file_editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            "",
+            DECLARING,
+            json!({ ".kusto": { "parameters.yaml": SHARED } }),
+        )
+        .await;
+        fs_of(&workspace, cx)
+            .as_fake()
+            .insert_tree("/elsewhere", json!({ "thread.kql": DECLARING }))
+            .await;
+        let project = workspace.read_with(cx, |workspace, _| workspace.project().clone());
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer("/elsewhere/thread.kql", cx)
+            })
+            .await
+            .expect("the file opens");
+        let thread_editor = workspace.update_in(cx, |_, window, cx| {
+            cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx))
+        });
+        assert_ne!(
+            file_editor.entity_id(),
+            thread_editor.entity_id(),
+            "the editor of the pane is not the thread's"
+        );
+
+        cx.update(|window, cx| {
+            select_thread_parameter_profile(&workspace, &thread_editor, window, cx)
+        });
+        cx.run_until_parked();
+
+        let selector = selector(&workspace, cx);
+        assert_eq!(
+            choices(&selector, cx),
+            ["A", "B", "No active profile", "Edit profiles…"],
+            "the project's profiles are found from a file outside the project"
         );
     }
 
