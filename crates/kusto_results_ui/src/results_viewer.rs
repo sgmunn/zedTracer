@@ -423,6 +423,9 @@ pub struct ResultsViewer {
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
+    /// Whether this tab has already opened Row Details. Moving a tab to another pane adds it to
+    /// the workspace again, which must not bring back a panel the user has closed since.
+    offered_row_details: bool,
     _grid_subscription: Option<Subscription>,
     _structured_subscription: Option<Subscription>,
     _structured_events_subscription: Option<Subscription>,
@@ -464,6 +467,26 @@ impl Item for ResultsViewer {
 
     fn buffer_kind(&self, _: &App) -> ItemBufferKind {
         ItemBufferKind::Singleton
+    }
+
+    fn added_to_workspace(
+        &mut self,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.grid.is_none() || std::mem::replace(&mut self.offered_row_details, true) {
+            return;
+        }
+        // The workspace is being updated right now, so the panel is opened once that is done.
+        let workspace = workspace.weak_handle();
+        window.defer(cx, move |window, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.open_panel::<RowDetailsPanel>(window, cx)
+                })
+                .log_err();
+        });
     }
 }
 
@@ -522,6 +545,7 @@ impl ResultsViewer {
             hide_structural: false,
             can_show_query: false,
             query_view: None,
+            offered_row_details: false,
             _grid_subscription: None,
             _structured_subscription: None,
             _structured_events_subscription: None,
@@ -1531,6 +1555,7 @@ mod tests {
     use workspace::AppState;
 
     use super::*;
+    use crate::run_query::tests::row_details_shown;
 
     fn sample(name: &str) -> anyhow::Result<String> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1552,6 +1577,80 @@ mod tests {
             assert_eq!(is_results_path(&path), expected, "{name}");
         }
         Ok(())
+    }
+
+    #[gpui::test]
+    async fn opening_a_results_file_opens_row_details_once(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            editor::init(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/root",
+            json!({
+                "types.ktt": sample("synthetic-types.ktt").expect("fixture"),
+                "broken.ktt": "not json",
+            }),
+        )
+        .await;
+        let project = Project::test(fs, ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            let row_details = cx.new(|cx| {
+                RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+            });
+            workspace.add_panel(row_details, window, cx);
+        });
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let open = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+            let path = ProjectPath {
+                worktree_id,
+                path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                    .expect("relative path")
+                    .into_arc(),
+            };
+            let opened = workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            });
+            cx.run_until_parked();
+            opened
+        };
+        let shown = |cx: &mut gpui::VisualTestContext| row_details_shown(&workspace, cx);
+
+        open("broken.ktt", cx).await.expect("broken.ktt opens");
+        cx.run_until_parked();
+        assert!(!shown(cx), "a file with no result has no rows to show");
+
+        let item = open("types.ktt", cx).await.expect("types.ktt opens");
+        cx.run_until_parked();
+        assert!(shown(cx), "a result opens Row Details");
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.close_panel::<RowDetailsPanel>(window, cx);
+        });
+        assert!(!shown(cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            let pane = workspace.active_pane().clone();
+            item.added_to_pane(workspace, pane, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            !shown(cx),
+            "moving the tab does not bring back a panel that was closed"
+        );
     }
 
     #[gpui::test]

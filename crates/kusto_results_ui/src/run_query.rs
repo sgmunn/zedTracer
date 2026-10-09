@@ -35,6 +35,7 @@ use crate::qualify_query;
 use crate::query_parameters::{self, ParameterFiles};
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsFile;
+use crate::row_details_panel::RowDetailsPanel;
 
 actions!(
     kusto,
@@ -771,6 +772,7 @@ pub(crate) async fn display(
             Ok(path) => load_result_file(workspace, path, cx).await,
             Err(error) => Err(error),
         };
+        let has_result = loaded.is_ok();
         workspace
             .update_in(cx, |workspace, window, cx| {
                 let Some(panel) = workspace.panel::<ResultsPanel>(cx) else {
@@ -781,6 +783,9 @@ pub(crate) async fn display(
                     Err(error) => panel.show_error(format!("{error:#}"), cx),
                 });
                 workspace.open_panel::<ResultsPanel>(window, cx);
+                if has_result {
+                    workspace.open_panel::<RowDetailsPanel>(window, cx);
+                }
             })
             .log_err();
         return;
@@ -1184,7 +1189,11 @@ pub(crate) mod tests {
             .expect("the query file opens");
         let panel = cx.new(ResultsPanel::new);
         workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_panel(panel, window, cx)
+            workspace.add_panel(panel, window, cx);
+            let row_details = cx.new(|cx| {
+                RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
+            });
+            workspace.add_panel(row_details, window, cx);
         });
         let editor = item
             .downcast::<Editor>()
@@ -1236,6 +1245,19 @@ pub(crate) mod tests {
     ) -> usize {
         workspace.read_with(cx, |workspace, cx| {
             workspace.items_of_type::<ResultsViewer>(cx).count()
+        })
+    }
+
+    pub(crate) fn row_details_shown(
+        workspace: &Entity<Workspace>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        workspace.read_with(cx, |workspace, cx| {
+            let dock = workspace.right_dock().read(cx);
+            dock.is_open()
+                && dock
+                    .visible_panel()
+                    .is_some_and(|panel| panel.persistent_name() == "Row Details Panel")
         })
     }
 
@@ -1311,6 +1333,29 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn a_result_shown_in_the_panel_opens_row_details(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        assert!(!row_details_shown(&workspace, cx));
+
+        run(&workspace, cx);
+
+        assert!(row_details_shown(&workspace, cx));
+    }
+
+    #[gpui::test]
+    async fn a_result_opened_in_a_tab_opens_row_details(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        use_editor_tabs(cx);
+        assert!(!row_details_shown(&workspace, cx));
+
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        assert_eq!(results_viewers(&workspace, cx), 1);
+        assert!(row_details_shown(&workspace, cx));
+    }
+
+    #[gpui::test]
     async fn the_next_run_replaces_the_result_in_the_panel(cx: &mut TestAppContext) {
         let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
         let panel = workspace
@@ -1364,6 +1409,10 @@ pub(crate) mod tests {
         cx.run_until_parked();
 
         assert_eq!(results_viewers(&workspace, cx), 0);
+        assert!(
+            !row_details_shown(&workspace, cx),
+            "an error has no rows to show"
+        );
         let panel = workspace
             .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
             .expect("the panel is added");
