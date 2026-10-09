@@ -293,6 +293,7 @@ The inspector is a panel bound to the current grid selection. It shows the full,
 | RDT-11 | P0 | (Zed addition) When the result that owns the current subject is replaced by a new run or closed, the inspector returns to its empty state. VS Code leaves the old rows displayed. |
 | RDT-12 | P1 | (Zed addition) The find text survives selection changes and the wrap toggle. VS Code rebuilds the view on each, which drops the find text and the scroll position. |
 | RDT-10 | P1 | The inspector can be placed in a dock the user chooses. VS Code today defaults to the Explorer sidebar and lets users move it to the secondary sidebar. |
+| RDT-13 | P1 | (Zed addition) Showing a result opens the inspector without moving focus: a run shown in the Results panel, and a results file opened in a tab (a `.ktt` or `.kqr` file, a result from the history, a run shown in a tab). A file with no result, and a failed run, do not open it. A tab opens it once; adding the same tab to the workspace again, as moving it to another pane does, does not reopen an inspector the user closed. |
 
 #### 4.11.1 JSON presentation (JSN)
 

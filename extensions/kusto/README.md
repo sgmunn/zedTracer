@@ -202,6 +202,15 @@ understood and repeated, so it needs nothing from the history:
 Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
 database. Files written before parameters were kept in them simply run without values.
 
+## Row Details
+
+Row Details shows the values of the row selected in a result. It opens by itself, in the dock on the right (the
+`kusto_results.dock` setting moves it to the left), whenever a result is shown: after a run that shows its result in the
+Results panel, and when a result opens as a tab, which is what happens to a `.ktt` or `.kqr` file you open, to a result
+you open from the history, and to a run when `kusto.results_location` is `editor`. It does not take the focus. A file
+that holds no result and a failed run leave it as it is. If you close it, it stays closed until the next result is
+shown, and moving a tab to another pane does not bring it back.
+
 ## Query threads
 
 A query thread keeps the queries of one investigation together without a file to name or a long file of
