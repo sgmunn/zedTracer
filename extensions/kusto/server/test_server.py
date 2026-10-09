@@ -586,9 +586,10 @@ class CodeLensTest(unittest.TestCase):
 
         first = self.titles(lenses, 0)
         self.assertEqual(first[0], "▶ Run")
-        self.assertTrue(first[1].startswith("Last run: "), first)
-        self.assertTrue(first[1].endswith("took 1.8 s, 1,240 rows"), first)
-        self.assertEqual(first[2:], ["Results", "Copy CID"])
+        self.assertEqual(first[1], "Results", "next to Run, which the long lenses after it cannot push away")
+        self.assertTrue(first[2].startswith("Last run: "), first)
+        self.assertTrue(first[2].endswith("took 1.8 s, 1,240 rows"), first)
+        self.assertEqual(first[3:], ["Copy CID"])
         self.assertEqual(self.titles(lenses, 3), ["▶ Run"], "another query has no history")
 
         by_title = {lens["command"]["title"]: lens["command"] for lens in lenses}
@@ -608,14 +609,14 @@ class CodeLensTest(unittest.TestCase):
             durationMs=900, rows=7, path="/history/a.ktt", parameters={"raid": "abc"},
         )
         titles = self.titles(self.lenses(), 0)
-        self.assertTrue(titles[1].startswith("Last run: "), titles)
+        self.assertTrue(titles[2].startswith("Last run: "), titles)
 
     def test_the_same_text_on_another_cluster_is_another_query(self):
         self.record("started", "id-1", "T1\n| take 1")
         self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")
 
         here = self.titles(self.lenses(), 0)
-        self.assertTrue(here[1].startswith("Last run: "), here)
+        self.assertTrue(here[2].startswith("Last run: "), here)
 
         elsewhere = self.titles(
             self.lenses('//:setDefaultCluster("other")\n//:setDefaultDb("Samples")\nT1\n| take 1\n'),
@@ -633,6 +634,19 @@ class CodeLensTest(unittest.TestCase):
         self.assertEqual(cancel["command"]["arguments"], ["kusto::CancelQuery"])
         self.assertEqual(self.titles(lenses, 3), ["▶ Run"])
 
+    def test_results_stays_next_to_cancel_while_a_later_run_is_going(self):
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")
+        self.record("started", "id-2", "T1\n| take 1")
+        first = self.titles(self.lenses(), 0)
+        self.assertRegex(first[0], SPINNING)
+        self.assertEqual(first[1:3], ["Cancel", "Results"])
+        self.assertTrue(first[3].startswith("Last run: "), first)
+
+    def test_a_failed_last_run_has_no_results_lens(self):
+        self.record("started", "id-1", "T1\n| take 1")
+        self.record("failed", "id-1", "T1\n| take 1", message="bad table")
+        self.assertNotIn("Results", self.titles(self.lenses(), 0))
+
     def test_the_server_asks_for_fresh_lenses_when_a_run_ends(self):
         self.record("started", "id-1", "T1\n| take 1")
         self.assertRegex(self.titles(self.lenses(), 0)[0], SPINNING)
@@ -644,7 +658,7 @@ class CodeLensTest(unittest.TestCase):
             self.request(8, "textDocument/codeLens", {"textDocument": {"uri": URI}}), 0
         )
         self.assertEqual(titles[0], "▶ Run")
-        self.assertTrue(titles[1].endswith("took 500 ms, 3 rows"), titles)
+        self.assertTrue(titles[2].endswith("took 500 ms, 3 rows"), titles)
 
     def test_the_running_lens_shows_the_elapsed_time(self):
         self.record("started", "id-1", "T1\n| take 1", minutes_ago=2)
@@ -687,7 +701,8 @@ class CodeLensTest(unittest.TestCase):
         self.record("cancelled", "id-2", "T1\n| take 1")
         titles = self.titles(self.lenses(), 0)
         self.assertEqual(titles[0], "▶ Run")
-        self.assertTrue(titles[1].endswith("took 900 ms, 7 rows"), titles)
+        self.assertEqual(titles[1], "Results")
+        self.assertTrue(titles[2].endswith("took 900 ms, 7 rows"), titles)
 
     def test_a_run_that_never_reported_an_end_stops_counting_as_running(self):
         self.record("started", "id-1", "T1\n| take 1", minutes_ago=60)

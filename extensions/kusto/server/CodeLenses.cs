@@ -1,8 +1,8 @@
 using System.Globalization;
 
 /// <summary>
-/// The lenses above each query: Run, or Running and Cancel, and what the last run of the same
-/// query did. A lens that has to do something in the editor names one of Zed's actions through
+/// The lenses above each query: Run, or Running and Cancel, then Results when the last run left
+/// one, and what the last run of the same query did. A lens that has to do something in the editor names one of Zed's actions through
 /// `zed.dispatchAction`; the rest only show text.
 /// </summary>
 internal static class CodeLenses
@@ -47,6 +47,10 @@ internal static class CodeLenses
             {
                 Add("▶ Run", DispatchActionCommand, "kusto::RunQuery");
             }
+            // Next to Run, so that it stays within reach when the lenses after it, the connection
+            // above all, are longer than the editor is wide.
+            if (state?.Last is { Failure: null, ResultPath: { } path })
+                Add("Results", DispatchActionCommand, "kusto::ShowResult", new { path });
             Add(Describe(connection), ConnectionCommand);
             if (schemaOf(connection) is { } schema)
             {
@@ -65,8 +69,6 @@ internal static class CodeLenses
                 else
                 {
                     Add(Describe(last), NoopCommand);
-                    if (last.ResultPath is { } path)
-                        Add("Results", DispatchActionCommand, "kusto::ShowResult", new { path });
                 }
                 Add("Copy CID", DispatchActionCommand, "kusto::CopyClientRequestId", new { id = last.RunId });
             }
