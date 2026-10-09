@@ -13075,7 +13075,7 @@ impl LspStore {
             });
             cx.background_spawn(request).detach_and_log_err(cx);
         } else {
-            let (stopped_names, stop_task) = if only_restart_servers.is_empty() {
+            let (stopped_names, orphaned_buffers, stop_task) = if only_restart_servers.is_empty() {
                 self.stop_local_language_servers_for_buffers(&buffers, HashSet::default(), cx)
             } else {
                 self.stop_local_language_servers_for_buffers(&[], only_restart_servers.clone(), cx)
@@ -13102,7 +13102,7 @@ impl LspStore {
                             }
                         }
                     }
-                    for buffer in buffers {
+                    for buffer in buffers.into_iter().chain(orphaned_buffers) {
                         lsp_store.register_buffer_with_language_servers(
                             &buffer,
                             only_restart_servers.clone(),
@@ -13156,7 +13156,7 @@ impl LspStore {
                 Ok(())
             })
         } else {
-            let (stopped_names, task) =
+            let (stopped_names, _, task) =
                 self.stop_local_language_servers_for_buffers(&buffers, also_stop_servers, cx);
             if let Some(local) = self.as_local_mut() {
                 local.stopped_language_servers.extend(stopped_names);
@@ -13173,9 +13173,9 @@ impl LspStore {
         buffers: &[Entity<Buffer>],
         also_stop_servers: HashSet<LanguageServerSelector>,
         cx: &mut Context<Self>,
-    ) -> (HashSet<LanguageServerName>, Task<()>) {
+    ) -> (HashSet<LanguageServerName>, Vec<Entity<Buffer>>, Task<()>) {
         let Some(local) = self.as_local_mut() else {
-            return (HashSet::default(), Task::ready(()));
+            return (HashSet::default(), Vec::new(), Task::ready(()));
         };
         let mut language_server_names_to_stop = BTreeSet::default();
         let mut language_servers_to_stop = also_stop_servers
@@ -13228,7 +13228,33 @@ impl LspStore {
             })
             .collect();
 
+        // A server can serve buffers of other worktrees than the ones asked for, such as an
+        // invisible worktree that reuses the server of a visible one. They lose their server
+        // when it stops, and nothing else registers them with its replacement.
+        let requested_buffer_ids = buffers
+            .iter()
+            .map(|buffer| buffer.read(cx).remote_id())
+            .collect::<HashSet<_>>();
+        let orphaned_buffer_ids = local
+            .buffer_snapshots
+            .iter()
+            .filter(|(buffer_id, snapshots)| {
+                !requested_buffer_ids.contains(*buffer_id)
+                    && local.registered_buffers.contains_key(*buffer_id)
+                    && snapshots
+                        .keys()
+                        .any(|server_id| language_servers_to_stop.contains(server_id))
+            })
+            .map(|(buffer_id, _)| *buffer_id)
+            .collect::<Vec<_>>();
         local.lsp_tree.remove_nodes(&language_servers_to_stop);
+        let orphaned_buffers = {
+            let buffer_store = self.buffer_store.read(cx);
+            orphaned_buffer_ids
+                .into_iter()
+                .filter_map(|buffer_id| buffer_store.get(buffer_id))
+                .collect()
+        };
         let tasks = language_servers_to_stop
             .into_iter()
             .map(|server| self.stop_local_language_server(server, cx))
@@ -13236,6 +13262,7 @@ impl LspStore {
 
         (
             stopped_names,
+            orphaned_buffers,
             cx.background_spawn(futures::future::join_all(tasks).map(|_| ())),
         )
     }

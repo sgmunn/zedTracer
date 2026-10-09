@@ -1201,3 +1201,111 @@ fn worktree_entries(project: &Entity<Project>, cx: &TestAppContext) -> Vec<Strin
             .collect()
     })
 }
+
+#[gpui::test]
+async fn test_restarting_a_shared_server_reopens_the_buffers_of_every_worktree_it_serves(
+    cx: &mut TestAppContext,
+) {
+    for restart_from_visible in [true, false] {
+        init_test(cx);
+        cx.executor().allow_parking();
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({ "visible.rs": "fn visible() {}" }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/elsewhere"),
+            json!({ "hidden.rs": "fn hidden() {}" }),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+        language_registry.add(rust_lang());
+
+        let opened: Arc<Mutex<Vec<(usize, String)>>> = Arc::default();
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _fake_servers = language_registry.register_fake_lsp(
+            "Rust",
+            FakeLspAdapter {
+                initializer: Some(Box::new({
+                    let opened = opened.clone();
+                    let started = started.clone();
+                    move |fake_server| {
+                        let index = started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let opened = opened.clone();
+                        fake_server
+                            .handle_notification::<lsp::notification::DidOpenTextDocument, _>(
+                                move |params, _| {
+                                    opened
+                                        .lock()
+                                        .push((index, params.text_document.uri.to_string()));
+                                },
+                            );
+                    }
+                })),
+                ..FakeLspAdapter::default()
+            },
+        );
+
+        // The visible worktree's buffer comes first, so the invisible worktree's buffer reuses the
+        // server it starts.
+        let mut buffers = Vec::new();
+        let mut handles = Vec::new();
+        for path in [path!("/project/visible.rs"), path!("/elsewhere/hidden.rs")] {
+            let buffer = project
+                .update(cx, |project, cx| project.open_local_buffer(path, cx))
+                .await
+                .unwrap();
+            handles.push(project.update(cx, |project, cx| {
+                project.register_buffer_with_language_servers(&buffer, cx)
+            }));
+            cx.run_until_parked();
+            buffers.push(buffer);
+        }
+        let opened_uris = |opened: &Mutex<Vec<(usize, String)>>| {
+            let mut uris = opened
+                .lock()
+                .iter()
+                .map(|(_, uri)| uri.clone())
+                .collect::<Vec<_>>();
+            uris.sort();
+            uris
+        };
+        assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(opened_uris(&opened).len(), 2, "one server has both buffers");
+
+        opened.lock().clear();
+        let restarted_from = if restart_from_visible {
+            buffers[0].clone()
+        } else {
+            buffers[1].clone()
+        };
+        project.update(cx, |project, cx| {
+            project.restart_language_servers_for_buffers(
+                vec![restarted_from],
+                Default::default(),
+                true,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            opened_uris(&opened),
+            vec![
+                "file:///elsewhere/hidden.rs".to_string(),
+                "file:///project/visible.rs".to_string()
+            ],
+            "after a restart from the {} buffer, the new server has both buffers",
+            if restart_from_visible {
+                "visible"
+            } else {
+                "invisible"
+            },
+        );
+        drop((handles, buffers));
+    }
+}
