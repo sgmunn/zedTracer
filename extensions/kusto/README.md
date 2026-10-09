@@ -305,10 +305,10 @@ Turn code lenses on in Zed settings (they are off by default):
 Above each query (a run of non-blank lines) the server shows **▶ Run**, which runs that query. While the
 query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second
 until nothing is running) and **Cancel** instead. Once the query has been run and left a result, **Results**
-comes straight after them (it shows that run's saved result in the Results panel, or in a tab in a query
-thread). It is placed ahead of the connection, schema and parameter lenses so that it stays in reach when
+comes straight after them, with the number of rows the result has, for example `Results (1,240 rows)` (it shows that
+run's saved result in the Results panel, or in a tab in a query thread). It is placed ahead of the connection, schema and parameter lenses so that it stays in reach when
 those are longer than the editor is wide. After them, the same lens row shows what the last run did, for example
-`Last run: 10:42:11, took 1.8 s, 1,240 rows`, and **Copy CID** (copies the run's client request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
+`Last run: 10:42:11, took 1.8 s`, and **Copy CID** (copies the run's client request id). A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
 
 The lenses come from a log the editor keeps: every run appends a line when it starts and when it ends
