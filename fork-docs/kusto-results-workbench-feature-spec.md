@@ -639,6 +639,24 @@ A trace can be thousands of activities, and the question is often about one step
 
 **Status.** FOC-1 to FOC-6 are built. The core is in `activity.rs` (`Focus`, `resolve_focus`, `build_projection_in`, and the findings count the rows in view), checked on the real trace: focusing the 4.6 s step resolves in 5 ms to 4,611 of 6,413 rows. The viewer has the Focus… button and field, the focus bar with Up one level and Show whole trace, and the right-click **Focus on this activity** on a grid row, a tree node and a timeline row. Tests drive each path and check that the Data rows, the findings, the Timeline axis and the tree's activities all follow the focus. Not built: key bindings (FOC-7) and remembering the focus per result (FOC-8).
 
+### 5.10 Query threads (THR)
+
+An investigation is a handful of related queries. Today they live in a file the user has to create and name, or among unrelated queries in one file. A query thread is an entry in the Threads sidebar, beside agent threads and terminal threads, whose surface in the agent panel is a Kusto query editor. Its results open as tabs in the editor area, like a `.ktt` file opened from the project panel, so a large trace gets the whole window and nothing needs resizing.
+
+| ID | Pri | Requirement |
+| --- | --- | --- |
+| THR-1 | P1 | **A new kind of thread.** The Threads sidebar offers a query thread beside the agent and terminal threads, grouped by project as they are, with a title the user can rename. Selecting it shows its query editor in the agent panel. |
+| THR-2 | P1 | **The queries are a file.** A thread's text is a `.kql` file in `<data dir>/kusto/threads`, named by the thread's id. It is created empty with the thread and saved like any file, so the thread is that file plus its title and comes back after a restart with the same text. A query worth keeping is moved into a `.kql` file in a project. |
+| THR-3 | P1 | **An ordinary Kusto editor.** The editor has the language server's colours, completion, diagnostics and code lenses, and holds as many queries as the user writes, each run from the cursor or a selection (RUN-1). Run, Cancel and the lenses' actions act on the thread's editor while it is focused, wherever it is shown. |
+| THR-4 | P1 | **Results open in the editor area.** A run from a thread opens its result in a tab, whatever `kusto.results_location` says (SET-2), because a thread is for exploring results too large for a panel. Each completed run opens its own tab (RUN-7). |
+| THR-5 | P1 | **The same runs.** A run from a thread uses the same client, tokens, history and run log as a run from a file, so the lenses' last-run details, the history and Rerun all see it. |
+| THR-6 | P1 | **Parameter profiles.** A thread finds the profile file next to its own query file, and the project's profile file in the project's first visible worktree, because the thread's file is in no project. |
+| THR-7 | P2 | Closing a thread keeps its file. |
+
+**Acceptance vectors (spec).** THR-V1: a run from a thread opens a results tab with `results_location` set to the panel. THR-V2: two threads hold different text and a run in one runs only its own query. THR-V3: a thread reopened after a restart has the text it had. THR-V4: the project's active parameter profile supplies the values of a query run from a thread.
+
+**Status.** Not built.
+
 ## 6. Acceptance vectors
 
 Concrete cases each implementation must satisfy. Vectors marked **(VSC test)** come from the VS Code unit tests. Vectors marked **(spec)** are defined by this spec from reading the code, because VS Code has no test for them. Automated tests should reproduce all of them. Fixture files that exercise these cases, with expected results, are in `fork-docs/samples/` (see its README). Wire formats follow what the VS Code server emits: datetimes as ISO 8601 with seven fractional digits, timespans as `[-][d.]hh:mm:ss[.fffffff]`.
@@ -749,7 +767,7 @@ Every deliberate difference in one place. "Fix" means Zed does not reproduce the
 
 ## 8. Questions and decisions
 
-Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open. Q-21 to Q-26 belong to the timeline, findings, waterfall and template sections (5.5 to 5.8); Q-21 to Q-24 are decided and Q-25 and Q-26 are open. Q-27 to Q-29 belong to focus (5.9) and are decided.
+Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are decided. Q-14 is decided as "assess in phase A"; its outcome is still open. Q-3 additionally needs a check in a running VS Code before parity tests are written. Q-15 to Q-20 belong to the sequence view (section 5.3); Q-17 and Q-18 are decided and the rest are open. Q-21 to Q-26 belong to the timeline, findings, waterfall and template sections (5.5 to 5.8); Q-21 to Q-24 are decided and Q-25 and Q-26 are open. Q-27 to Q-29 belong to focus (5.9) and are decided. Q-30 to Q-32 belong to query threads (5.10); Q-30 and Q-31 are decided and Q-32 is open.
 
 | # | Question | Decision |
 | --- | --- | --- |
@@ -782,3 +800,6 @@ Status: the recommendations below were reviewed and accepted, so Q-1 to Q-13 are
 | Q-27 | Does a focus scope the Data tab too (FOC-3)? | Decided: yes, with the source row numbers unchanged. |
 | Q-28 | Show the path from the root to the focus, or only a bar with Up one level (FOC-4)? | Decided: the bar with Up one level and Show whole trace. A path can follow if it is missed. |
 | Q-29 | Save the focus in the result file (FOC-6)? | Decided: no, it is view state. |
+| Q-30 | Where is a thread's query file kept: in the user data directory, or in the project (THR-2)? | Decided: the user data directory, so threads add nothing to a repository. A query that should stay becomes a `.kql` file in the project. |
+| Q-31 | Do results of a thread follow `kusto.results_location` (THR-4)? | Decided: no, they always open as tabs. A thread is for exploring large results, and a tab gives them the whole editor area. |
+| Q-32 | What happens to a thread's file when the thread is closed (THR-7)? | Open. Keeping it loses nothing, and the folder is small text; clearing files no thread points to can follow if the folder grows. |
