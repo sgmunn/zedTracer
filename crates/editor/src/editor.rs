@@ -3087,6 +3087,13 @@ impl Editor {
         self.workspace.as_ref()?.0.upgrade()
     }
 
+    /// Gives an editor that is in no pane the workspace it acts on, as `added_to_workspace` does
+    /// for one that is: code lens clicks, go to definition and error notices all go through it.
+    /// It has no serialization id, so nothing about the editor is saved with the workspace.
+    pub fn set_workspace(&mut self, workspace: WeakEntity<Workspace>) {
+        self.workspace = Some((workspace, None));
+    }
+
     /// Detaches a task and shows an error notification in the workspace if available,
     /// otherwise just logs the error.
     pub fn detach_and_notify_err<R, E>(
