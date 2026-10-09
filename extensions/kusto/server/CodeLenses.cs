@@ -3,8 +3,8 @@ using System.Globalization;
 /// <summary>
 /// The lenses above each query, on two lines. The first is what to do and what happened: Run, or
 /// Running and Cancel, then Results (with its row count) when the last run left one, the parameter
-/// profile, and what the last run of the same query did. The second is where the query runs, and
-/// Copy CID for the last run. A lens that has to do something in the editor names one of Zed's
+/// profile, and what the last run of the same query did. The second is Copy, for the query, then
+/// where the query runs, and Copy CID for the last run. A lens that has to do something in the editor names one of Zed's
 /// actions through `zed.dispatchAction`; the rest only show text.
 /// </summary>
 internal static class CodeLenses
@@ -75,6 +75,7 @@ internal static class CodeLenses
             }
 
             line = 1;
+            Add("Copy", DispatchActionCommand, "kusto::CopyQuery");
             Add(Describe(connection), ConnectionCommand);
             if (schemaOf(connection) is { } schema)
             {

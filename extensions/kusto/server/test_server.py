@@ -538,12 +538,13 @@ class CodeLensTest(unittest.TestCase):
         return self.request(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
 
     def titles(self, lenses, line):
-        """The lens titles on a line, without the one that says where the query runs."""
+        """The lens titles on a line, without the ones that copy the query and say where it runs."""
         return [
             lens["command"]["title"]
             for lens in lenses
             if lens["range"]["start"]["line"] == line
             and lens["command"]["command"] not in ("kusto.connection", "kusto.refreshSchema")
+            and lens["command"]["arguments"] != ["kusto::CopyQuery"]
         ]
 
     def connection_titles(self, lenses):
@@ -596,9 +597,12 @@ class CodeLensTest(unittest.TestCase):
         self.assertTrue(first[2].startswith("Last run: "), first)
         self.assertEqual(len(first), 3)
         second = titles_on(1)
-        self.assertEqual(second[0], "help.kusto.windows.net / Samples")
-        self.assertTrue(second[1].startswith("↻ Schema: "), second)
-        self.assertEqual(second[2:], ["Copy CID"])
+        self.assertEqual(second[:2], ["Copy", "help.kusto.windows.net / Samples"])
+        self.assertTrue(second[2].startswith("↻ Schema: "), second)
+        self.assertEqual(second[3:], ["Copy CID"])
+        copy = next(lens for lens in lenses if lens["command"]["title"] == "Copy")["command"]
+        self.assertEqual(copy["command"], "zed.dispatchAction")
+        self.assertEqual(copy["arguments"], ["kusto::CopyQuery"])
         self.assertEqual(
             {lens["range"]["start"]["line"] for lens in lenses}, {0},
             "both lines are above the first line of the query",
@@ -760,8 +764,8 @@ class CodeLensTest(unittest.TestCase):
     def test_without_a_log_there_are_only_run_lenses_and_the_connection(self):
         self.assertFalse(self.log.exists())
         lenses = self.lenses()
-        # Each of the two queries has a Run, a connection and a schema lens.
-        self.assertEqual(len(lenses), 6)
+        # Each of the two queries has a Run, a Copy, a connection and a schema lens.
+        self.assertEqual(len(lenses), 8)
         self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
 
     def test_the_noop_command_is_accepted(self):
