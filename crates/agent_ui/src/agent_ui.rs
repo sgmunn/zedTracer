@@ -407,6 +407,8 @@ actions!(
         ImportThreadsFromOtherChannels,
         /// Starts a new terminal thread.
         NewTerminalThread,
+        /// Starts a new Kusto query thread.
+        NewQueryThread,
     ]
 );
 

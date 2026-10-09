@@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
 use crate::ManageProfiles;
 use crate::agent_connection_store::AgentConnectionStore;
 use crate::completion_provider::{AgentContextSelection, AgentContextSource};
+use crate::query_thread_metadata_store::QueryThreadId;
 use crate::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
     normalize_terminal_custom_title, terminal_title_without_prefix,
@@ -50,7 +51,7 @@ use crate::{
 };
 use crate::{
     AgentDiffPane, ConversationView, CopyThreadToClipboard, Follow, LoadThreadFromClipboard,
-    NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, RenameSelectedThread,
+    NewQueryThread, NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, RenameSelectedThread,
     ResetFastModeWarnings, ResetTrialEndUpsell, ResetTrialUpsell, ShowAllSidebarThreadMetadata,
     ShowThreadMetadata, ToggleNewThreadMenu, ToggleOptionsMenu,
     conversation_view::{
@@ -103,6 +104,11 @@ use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     item::{ItemEvent, ItemHandle},
 };
+
+mod query_threads;
+
+use kusto_results_ui::QueryThread;
+use query_threads::AgentQueryThread;
 
 const AGENT_PANEL_KEY: &str = "agent_panel";
 const MIN_PANEL_WIDTH: Pixels = px(300.);
@@ -368,6 +374,12 @@ pub fn init(cx: &mut App) {
                         panel.update(cx, |panel, cx| {
                             panel.new_thread_with_workspace(Some(workspace), window, cx)
                         });
+                        workspace.focus_panel::<AgentPanel>(window, cx);
+                    }
+                })
+                .register_action(|workspace, _: &NewQueryThread, window, cx| {
+                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                        panel.update(cx, |panel, cx| panel.new_query_thread(window, cx));
                         workspace.focus_panel::<AgentPanel>(window, cx);
                     }
                 })
@@ -1082,6 +1094,9 @@ enum BaseView {
     Terminal {
         terminal_id: TerminalId,
     },
+    QueryThread {
+        query_thread_id: QueryThreadId,
+    },
 }
 
 impl From<AgentThread> for BaseView {
@@ -1096,6 +1111,7 @@ enum VisibleSurface<'a> {
     Uninitialized,
     AgentThread(&'a Entity<ConversationView>),
     Terminal(&'a Entity<TerminalView>),
+    QueryThread(&'a Entity<QueryThread>),
 }
 
 enum WhichFontSize {
@@ -1107,7 +1123,9 @@ impl BaseView {
     pub fn which_font_size_used(&self) -> WhichFontSize {
         match self {
             BaseView::AgentThread { .. } => WhichFontSize::AgentFont,
-            BaseView::Terminal { .. } | BaseView::Uninitialized => WhichFontSize::None,
+            BaseView::Terminal { .. }
+            | BaseView::QueryThread { .. }
+            | BaseView::Uninitialized => WhichFontSize::None,
         }
     }
 }
@@ -1129,6 +1147,7 @@ pub struct AgentPanel {
     draft_thread: Option<Entity<ConversationView>>,
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     terminals: HashMap<TerminalId, AgentTerminal>,
+    query_threads: HashMap<QueryThreadId, AgentQueryThread>,
     pending_terminal_spawn: Option<TerminalId>,
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
@@ -1550,6 +1569,7 @@ impl AgentPanel {
             persist_selected_agent_task: Task::ready(()),
             retained_threads: HashMap::default(),
             terminals: HashMap::default(),
+            query_threads: HashMap::default(),
             pending_terminal_spawn: None,
             #[cfg(test)]
             test_terminal_spawn_gate: None,
@@ -4405,6 +4425,18 @@ impl AgentPanel {
                 }
                 None
             }
+            BaseView::QueryThread { query_thread_id } => {
+                self._thread_view_subscription = None;
+                self._active_thread_focus_subscription =
+                    self.query_threads.get(query_thread_id).map(|query_thread| {
+                        let focus_handle = query_thread.thread.focus_handle(cx);
+                        cx.on_focus_in(&focus_handle, window, |_this, _window, cx| {
+                            cx.emit(AgentPanelEvent::ActiveViewFocused);
+                            cx.notify();
+                        })
+                    });
+                None
+            }
             BaseView::Uninitialized => {
                 self._thread_view_subscription = None;
                 self._active_thread_focus_subscription = None;
@@ -4424,6 +4456,11 @@ impl AgentPanel {
                 .terminals
                 .get(terminal_id)
                 .map(|terminal| VisibleSurface::Terminal(&terminal.view))
+                .unwrap_or(VisibleSurface::Uninitialized),
+            BaseView::QueryThread { query_thread_id } => self
+                .query_threads
+                .get(query_thread_id)
+                .map(|query_thread| VisibleSurface::QueryThread(&query_thread.thread))
                 .unwrap_or(VisibleSurface::Uninitialized),
         }
     }
@@ -5051,6 +5088,7 @@ impl Panel for AgentPanel {
                 conversation_view.read(cx).activation_focus_handle(cx)
             }
             VisibleSurface::Terminal(terminal_view) => terminal_view.focus_handle(cx),
+            VisibleSurface::QueryThread(thread) => thread.focus_handle(cx),
         }
     }
 
@@ -5261,13 +5299,16 @@ impl AgentPanel {
     }
 
     fn destination_has_meaningful_state(&self, cx: &App) -> bool {
-        if !self.retained_threads.is_empty() || !self.terminals.is_empty() {
+        if !self.retained_threads.is_empty()
+            || !self.terminals.is_empty()
+            || !self.query_threads.is_empty()
+        {
             return true;
         }
 
         match &self.base_view {
             BaseView::Uninitialized => false,
-            BaseView::Terminal { .. } => true,
+            BaseView::Terminal { .. } | BaseView::QueryThread { .. } => true,
             BaseView::AgentThread { conversation_view } => {
                 let has_entries = conversation_view
                     .read(cx)
@@ -5555,6 +5596,15 @@ impl AgentPanel {
                     Label::new("Terminal").into_any_element()
                 }
             }
+
+            VisibleSurface::QueryThread(_) => Label::new(
+                self.active_query_thread_id()
+                    .map(|id| self.query_thread_title(id, cx))
+                    .unwrap_or_else(|| "Kusto query".into()),
+            )
+            .color(Color::Muted)
+            .truncate()
+            .into_any_element(),
 
             VisibleSurface::Uninitialized => Label::new("Agent").truncate().into_any_element(),
         };
@@ -5885,10 +5935,14 @@ impl AgentPanel {
 
         let can_create_entries = self.has_open_project(cx);
         let supports_terminal = self.supports_terminal(cx);
+        let supports_query_threads = self.supports_query_threads(cx);
         let showing_terminal = matches!(self.visible_surface(), VisibleSurface::Terminal(_));
+        let showing_query_thread = matches!(self.visible_surface(), VisibleSurface::QueryThread(_));
 
         let (selected_agent_custom_icon, selected_agent_label) = if showing_terminal {
             (None, SharedString::from("Terminal"))
+        } else if showing_query_thread {
+            (None, SharedString::from("Kusto query"))
         } else if let Agent::Custom { id, .. } = &self.selected_agent {
             let store = agent_server_store.read(cx);
             let icon = store.agent_icon(&id);
@@ -5923,7 +5977,9 @@ impl AgentPanel {
                         .item(
                             ContextMenuEntry::new("Zed Agent")
                                 .when(
-                                    !showing_terminal && is_agent_selected(Agent::NativeAgent),
+                                    !showing_terminal
+                                        && !showing_query_thread
+                                        && is_agent_selected(Agent::NativeAgent),
                                     |this| this.action(Box::new(NewThread)),
                                 )
                                 .icon(IconName::ZedAgent)
@@ -5975,6 +6031,32 @@ impl AgentPanel {
                                                                 window,
                                                                 cx,
                                                             );
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }),
+                            )
+                        })
+                        .when(supports_query_threads, |menu| {
+                            menu.item(
+                                ContextMenuEntry::new("Kusto query")
+                                    .when(showing_query_thread, |this| {
+                                        this.action(Box::new(NewQueryThread))
+                                    })
+                                    .icon(IconName::DatabaseZap)
+                                    .icon_color(Color::Muted)
+                                    .handler({
+                                        let workspace = workspace.clone();
+                                        move |window, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |workspace, cx| {
+                                                    if let Some(panel) =
+                                                        workspace.panel::<AgentPanel>(cx)
+                                                    {
+                                                        panel.update(cx, |panel, cx| {
+                                                            panel.new_query_thread(window, cx);
                                                         });
                                                     }
                                                 });
@@ -6268,7 +6350,9 @@ impl AgentPanel {
                     return false;
                 }
             }
-            BaseView::Terminal { .. } | BaseView::Uninitialized => {
+            BaseView::Terminal { .. }
+            | BaseView::QueryThread { .. }
+            | BaseView::Uninitialized => {
                 return false;
             }
         }
@@ -6320,7 +6404,9 @@ impl AgentPanel {
             });
 
         match &self.base_view {
-            BaseView::Uninitialized | BaseView::Terminal { .. } => false,
+            BaseView::Uninitialized
+            | BaseView::Terminal { .. }
+            | BaseView::QueryThread { .. } => false,
             BaseView::AgentThread { conversation_view } => {
                 if conversation_view.read(cx).as_native_thread(cx).is_some() {
                     let history_is_empty = ThreadStore::global(cx).read(cx).is_empty();
@@ -6588,7 +6674,7 @@ impl AgentPanel {
                     });
                 }
             }
-            BaseView::Uninitialized => {}
+            BaseView::Uninitialized | BaseView::QueryThread { .. } => {}
         }
     }
 
@@ -6619,6 +6705,10 @@ impl Render for AgentPanel {
             .bg(cx.theme().colors().panel_background)
             .on_action(cx.listener(|this, action: &NewThread, window, cx| {
                 this.new_thread(action, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewQueryThread, window, cx| {
+                cx.stop_propagation();
+                this.new_query_thread(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewTerminalThread, window, cx| {
                 cx.stop_propagation();
@@ -6693,6 +6783,7 @@ impl Render for AgentPanel {
                         .child(terminal_content)
                         .child(self.render_drag_target(cx))
                 }
+                VisibleSurface::QueryThread(thread) => parent.child(thread.clone()),
             })
             .children(self.render_trial_end_upsell(window, cx));
 
@@ -6998,6 +7089,7 @@ mod tests {
     use super::*;
     use crate::NewWorktreeBranchTarget;
     use crate::conversation_view::tests::{StubAgentServer, init_test};
+    use crate::query_thread_metadata_store::QueryThreadMetadataStore;
     use crate::test_support::{
         active_session_id, active_thread_id, open_thread_with_connection,
         open_thread_with_custom_connection, register_test_sidebar, send_message,
@@ -14764,6 +14856,178 @@ mod tests {
                 Agent::Stub,
                 "selected_agent should be restored to the original after an agent override"
             );
+        });
+    }
+
+    async fn setup_query_thread_panel(
+        cx: &mut TestAppContext,
+    ) -> (Entity<AgentPanel>, VisualTestContext) {
+        let (panel, mut cx) = setup_panel(cx).await;
+        cx.update(|_, cx| {
+            QueryThreadMetadataStore::init_global(cx);
+        });
+        cx.run_until_parked();
+        (panel, cx)
+    }
+
+    fn global_fs(cx: &VisualTestContext) -> Arc<dyn fs::Fs> {
+        cx.read(|cx| <dyn fs::Fs>::global(cx))
+    }
+
+    fn query_thread_store_entry(
+        id: QueryThreadId,
+        cx: &VisualTestContext,
+    ) -> Option<crate::query_thread_metadata_store::QueryThreadMetadata> {
+        cx.read(|cx| {
+            QueryThreadMetadataStore::global(cx)
+                .read(cx)
+                .entry(id)
+                .cloned()
+        })
+    }
+
+    #[gpui::test]
+    async fn test_new_query_thread_shows_its_editor_and_is_stored(cx: &mut TestAppContext) {
+        let (panel, mut cx) = setup_query_thread_panel(cx).await;
+
+        panel.update_in(&mut cx, |panel, window, cx| panel.new_query_thread(window, cx));
+        cx.run_until_parked();
+
+        let id = panel
+            .read_with(&cx, |panel, _| panel.active_query_thread_id())
+            .expect("the new query thread is active");
+        panel.read_with(&cx, |panel, _| {
+            assert!(matches!(
+                panel.visible_surface(),
+                VisibleSurface::QueryThread(_)
+            ));
+        });
+        let entry = query_thread_store_entry(id, &cx).expect("the thread is in the store");
+        assert_eq!(entry.title.as_ref(), "Kusto query");
+        assert_eq!(
+            entry.folder_paths().paths(),
+            [PathBuf::from("/project")].as_slice()
+        );
+        assert!(
+            global_fs(&cx)
+                .is_file(&id.query_file())
+                .await,
+            "the thread's file is made"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_closing_a_query_thread_forgets_it_and_keeps_its_file(cx: &mut TestAppContext) {
+        let (panel, mut cx) = setup_query_thread_panel(cx).await;
+        panel.update_in(&mut cx, |panel, window, cx| panel.new_query_thread(window, cx));
+        cx.run_until_parked();
+        let id = panel
+            .read_with(&cx, |panel, _| panel.active_query_thread_id())
+            .expect("the new query thread is active");
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.close_query_thread(id, window, cx)
+        });
+        cx.run_until_parked();
+
+        panel.read_with(&cx, |panel, _| {
+            assert_eq!(panel.active_query_thread_id(), None);
+            assert!(panel.query_threads.is_empty());
+        });
+        assert!(query_thread_store_entry(id, &cx).is_none());
+        assert!(
+            global_fs(&cx)
+                .is_file(&id.query_file())
+                .await,
+            "the file stays"
+        );
+    }
+
+    fn stored_query_thread(title: &str) -> crate::query_thread_metadata_store::QueryThreadMetadata {
+        crate::query_thread_metadata_store::QueryThreadMetadata {
+            id: QueryThreadId::new(),
+            title: title.to_string().into(),
+            created_at: chrono::Utc::now(),
+            worktree_paths: WorktreePaths::from_folder_paths(&PathList::new(&[Path::new(
+                "/project",
+            )])),
+        }
+    }
+
+    fn query_thread_text(
+        panel: &Entity<AgentPanel>,
+        id: QueryThreadId,
+        cx: &VisualTestContext,
+    ) -> Option<String> {
+        panel.read_with(cx, |panel, cx| {
+            let query_thread = panel.query_threads.get(&id)?;
+            let editor = query_thread.thread.read(cx).editor().clone();
+            Some(editor.read(cx).text(cx))
+        })
+    }
+
+    #[gpui::test]
+    async fn test_restoring_a_query_thread_opens_its_file_and_keeps_its_title(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, mut cx) = setup_query_thread_panel(cx).await;
+        let stored = stored_query_thread("Slow requests");
+        let id = stored.id;
+        global_fs(&cx)
+            .as_fake()
+            .insert_tree(
+                kusto_results_ui::threads_folder(),
+                json!({ format!("{id}.kql"): "Requests\n| take 5" }),
+            )
+            .await;
+        cx.update(|_, cx| {
+            QueryThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                store.save(stored.clone(), cx);
+            });
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.restore_query_thread(stored, false, window, cx)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            panel.read_with(&cx, |panel, _| panel.active_query_thread_id()),
+            Some(id)
+        );
+        assert_eq!(
+            query_thread_text(&panel, id, &cx).as_deref(),
+            Some("Requests\n| take 5")
+        );
+        assert_eq!(
+            query_thread_store_entry(id, &cx)
+                .expect("the thread is in the store")
+                .title
+                .as_ref(),
+            "Slow requests",
+            "opening a thread does not rename it"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_restoring_a_query_thread_twice_opens_it_once(cx: &mut TestAppContext) {
+        let (panel, mut cx) = setup_query_thread_panel(cx).await;
+        let stored = stored_query_thread("Slow requests");
+        let id = stored.id;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.restore_query_thread(stored.clone(), true, window, cx);
+            panel.restore_query_thread(stored.clone(), true, window, cx);
+        });
+        cx.run_until_parked();
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.restore_query_thread(stored, true, window, cx)
+        });
+        cx.run_until_parked();
+
+        panel.read_with(&cx, |panel, _| {
+            assert_eq!(panel.query_threads.len(), 1);
+            assert_eq!(panel.active_query_thread_id(), Some(id));
         });
     }
 }
