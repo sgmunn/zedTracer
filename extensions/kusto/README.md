@@ -212,7 +212,8 @@ in the command palette; it is offered for local projects.
 The editor is an ordinary Kusto editor, with colours, completion, diagnostics and lenses, and holds as many queries as
 you write, separated by blank lines. F5 or Shift-Enter runs the query at the cursor, or the selection, and the result
 opens as a tab in the editor area, whatever `kusto.results_location` says, so a large trace gets the whole window.
-Each run opens its own tab, and the history, rerun and the lenses see it like any other run.
+Each run opens its own tab, and the history, rerun and the lenses see it like any other run. The lenses above
+a query work as in a file, and **Results** shows the result of a past run in a tab.
 
 The queries are a file, `<id>.kql` in the `kusto/threads` folder of Zed's data folder, saved half a second after you
 stop typing. A thread finds its parameter profiles beside that file (`<id>.parameters.yaml`) and in the project's
