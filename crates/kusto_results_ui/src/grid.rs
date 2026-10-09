@@ -1519,6 +1519,7 @@ impl Render for ResultGrid {
             });
         v_flex()
             .size_full()
+            .bg(colors.editor_background)
             .key_context("ResultGrid")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_selection(cx)))
