@@ -18,7 +18,7 @@ use kusto_code::{
     discover_repositories,
 };
 use kusto_results::inspector::{InspectorSubject, resolve_subject};
-use kusto_results::trace_schema::TraceColumns;
+use kusto_results::trace_schema::{TraceColumns, matches_pattern};
 use kusto_results::{ResultSet, Table};
 use language::Point;
 use settings::Settings as _;
@@ -31,8 +31,14 @@ use crate::results_settings::ResultsSettings;
 /// A result with more distinct markers than this is not worth looking all of them up ahead.
 const MAX_PREFETCHED_MARKERS: usize = 500;
 
-/// What the selected row says about its code.
-pub fn code_keys(table: &Table, columns: &TraceColumns, subject: &InspectorSubject) -> CodeKeys {
+/// What the selected row says about its code. A message that only says something started or
+/// ended (`structural_messages`) is the same on every row, so it says nothing about the code.
+pub fn code_keys(
+    table: &Table,
+    columns: &TraceColumns,
+    structural_messages: &[String],
+    subject: &InspectorSubject,
+) -> CodeKeys {
     let row = match subject {
         InspectorSubject::Empty => return CodeKeys::default(),
         InspectorSubject::Row { row } => *row,
@@ -52,7 +58,11 @@ pub fn code_keys(table: &Table, columns: &TraceColumns, subject: &InspectorSubje
 
     let marker = text_in(columns.marker);
     let process = text_in(columns.actor);
-    let mut message = text_in(columns.message);
+    let mut message = text_in(columns.message).filter(|message| {
+        !structural_messages
+            .iter()
+            .any(|pattern| matches_pattern(pattern, message.trim()))
+    });
     // A call stack can be in any column, so the whole row is searched for frames.
     let mut details = (0..table.columns.len())
         .filter_map(|column| text_in(Some(column)))
@@ -162,8 +172,14 @@ impl CodeReferences {
             self.show(CodeKeys::default(), cx);
             return;
         };
-        let columns = ResultsSettings::get_global(cx).trace_columns(table);
-        let keys = code_keys(table, &columns, &resolve_subject(table, rows));
+        let settings = ResultsSettings::get_global(cx);
+        let columns = settings.trace_columns(table);
+        let keys = code_keys(
+            table,
+            &columns,
+            &settings.structural_messages,
+            &resolve_subject(table, rows),
+        );
         self.prefetch_markers(result, table, &columns, cx);
         self.show(keys, cx);
     }
@@ -332,22 +348,29 @@ impl CodeReferences {
 }
 
 /// What a reference is, as the label above it says.
-fn heading(reference: &CodeRef) -> &'static str {
-    match (reference.origin, reference.kind) {
+fn heading(reference: &CodeRef) -> String {
+    let heading = match (reference.origin, reference.kind) {
         (_, CodeRefKind::MarkerUse) => "Marker used in",
         (_, CodeRefKind::MarkerDefinition) => "Marker defined as",
+        (_, CodeRefKind::LogLine) if reference.matches > 1 => {
+            return format!("Message text in one of {} places", reference.matches);
+        }
+        (_, CodeRefKind::LogLine) => "Message logged at",
         (KeyOrigin::Marker, _) => "Marker names",
         (KeyOrigin::Prefix, CodeRefKind::Method) => "Message names",
         (KeyOrigin::Prefix, _) => "Message names class",
         (KeyOrigin::Frame, CodeRefKind::Method) => "Stack frame",
         (KeyOrigin::Frame, _) => "Stack frame, class",
-    }
+        (KeyOrigin::Message, _) => "Message names",
+    };
+    heading.to_string()
 }
 
-/// The name that stands out on a reference: for a use of a marker, the method that uses it.
+/// The name that stands out on a reference: for a line that uses a marker or logs a message, the
+/// method it is in.
 fn title(reference: &CodeRef) -> String {
     match (reference.kind, &reference.enclosing) {
-        (CodeRefKind::MarkerUse, Some(method)) => method.clone(),
+        (CodeRefKind::MarkerUse | CodeRefKind::LogLine, Some(method)) => method.clone(),
         _ => reference.symbol.clone(),
     }
 }
@@ -435,9 +458,17 @@ impl Render for CodeReferences {
             ),
         };
 
-        v_flex()
-            .border_b_1()
-            .border_color(colors.border)
+        // Most rows have a message to look for, so waiting and finding nothing take one line.
+        let compact = match &self.state {
+            CodeState::Looking => true,
+            CodeState::Found { references, .. } => references.is_empty(),
+            _ => false,
+        };
+        let section = v_flex().border_b_1().border_color(colors.border);
+        if compact {
+            return section.child(div().px_2().py_1().child(body));
+        }
+        section
             .child(
                 h_flex()
                     .px_2()
@@ -498,7 +529,7 @@ mod tests {
 
     fn keys_of(table: &Table, rows: &[usize]) -> CodeKeys {
         let columns = TraceColumns::detect(table);
-        code_keys(table, &columns, &resolve_subject(table, rows))
+        code_keys(table, &columns, &[], &resolve_subject(table, rows))
     }
 
     #[test]
@@ -589,6 +620,7 @@ mod tests {
             symbol: "CodeMarkers.ChargeCard".into(),
             enclosing: enclosing.map(str::to_string),
             text: "using (new MonitoredScope(CodeMarkers.ChargeCard))".into(),
+            matches: 1,
         }
     }
 
@@ -596,7 +628,7 @@ mod tests {
     fn a_use_of_a_marker_is_named_after_the_method_that_uses_it() {
         let used = reference(KeyOrigin::Marker, CodeRefKind::MarkerUse, Some("Charge"));
         assert_eq!(
-            (heading(&used), title(&used).as_str()),
+            (heading(&used).as_str(), title(&used).as_str()),
             ("Marker used in", "Charge")
         );
         let unplaced = reference(KeyOrigin::Marker, CodeRefKind::MarkerUse, None);
@@ -628,5 +660,62 @@ mod tests {
             heading_of(KeyOrigin::Marker, CodeRefKind::Method),
             "Marker names"
         );
+    }
+
+    #[test]
+    fn a_message_that_only_says_something_started_is_not_looked_for() {
+        let table = Table {
+            name: "t".into(),
+            columns: vec![
+                Column::new("MarkerName", "string"),
+                Column::new("MessageText", "string"),
+            ],
+            rows: vec![
+                vec![
+                    Cell::Text("Orders-ChargeCard".into()),
+                    Cell::Text("Monitored scope start Checkout.Charge for the order".into()),
+                ],
+                vec![
+                    Cell::Text("Orders-ChargeCard".into()),
+                    Cell::Text("Charging the card for the order".into()),
+                ],
+            ],
+        };
+        let columns = TraceColumns::detect(&table);
+        let structural = vec!["Monitored scope start*".to_string()];
+        let keys_of = |row: usize| {
+            code_keys(
+                &table,
+                &columns,
+                &structural,
+                &resolve_subject(&table, &[row]),
+            )
+        };
+        let scope_start = keys_of(0);
+        assert_eq!(scope_start.marker.as_deref(), Some("Orders-ChargeCard"));
+        assert_eq!(
+            (scope_start.prefix, scope_start.literals),
+            (None, Vec::new())
+        );
+        let logged = keys_of(1);
+        assert_eq!(
+            logged
+                .literals
+                .first()
+                .and_then(|pieces| pieces.first())
+                .map(String::as_str),
+            Some("Charging the card for the order")
+        );
+    }
+
+    #[test]
+    fn a_log_line_is_named_after_its_method_and_says_when_the_text_is_in_several_places() {
+        let mut logged = reference(KeyOrigin::Message, CodeRefKind::LogLine, Some("Fetch"));
+        assert_eq!(
+            (heading(&logged).as_str(), title(&logged).as_str()),
+            ("Message logged at", "Fetch")
+        );
+        logged.matches = 3;
+        assert_eq!(heading(&logged), "Message text in one of 3 places");
     }
 }

@@ -754,6 +754,7 @@ mod tests {
     {
         public void Charge()
         {
+            this.Log($\"Charging the card for order {this.orderId}\");
             using (new MonitoredScope(CodeMarkers.ChargeCard))
             {
             }
@@ -774,10 +775,15 @@ mod tests {
                 rows: vec![
                     vec![
                         Cell::Text("Orders-ChargeCard".into()),
-                        Cell::Text("Checkout.Charge: charging the card".into()),
+                        Cell::Text("Checkout.Charge: Charging the card for order 12345".into()),
                         Cell::Text("Contoso.Orders.Host".into()),
                     ],
-                    vec![Cell::Null, Cell::Text("nothing to look up".into()), Cell::Null],
+                    vec![Cell::Null, Cell::Text("ok".into()), Cell::Null],
+                    vec![
+                        Cell::Null,
+                        Cell::Text("Words that no checkout holds anywhere".into()),
+                        Cell::Null,
+                    ],
                 ],
             }],
             ..Default::default()
@@ -901,7 +907,8 @@ mod tests {
                 .map(|reference| (reference.kind, reference.line, reference.enclosing.as_deref()))
                 .collect::<Vec<_>>(),
             vec![
-                (CodeRefKind::MarkerUse, 12, Some("Charge")),
+                (CodeRefKind::LogLine, 12, Some("Charge")),
+                (CodeRefKind::MarkerUse, 13, Some("Charge")),
                 (CodeRefKind::MarkerDefinition, 5, None),
                 (CodeRefKind::Method, 10, None),
             ]
@@ -931,6 +938,17 @@ mod tests {
             CodeState::Idle,
             "a row that names no code has no section"
         );
+
+        select_row(&active, 2, cx);
+        assert_eq!(
+            finished_state(&panel, cx),
+            CodeState::Found {
+                references: Vec::new(),
+                repositories: 1
+            },
+            "text that no checkout holds is searched for and not found"
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     #[gpui::test]
