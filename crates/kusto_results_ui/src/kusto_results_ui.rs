@@ -1,6 +1,7 @@
 //! The results grid and the views built around it, on top of the `kusto_results` crate.
 
 mod activity_tree;
+mod code_references;
 mod filter_popover;
 mod findings_strip;
 mod grid;

@@ -18,6 +18,7 @@ use settings::{DockSide, Settings as _};
 use ui::{Button, ButtonCommon, ButtonSize, Clickable, IconName, Label, prelude::*};
 use workspace::Workspace;
 
+use crate::code_references::CodeReferences;
 use crate::results_settings::ResultsSettings;
 
 use crate::inspector_text::{InspectorPalette, InspectorText};
@@ -99,6 +100,7 @@ pub struct RowDetailsPanel {
     selection: Entity<ActiveSelection>,
     inspector: Entity<InspectorText>,
     find_editor: Entity<Editor>,
+    code: Entity<CodeReferences>,
     /// What the inspector currently shows, so a repeated selection does not reset its scroll.
     shown: InspectorDocument,
     headline: Vec<String>,
@@ -113,8 +115,19 @@ impl RowDetailsPanel {
     ) -> anyhow::Result<Entity<Self>> {
         workspace.update_in(&mut cx, |workspace, window, cx| {
             let fs = workspace.app_state().fs.clone();
-            cx.new(|cx| Self::new(fs, window, cx))
+            let workspace = cx.weak_entity();
+            cx.new(|cx| {
+                let mut panel = Self::new(fs, window, cx);
+                panel.set_workspace(workspace, cx);
+                panel
+            })
         })
+    }
+
+    /// Lets the code section open a place it found, and look up with the project's environment.
+    pub fn set_workspace(&mut self, workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) {
+        self.code
+            .update(cx, |code, _| code.set_workspace(workspace));
     }
 
     pub fn new(fs: Arc<dyn Fs>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -125,7 +138,9 @@ impl RowDetailsPanel {
             editor.set_placeholder_text("Find in row", window, cx);
             editor
         });
+        let code = cx.new(|_| CodeReferences::new());
         let subscriptions = vec![
+            cx.observe(&code, |_, _, cx| cx.notify()),
             cx.observe_in(&selection, window, |this, _, window, cx| {
                 this.refresh(window, cx)
             }),
@@ -147,6 +162,7 @@ impl RowDetailsPanel {
             selection,
             inspector,
             find_editor,
+            code,
             shown: InspectorDocument::default(),
             headline: Vec::new(),
             match_count: 0,
@@ -206,6 +222,15 @@ impl RowDetailsPanel {
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.selection.read(cx);
+        let (result, table_index, rows) = (
+            selection.result.clone(),
+            selection.table_index,
+            selection.rows.clone(),
+        );
+        self.code.update(cx, |code, cx| {
+            code.select(result.as_ref(), table_index, &rows, cx)
+        });
         let selection = self.selection.read(cx);
         let headline = selection.headline();
         let document = selection
@@ -387,6 +412,9 @@ impl Render for RowDetailsPanel {
             .on_action(cx.listener(Self::cancel))
             .size_full()
             .child(header)
+            .when(self.code.read(cx).state().is_shown(), |panel| {
+                panel.child(self.code.clone())
+            })
             .when(has_subject, |panel| {
                 panel.child(
                     div()
@@ -405,11 +433,13 @@ mod tests {
     use fs::FakeFs;
     use gpui::TestAppContext;
     use investigation::InvestigationPanel;
+    use kusto_code::CodeRefKind;
     use kusto_results::{Cell, Column, Table};
     use project::Project;
     use workspace::{AppState, Workspace};
 
     use super::*;
+    use crate::code_references::CodeState;
 
     fn messages() -> Arc<ResultSet> {
         Arc::new(ResultSet {
@@ -711,5 +741,249 @@ mod tests {
         let after = header_colour(cx);
         assert_eq!(after, Some(gpui::hsla(0.5, 1., 0.5, 1.)));
         assert_ne!(before, after);
+    }
+
+    const CHECKOUT: &str = "namespace Contoso.Orders
+{
+    public static class CodeMarkers
+    {
+        public const string ChargeCard = \"Orders-ChargeCard\";
+    }
+
+    public class Checkout
+    {
+        public void Charge()
+        {
+            using (new MonitoredScope(CodeMarkers.ChargeCard))
+            {
+            }
+        }
+    }
+}
+";
+
+    fn charge_card_result() -> Arc<ResultSet> {
+        Arc::new(ResultSet {
+            tables: vec![Table {
+                name: "PrimaryResult".into(),
+                columns: vec![
+                    Column::new("MarkerName", "string"),
+                    Column::new("MessageText", "string"),
+                    Column::new("ProcessName", "string"),
+                ],
+                rows: vec![
+                    vec![
+                        Cell::Text("Orders-ChargeCard".into()),
+                        Cell::Text("Checkout.Charge: charging the card".into()),
+                        Cell::Text("Contoso.Orders.Host".into()),
+                    ],
+                    vec![Cell::Null, Cell::Text("nothing to look up".into()), Cell::Null],
+                ],
+            }],
+            ..Default::default()
+        })
+    }
+
+    fn set_code_roots(roots: &[&std::path::Path], cx: &mut gpui::VisualTestContext) {
+        let settings = serde_json::json!({ "kusto_results": { "code": { "roots": roots } } });
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(&settings.to_string(), cx)
+                    .expect("the user settings parse");
+            });
+        });
+    }
+
+    fn select_row(
+        active: &Entity<ActiveSelection>,
+        row: usize,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        active.update(cx, |active, cx| {
+            active.result = Some(charge_card_result());
+            active.table_index = 0;
+            active.rows = vec![row];
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    /// The lookup runs git on real threads, which the test executor does not wait for.
+    fn finished_state(
+        panel: &Entity<RowDetailsPanel>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> CodeState {
+        for _ in 0..400 {
+            let state = panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone());
+            if !matches!(state, CodeState::Looking) {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            cx.run_until_parked();
+        }
+        panic!("the lookup did not finish");
+    }
+
+    async fn panel_in_a_workspace(
+        fs: Arc<FakeFs>,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<RowDetailsPanel>,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let project = Project::test(fs.clone(), [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let mut panel = RowDetailsPanel::new(fs.clone(), window, cx);
+                panel.set_workspace(workspace.downgrade(), cx);
+                panel
+            })
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.focus_panel::<RowDetailsPanel>(window, cx);
+        });
+        (workspace, panel, cx)
+    }
+
+    /// Selecting a row lists the code its marker and message name in the checkouts of
+    /// `kusto_results.code.roots`, and opening one goes to its line.
+    #[gpui::test]
+    async fn lists_the_code_behind_the_selected_row_and_opens_it(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let repository = root.path().join("orders");
+        std::fs::create_dir_all(repository.join("src")).expect("a folder");
+        std::fs::write(repository.join("src/Checkout.cs"), CHECKOUT).expect("a file");
+        for arguments in [["init", "-q"], ["add", "-A"]] {
+            let status = futures::executor::block_on(
+                util::command::new_command("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status(),
+            )
+            .expect("git runs");
+            assert!(status.success(), "git {arguments:?}");
+        }
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            repository.join("src"),
+            serde_json::json!({ "Checkout.cs": CHECKOUT }),
+        )
+        .await;
+        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        set_code_roots(&[root.path()], cx);
+
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        select_row(&active, 0, cx);
+        let CodeState::Found {
+            references,
+            repositories,
+        } = finished_state(&panel, cx)
+        else {
+            panic!("the code was not found");
+        };
+        assert_eq!(repositories, 1);
+        assert_eq!(
+            references
+                .iter()
+                .map(|reference| (reference.kind, reference.line, reference.enclosing.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (CodeRefKind::MarkerUse, 12, Some("Charge")),
+                (CodeRefKind::MarkerDefinition, 5, None),
+                (CodeRefKind::Method, 10, None),
+            ]
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let code = panel.read_with(cx, |panel, _| panel.code.clone());
+        let first = references.first().expect("a reference").clone();
+        cx.update(|window, cx| code.update(cx, |code, cx| code.open(&first, window, cx)));
+        cx.run_until_parked();
+        let editor = workspace
+            .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+            .expect("the file opened in an editor");
+        let (text, cursor_row) = editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            (
+                editor.text(cx),
+                editor.selections.newest::<language::Point>(&snapshot).head().row,
+            )
+        });
+        assert_eq!(text, CHECKOUT);
+        assert_eq!(cursor_row, 11, "line 12, counting from zero");
+
+        select_row(&active, 1, cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone()),
+            CodeState::Idle,
+            "a row that names no code has no section"
+        );
+    }
+
+    #[gpui::test]
+    async fn says_how_to_turn_the_code_section_on(cx: &mut TestAppContext) {
+        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        select_row(&active, 0, cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone()),
+            CodeState::NotConfigured
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
+    async fn names_a_folder_that_holds_no_checkouts(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+        set_code_roots(&[root.path()], cx);
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        select_row(&active, 0, cx);
+        let CodeState::Failed(message) = finished_state(&panel, cx) else {
+            panic!("an empty folder is not a success");
+        };
+        assert!(
+            message.starts_with("There are no git checkouts in ")
+                && message.contains(&root.path().display().to_string()),
+            "{message}"
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Cloning a repository there and looking at the row again finds it.
+        let repository = root.path().join("orders");
+        std::fs::create_dir_all(&repository).expect("a folder");
+        std::fs::write(repository.join("Checkout.cs"), CHECKOUT).expect("a file");
+        for arguments in [["init", "-q"], ["add", "-A"]] {
+            futures::executor::block_on(
+                util::command::new_command("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status(),
+            )
+            .expect("git runs");
+        }
+        select_row(&active, 0, cx);
+        assert!(
+            matches!(
+                finished_state(&panel, cx),
+                CodeState::Found { repositories: 1, .. }
+            ),
+            "a failure is not remembered"
+        );
     }
 }
