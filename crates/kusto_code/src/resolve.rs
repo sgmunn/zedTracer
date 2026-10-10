@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, join3};
+use futures::future::{join_all, join4};
 use parking_lot::Mutex;
 
 use crate::keys::{CodeKeys, SymbolPath};
@@ -23,6 +23,11 @@ const MAX_DEFINITION_DEPTH: usize = 2;
 const MAX_USES: usize = 8;
 const MAX_DEFINITIONS: usize = 3;
 const MAX_DECLARATIONS: usize = 3;
+/// The lines shown for each run of a message.
+const MAX_LOG_LINES: usize = 3;
+/// A run of text that more lines than this contain is too common to say where a message came
+/// from.
+const MAX_COMMON_LOG_LINES: usize = 16;
 /// How long a result is kept. A checkout moves under a running editor (a pull, a branch), and a
 /// lookup is cheap enough to repeat.
 const CACHE_LIFETIME: Duration = Duration::from_secs(300);
@@ -36,6 +41,8 @@ pub enum KeyOrigin {
     Marker,
     Prefix,
     Frame,
+    /// The text of the message.
+    Message,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,6 +54,8 @@ pub enum CodeRefKind {
     Method,
     /// The type was found but not the method, which may be inherited.
     Type,
+    /// A line with the text of the message in a string, so that it may have logged it.
+    LogLine,
 }
 
 /// A place in a repository.
@@ -66,6 +75,9 @@ pub struct CodeRef {
     pub enclosing: Option<String>,
     /// The text of the line, without its indentation.
     pub text: String,
+    /// How many places are equally good: more than one when several lines of code hold the same
+    /// text of a message.
+    pub matches: usize,
 }
 
 struct Expiring<T> {
@@ -256,16 +268,151 @@ impl CodeResolver {
                 .map(|frame| self.resolve_symbol(frame, process, KeyOrigin::Frame)),
         );
 
-        let (marker, prefix, frames) = join3(marker, prefix, frames).await;
+        let message = self.resolve_message(&keys.literals, process);
+
+        let (mut message, marker, prefix, frames) = join4(message, marker, prefix, frames).await;
+        // The line that logged a message is likely to be in a file the other lookups found too.
+        let known_files: HashSet<PathBuf> = marker
+            .iter()
+            .chain(&prefix)
+            .chain(frames.iter().flatten())
+            .map(|reference| reference.path.clone())
+            .collect();
+        message.sort_by_key(|reference| !known_files.contains(&reference.path));
+
         let mut seen = HashSet::new();
-        marker
+        message
             .into_iter()
+            .chain(marker)
             .chain(prefix)
             .chain(frames.into_iter().flatten())
             .filter(|reference| {
                 seen.insert((reference.path.clone(), reference.line, reference.kind))
             })
             .collect()
+    }
+
+    /// The lines that may have logged the message. For each of the two longest runs of it that
+    /// code could have written (`CodeKeys::literals`), the lines that hold the most of the run
+    /// in a string, unless that is so many lines that it says nothing.
+    async fn resolve_message(
+        &self,
+        literals: &[Vec<String>],
+        process: Option<&str>,
+    ) -> Vec<CodeRef> {
+        if literals.is_empty() {
+            return Vec::new();
+        }
+        let runs: Vec<&str> = literals
+            .iter()
+            .filter_map(|pieces| pieces.first().map(String::as_str))
+            .collect();
+        let cache_key = format!(
+            "message:{}:{}",
+            runs.join("\u{1f}"),
+            process.unwrap_or_default()
+        );
+        if let Some(cached) = self.cached(&cache_key) {
+            return cached;
+        }
+
+        let mut patterns: Vec<String> = Vec::new();
+        for piece in literals.iter().flatten() {
+            if !patterns.contains(piece) {
+                patterns.push(piece.clone());
+            }
+        }
+        let query = GrepQuery::fixed(patterns);
+        let mut hits: Vec<Located> = Vec::new();
+        for stage in self.search_stages(process) {
+            hits.extend(
+                self.grep_repositories(&stage, &query)
+                    .await
+                    .into_iter()
+                    .filter(|location| {
+                        location.hit.text.contains('"') && !is_comment(&location.hit.text)
+                    }),
+            );
+            // A line that holds a whole run of the message cannot be bettered by another
+            // repository; a line with only part of it can.
+            let holds_a_whole_run = hits
+                .iter()
+                .any(|location| runs.iter().any(|run| location.hit.text.contains(run)));
+            if holds_a_whole_run {
+                break;
+            }
+        }
+
+        let process_words = words(process.unwrap_or_default());
+        let mut taken = HashSet::new();
+        let mut found = Vec::new();
+        for pieces in literals {
+            // The pieces are longest first, so the first one a line holds is the most of the run
+            // that it holds.
+            let mut matched: Vec<(usize, &str, &Located)> = hits
+                .iter()
+                .filter_map(|location| {
+                    let piece = pieces
+                        .iter()
+                        .find(|piece| location.hit.text.contains(piece.as_str()))?;
+                    Some((piece.chars().count(), piece.as_str(), location))
+                })
+                .collect();
+            let Some(best) = matched.iter().map(|(length, ..)| *length).max() else {
+                continue;
+            };
+            matched.retain(|(length, ..)| *length == best);
+            let equally_good = matched.len();
+            if equally_good > MAX_COMMON_LOG_LINES {
+                continue;
+            }
+            matched.sort_by_key(|(_, _, location)| {
+                let shared_words = self
+                    .repositories
+                    .get(location.repository_index)
+                    .map_or(0, |repository| {
+                        words(&repository.name).intersection(&process_words).count()
+                    });
+                (
+                    Reverse(shared_words),
+                    is_test_path(&location.hit.path),
+                    location.hit.path.clone(),
+                    location.hit.line,
+                )
+            });
+            for (_, piece, location) in matched.into_iter().take(MAX_LOG_LINES) {
+                if !taken.insert((
+                    location.repository_index,
+                    location.hit.path.clone(),
+                    location.hit.line,
+                )) {
+                    continue;
+                }
+                let enclosing = self.read(location).and_then(|lines| {
+                    location
+                        .hit
+                        .line
+                        .checked_sub(1)
+                        .and_then(|index| enclosing_method(&lines, index))
+                });
+                found.extend(
+                    self.reference(
+                        KeyOrigin::Message,
+                        CodeRefKind::LogLine,
+                        location,
+                        location.hit.line,
+                        shortened(piece),
+                        enclosing,
+                    )
+                    .map(|reference| CodeRef {
+                        matches: equally_good,
+                        ..reference
+                    }),
+                );
+            }
+        }
+        self.remember(cache_key, &found);
+        found
     }
 
     fn reference(
@@ -288,6 +435,7 @@ impl CodeResolver {
             symbol,
             enclosing,
             text: location.hit.text.trim().to_string(),
+            matches: 1,
         })
     }
 
@@ -779,6 +927,16 @@ fn is_declaration_of(location: &Located, definition: &Definition) -> bool {
     is_comment(text)
         || type_declaration_name(text).as_deref() == Some(definition.name.as_str())
         || string_constant_name(text).as_deref() == Some(definition.name.as_str())
+}
+
+/// The text of a run for a label, cut at 60 characters.
+fn shortened(text: &str) -> String {
+    const LIMIT: usize = 60;
+    if text.chars().count() <= LIMIT {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(LIMIT).collect();
+    format!("{}…", cut.trim_end())
 }
 
 fn shared_directories(left: &str, right: &str) -> usize {

@@ -135,6 +135,58 @@ namespace Contoso.Orders
         "test/Orders.Tests/CheckoutTests.cs",
         "namespace Contoso.Orders.Tests\n{\n    public class CheckoutTests\n    {\n        public void RunsTheCheckout()\n        {\n            CodeMarkers.CheckoutRun.Execute();\n        }\n    }\n}\n",
     );
+    write(
+        &orders,
+        "src/Orders/Cache.cs",
+        r#"namespace Contoso.Orders
+{
+    public class Cache
+    {
+        public void Initialize()
+        {
+            if (this.ready)
+            {
+                this.logger.LogInfo("Memory backed cloud cache already initialized. Taking fast path.");
+                return;
+            }
+        }
+
+        public void Fetch(Locator locator)
+        {
+            this.logger.LogInfo($"Successfully fetched cluster details for {locator}");
+        }
+
+        /// Taking the slow path for the unknown cluster.
+        public void Slow()
+        {
+        }
+    }
+}
+"#,
+    );
+    write(
+        &orders,
+        "src/Orders/AnotherCache.cs",
+        "namespace Contoso.Orders\n{\n    public class AnotherCache\n    {\n        public void Fetch()\n        {\n            this.logger.LogInfo($\"Successfully fetched cluster details for {this.name}\");\n        }\n    }\n}\n",
+    );
+    let busy: String = (0..20)
+        .map(|index| format!("        public void Step{index}()\n        {{\n            this.logger.LogInfo(\"Started processing the request\");\n        }}\n"))
+        .collect();
+    write(
+        &orders,
+        "src/Orders/Busy.cs",
+        &format!("namespace Contoso.Orders\n{{\n    public class Busy\n    {{\n{busy}    }}\n}}\n"),
+    );
+    write(
+        &orders,
+        "src/Orders/Warm.cs",
+        "namespace Contoso.Orders\n{\n    public class Warm\n    {\n        public void Use()\n        {\n            this.logger.LogInfo(\"Warm cache ready for use\");\n        }\n    }\n}\n",
+    );
+    write(
+        &orders,
+        "src/Orders/Posting.cs",
+        "namespace Contoso.Orders\n{\n    public class Posting\n    {\n        public void Post()\n        {\n            this.logger.LogInfo(\"Ledger posted the entry successfully\");\n        }\n    }\n}\n",
+    );
     track(&orders);
 
     let billing = root.path().join("billing");
@@ -153,6 +205,11 @@ namespace Contoso.Orders
         "src/Billing/Ledger.cs",
         "namespace Contoso.Billing\n{\n    public class Ledger\n    {\n        public void Post(Entry entry)\n        {\n        }\n    }\n}\n",
     );
+    write(
+        &billing,
+        "src/Billing/Posting.cs",
+        "namespace Contoso.Billing\n{\n    public class Posting\n    {\n        public void Post()\n        {\n            this.logger.LogInfo(\"Ledger posted the entry successfully\");\n        }\n    }\n}\n",
+    );
     track(&billing);
 
     let common = root.path().join("common");
@@ -160,6 +217,11 @@ namespace Contoso.Orders
         &common,
         "src/Common/CommonMarkers.cs",
         "namespace Contoso.Common\n{\n    public static class CommonMarkers\n    {\n        public const string Shared = \"Common-Shared\";\n    }\n}\n",
+    );
+    write(
+        &common,
+        "src/Common/Warm.cs",
+        "namespace Contoso.Common\n{\n    public class Warmup\n    {\n        public void Start()\n        {\n            this.logger.LogInfo(\"Warm cache ready for the first request now\");\n        }\n    }\n}\n",
     );
     track(&common);
 
@@ -476,6 +538,178 @@ fn something_that_is_in_no_repository_resolves_to_nothing() {
     assert!(block_on(resolver.resolve(&keys)).is_empty());
 }
 
+fn message_keys(message: &str, process: Option<&str>) -> CodeKeys {
+    keys(None, Some(message), None, process)
+}
+
+#[test]
+fn a_message_with_nothing_filled_in_is_found_where_it_is_logged() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&message_keys(
+        "Memory backed cloud cache already initialized. Taking fast path.",
+        None,
+    )));
+    assert_eq!(
+        references
+            .iter()
+            .map(|reference| (
+                place(reference),
+                reference.kind,
+                reference.origin,
+                reference.line
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            ("orders", "src/Orders/Cache.cs", Some("Initialize")),
+            CodeRefKind::LogLine,
+            KeyOrigin::Message,
+            9
+        )]
+    );
+    assert!(
+        references
+            .first()
+            .is_some_and(|reference| reference.text.starts_with("this.logger.LogInfo("))
+    );
+}
+
+#[test]
+fn a_message_with_values_filled_in_is_found_by_the_text_before_them() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&message_keys(
+        "Successfully fetched cluster details for [MetadataLocator: [TenantId=0d9fca32-3db8-4ce8-a52e-1c9557f46ebf, RealmId=, WorkspaceId=84980b9c-4cb0-40c2-a152-b70d5fca1109, CapacityId=]]",
+        None,
+    )));
+    assert_eq!(
+        references
+            .iter()
+            .map(|reference| (place(reference), reference.line))
+            .collect::<Vec<_>>(),
+        vec![
+            (("orders", "src/Orders/AnotherCache.cs", Some("Fetch")), 7),
+            (("orders", "src/Orders/Cache.cs", Some("Fetch")), 16),
+        ]
+    );
+    assert!(
+        references
+            .iter()
+            .all(|reference| reference.symbol == "Successfully fetched cluster details for")
+    );
+}
+
+#[test]
+fn a_line_with_only_part_of_the_message_does_not_end_the_search() {
+    let (_root, resolver) = fixture();
+    // `orders` is named like the process and holds "Warm cache ready for", but the whole text
+    // is only in `common`.
+    let references = block_on(resolver.resolve(&message_keys(
+        "Warm cache ready for the first request now",
+        Some("Contoso.Orders.Host"),
+    )));
+    assert_eq!(
+        references.iter().map(place).collect::<Vec<_>>(),
+        vec![("common", "src/Common/Warm.cs", Some("Start"))]
+    );
+}
+
+#[test]
+fn a_message_that_several_lines_hold_says_how_many() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&message_keys(
+        "Successfully fetched cluster details for the cluster",
+        None,
+    )));
+    assert_eq!(
+        references
+            .iter()
+            .map(|reference| reference.matches)
+            .collect::<Vec<_>>(),
+        vec![2, 2]
+    );
+    let alone = block_on(resolver.resolve(&message_keys(
+        "Memory backed cloud cache already initialized. Taking fast path.",
+        None,
+    )));
+    assert_eq!(alone.first().map(|reference| reference.matches), Some(1));
+}
+
+#[test]
+fn the_class_and_method_a_message_starts_with_are_not_part_of_what_is_looked_for() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&message_keys(
+        "Cache.Initialize: Memory backed cloud cache already initialized. Taking fast path.",
+        None,
+    )));
+    let kinds: Vec<(CodeRefKind, usize)> = references
+        .iter()
+        .map(|reference| (reference.kind, reference.line))
+        .collect();
+    // The log line comes first, then the method the prefix names.
+    assert_eq!(
+        kinds,
+        vec![(CodeRefKind::LogLine, 9), (CodeRefKind::Method, 5)]
+    );
+}
+
+#[test]
+fn a_log_line_in_a_file_the_other_lookups_found_comes_first() {
+    let (_root, resolver) = fixture();
+    let message = "Successfully fetched cluster details for the cluster";
+    let without = block_on(resolver.resolve(&message_keys(message, None)));
+    assert_eq!(
+        without
+            .first()
+            .map(|reference| reference.relative_path.as_str()),
+        Some("src/Orders/AnotherCache.cs")
+    );
+    let with_prefix =
+        block_on(resolver.resolve(&message_keys(&format!("Cache.Fetch: {message}"), None)));
+    assert_eq!(
+        with_prefix
+            .first()
+            .map(|reference| reference.relative_path.as_str()),
+        Some("src/Orders/Cache.cs")
+    );
+}
+
+#[test]
+fn text_so_common_that_it_places_nothing_is_left_alone() {
+    let (_root, resolver) = fixture();
+    assert!(
+        block_on(resolver.resolve(&message_keys("Started processing the request", None)))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_comment_or_a_line_without_a_string_is_not_a_log_line() {
+    let (_root, resolver) = fixture();
+    assert!(
+        block_on(resolver.resolve(&message_keys(
+            "Taking the slow path for the unknown cluster",
+            None
+        )))
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_repository_named_like_the_process_is_searched_first_for_a_message() {
+    let (_root, resolver) = fixture();
+    let repositories_for = |process: Option<&str>| -> Vec<String> {
+        block_on(resolver.resolve(&message_keys(
+            "Ledger posted the entry successfully",
+            process,
+        )))
+        .into_iter()
+        .map(|reference| reference.repository)
+        .collect()
+    };
+    assert_eq!(repositories_for(Some("Contoso.Billing.Host")), ["billing"]);
+    assert_eq!(repositories_for(Some("Contoso.Orders.Host")), ["orders"]);
+    assert_eq!(repositories_for(None), ["billing", "orders"]);
+}
+
 #[test]
 fn a_reference_carries_the_text_of_its_line() {
     let (_root, resolver) = fixture();
@@ -667,6 +901,53 @@ fn resolves_a_real_trace_against_real_repositories() {
     println!(
         "prefixes of {} distinct: {methods} to a method, {types} to a type only ({:?})",
         prefixes.len(),
+        started.elapsed()
+    );
+
+    let mut by_text: std::collections::BTreeMap<String, CodeKeys> =
+        std::collections::BTreeMap::new();
+    for event in &events {
+        if let Some(first) = event.literals.first().and_then(|pieces| pieces.first()) {
+            by_text
+                .entry(first.clone())
+                .or_insert_with(|| event.clone());
+        }
+    }
+    let step = (by_text.len() / 100).max(1);
+    let sampled: Vec<&CodeKeys> = by_text.values().step_by(step).collect();
+    let started = std::time::Instant::now();
+    let (mut placed, mut too_common_or_absent) = (0, 0);
+    for event in &sampled {
+        let keys = CodeKeys {
+            literals: event.literals.clone(),
+            process: event.process.clone(),
+            ..CodeKeys::default()
+        };
+        let references = block_on(resolver.resolve(&keys));
+        if references.is_empty() {
+            too_common_or_absent += 1;
+            let shown: Vec<&str> = event
+                .literals
+                .iter()
+                .filter_map(|pieces| pieces.first().map(String::as_str))
+                .collect();
+            println!("  not placed: {shown:?}");
+        } else {
+            placed += 1;
+            if placed <= 12 {
+                if let Some(reference) = references.first() {
+                    println!(
+                        "  logged at {}:{} for {:?}",
+                        reference.relative_path, reference.line, reference.symbol
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "messages: {} distinct texts, {} sampled: {placed} placed, {too_common_or_absent} not ({:?})",
+        by_text.len(),
+        sampled.len(),
         started.elapsed()
     );
 }
