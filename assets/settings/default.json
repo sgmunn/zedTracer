@@ -150,6 +150,14 @@
     // Messages that only say something started or ended and carry no content. Such rows are
     // dimmed in the grid and can be hidden. A "*" at either end matches any text.
     "structural_messages": ["Monitored scope start*", "Monitored scope end*"],
+    // Where the code behind a row of a trace is looked for. Row Details lists the code that the
+    // marker, a `Class.Method` at the start of the message, or a call stack frame of the selected
+    // row names, searched on demand with `git grep` in the checkouts found here.
+    "code": {
+      // Folders that hold git checkouts, such as "~/Projects/mwc": each folder directly inside a
+      // root that is a checkout is searched, and so is a root that is itself a checkout.
+      "roots": [],
+    },
     // How the Timeline tab of a trace is drawn.
     "waterfall": {
       // Activities shorter than this share of the trace's duration are folded into their parent.

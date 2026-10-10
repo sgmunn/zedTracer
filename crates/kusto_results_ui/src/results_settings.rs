@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gpui::{Hsla, Rgba};
 use kusto_results::Table;
 use kusto_results::sequence::SequenceOptions;
@@ -22,6 +24,8 @@ pub struct ResultsSettings {
     pub structural_messages: Vec<String>,
     /// How the Timeline tab folds and names what it draws.
     pub waterfall: WaterfallOptions,
+    /// The folders that hold the checkouts the code behind a row is looked for in.
+    pub code_roots: Vec<PathBuf>,
 }
 
 impl ResultsSettings {
@@ -88,6 +92,31 @@ fn waterfall_options(content: &settings::SettingsContent) -> WaterfallOptions {
     }
 }
 
+/// `~` and `~/…` are the home folder.
+fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix('~') {
+        Some("") => util::paths::home_dir().clone(),
+        Some(rest) if rest.starts_with(['/', '\\']) => {
+            util::paths::home_dir().join(rest.trim_start_matches(['/', '\\']))
+        }
+        _ => PathBuf::from(path),
+    }
+}
+
+fn code_roots(content: &settings::SettingsContent) -> Vec<PathBuf> {
+    content
+        .kusto_results
+        .as_ref()
+        .and_then(|results| results.code.as_ref())
+        .and_then(|code| code.roots.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .map(|root| root.trim())
+        .filter(|root| !root.is_empty())
+        .map(expand_home)
+        .collect()
+}
+
 fn trace_schema(content: &settings::KustoTraceSchemaContent) -> TraceSchema {
     TraceSchema {
         name: content.name.clone().unwrap_or_default(),
@@ -148,6 +177,7 @@ impl Settings for ResultsSettings {
                 .and_then(|results| results.structural_messages.clone())
                 .unwrap_or_else(|| TimelineOptions::default().structural_messages),
             waterfall: waterfall_options(content),
+            code_roots: code_roots(content),
             sequence: sequence_options(
                 content
                     .kusto_results
@@ -202,6 +232,7 @@ mod tests {
             sequence: None,
             structural_messages: None,
             waterfall: None,
+            code: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -358,5 +389,37 @@ mod tests {
                 "a level the user did not mention keeps its default"
             );
         });
+    }
+
+    #[test]
+    fn code_roots_expand_the_home_folder_and_skip_blank_entries() {
+        let mut content = settings::SettingsContent::default();
+        content.kusto_results = Some(settings::KustoResultsSettingsContent {
+            code: Some(settings::KustoCodeSettingsContent {
+                roots: Some(vec![
+                    "~/Projects/mwc".into(),
+                    " /srv/code ".into(),
+                    "".into(),
+                    "~".into(),
+                    "~other/x".into(),
+                ]),
+            }),
+            ..Default::default()
+        });
+        let home = util::paths::home_dir();
+        assert_eq!(
+            ResultsSettings::from_settings(&content).code_roots,
+            vec![
+                home.join("Projects").join("mwc"),
+                PathBuf::from("/srv/code"),
+                home.clone(),
+                PathBuf::from("~other/x"),
+            ]
+        );
+        assert!(
+            ResultsSettings::from_settings(&settings::SettingsContent::default())
+                .code_roots
+                .is_empty()
+        );
     }
 }

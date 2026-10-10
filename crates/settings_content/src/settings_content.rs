@@ -1453,6 +1453,21 @@ pub struct KustoResultsSettingsContent {
 
     /// How the Timeline tab of a trace is drawn.
     pub waterfall: Option<KustoWaterfallSettingsContent>,
+
+    /// Where the code behind a row of a trace is looked for.
+    pub code: Option<KustoCodeSettingsContent>,
+}
+
+/// Where the code behind a row of a trace is looked for.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoCodeSettingsContent {
+    /// Folders that hold git checkouts, such as "~/Projects/mwc". Every folder directly inside one
+    /// that is a checkout is searched, and so is a folder that is itself a checkout. Row Details
+    /// shows the code a marker, a `Class.Method` in the message, or a call stack frame names.
+    ///
+    /// Default: []
+    pub roots: Option<Vec<String>>,
 }
 
 /// How the Timeline tab of a trace is drawn.
