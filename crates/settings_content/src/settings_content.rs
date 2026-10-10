@@ -1442,6 +1442,12 @@ pub struct KustoResultsSettingsContent {
     /// Default: []
     pub trace_schemas: Option<Vec<KustoTraceSchemaContent>>,
 
+    /// The names a trace's columns may have, for each part the views read, in order of
+    /// preference. They are tried before the built-in names, so a trace can use `MessageText`
+    /// and another `EventText` with one setting. A schema in `trace_schemas` still decides the
+    /// parts it names.
+    pub trace_columns: Option<KustoTraceColumnsContent>,
+
     /// How the sequence diagram of a trace is drawn.
     pub sequence: Option<KustoSequenceSettingsContent>,
 
@@ -1514,6 +1520,30 @@ pub struct KustoSequenceSettingsContent {
     ///
     /// Default: 300
     pub max_arrows: Option<usize>,
+}
+
+/// The column names a trace may use for each part the views read, most preferred first. Each is
+/// tried exactly and then ignoring case, and the built-in name is tried after the listed ones.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoTraceColumnsContent {
+    /// Columns holding an activity's id. Built-in: `CurrentActivityId`.
+    pub activity_id: Option<Vec<String>>,
+    /// Columns holding the id of an activity's parent. Built-in: `ParentActivityId`.
+    pub parent_activity_id: Option<Vec<String>>,
+    /// Columns naming what an event marks, which is also what the code behind a row is looked
+    /// up by. Built-in: `MarkerName`.
+    pub marker: Option<Vec<String>>,
+    /// Columns naming who logged the event, usually a process. Built-in: `ProcessName`.
+    pub actor: Option<Vec<String>>,
+    /// Columns holding when the event happened. Built-in: `TIMESTAMP`.
+    pub timestamp: Option<Vec<String>>,
+    /// Columns holding severity from 1 (critical) to 5 (verbose). Built-in: `level`, then
+    /// `severity`.
+    pub severity: Option<Vec<String>>,
+    /// Columns holding the event's message, which is also what the code behind a row is looked
+    /// up by. Built-in: `MessageText`.
+    pub message: Option<Vec<String>>,
 }
 
 /// The column names one kind of trace uses for the parts the activity and sequence views read.

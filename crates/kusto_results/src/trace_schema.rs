@@ -4,6 +4,8 @@
 //! columns. Traces from other services name them differently, so every feature asks this
 //! module for the columns instead of looking for names of its own.
 
+use std::collections::HashMap;
+
 use crate::result::Table;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,6 +56,10 @@ impl TraceRole {
     }
 }
 
+/// Column names a user lists for each role, tried in order before the built-in names, for
+/// traces that call a column something else (`MessageText` in one table, `EventText` in another).
+pub type RoleNames = HashMap<TraceRole, Vec<String>>;
+
 /// A user-defined mapping from roles to column names. A role it leaves out keeps its built-in
 /// names.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -100,20 +106,21 @@ pub struct TraceColumns {
 impl TraceColumns {
     /// Resolves the roles with the built-in names only.
     pub fn detect(table: &Table) -> Self {
-        Self::resolve(table, &[])
+        Self::resolve(table, &[], &RoleNames::new())
     }
 
-    /// Resolves the roles with the first schema that applies to the table, or with the
-    /// built-in names when none does. A schema applies when it names no column the table
-    /// lacks and every column it requires is present.
-    pub fn resolve(table: &Table, schemas: &[TraceSchema]) -> Self {
+    /// Resolves the roles with the first schema that applies to the table, or with the listed
+    /// and then the built-in names when none does. A schema applies when it names no column the
+    /// table lacks and every column it requires is present. A role the schema leaves out is
+    /// looked for under `names` first, in order, and then under the built-in names.
+    pub fn resolve(table: &Table, schemas: &[TraceSchema], names: &RoleNames) -> Self {
         schemas
             .iter()
-            .find_map(|schema| Self::from_schema(table, schema))
-            .unwrap_or_else(|| Self::from_names(table, None))
+            .find_map(|schema| Self::from_schema(table, schema, names))
+            .unwrap_or_else(|| Self::from_names(table, None, names))
     }
 
-    fn from_schema(table: &Table, schema: &TraceSchema) -> Option<Self> {
+    fn from_schema(table: &Table, schema: &TraceSchema, names: &RoleNames) -> Option<Self> {
         let requirements_met = schema
             .requires
             .iter()
@@ -123,15 +130,23 @@ impl TraceColumns {
                 .column_name(*role)
                 .is_none_or(|name| find_column(table, &[name]).is_some())
         });
-        (requirements_met && names_exist).then(|| Self::from_names(table, Some(schema)))
+        (requirements_met && names_exist).then(|| Self::from_names(table, Some(schema), names))
     }
 
-    fn from_names(table: &Table, schema: Option<&TraceSchema>) -> Self {
-        let resolve_role = |role: TraceRole| match schema.and_then(|schema| schema.column_name(role))
-        {
-            Some(name) => find_column(table, &[name]),
-            None => find_column(table, role.built_in_names()),
-        };
+    fn from_names(table: &Table, schema: Option<&TraceSchema>, names: &RoleNames) -> Self {
+        let resolve_role =
+            |role: TraceRole| match schema.and_then(|schema| schema.column_name(role)) {
+                Some(name) => find_column(table, &[name]),
+                None => {
+                    let listed = names.get(&role).map(Vec::as_slice).unwrap_or_default();
+                    let candidates: Vec<&str> = listed
+                        .iter()
+                        .map(String::as_str)
+                        .chain(role.built_in_names().iter().copied())
+                        .collect();
+                    find_column(table, &candidates)
+                }
+            };
         Self {
             activity_id: resolve_role(TraceRole::ActivityId),
             parent_activity_id: resolve_role(TraceRole::ParentActivityId),
@@ -275,6 +290,7 @@ mod tests {
         let columns = TraceColumns::resolve(
             &table(&["SpanId", "ParentSpanId", "Service", "MarkerName", "TIMESTAMP"]),
             &[schema],
+            &RoleNames::new(),
         );
         assert_eq!(columns.activity_id, Some(0));
         assert_eq!(columns.parent_activity_id, Some(1));
@@ -294,6 +310,7 @@ mod tests {
         let columns = TraceColumns::resolve(
             &table(&["CurrentActivityId", "ParentActivityId"]),
             &[wrong],
+            &RoleNames::new(),
         );
         assert_eq!(columns.activity_id, Some(0));
         assert!(columns.supports_activity());
@@ -309,11 +326,15 @@ mod tests {
         };
         let without = table(&["Operation", "MarkerName"]);
         assert_eq!(
-            TraceColumns::resolve(&without, std::slice::from_ref(&schema)).marker,
+            TraceColumns::resolve(&without, std::slice::from_ref(&schema), &RoleNames::new())
+                .marker,
             Some(1)
         );
         let with = table(&["SpanId", "MarkerName", "Operation"]);
-        assert_eq!(TraceColumns::resolve(&with, &[schema]).marker, Some(2));
+        assert_eq!(
+            TraceColumns::resolve(&with, &[schema], &RoleNames::new()).marker,
+            Some(2)
+        );
     }
 
     #[test]
@@ -328,7 +349,11 @@ mod tests {
             actor: Some("Host".into()),
             ..TraceSchema::default()
         };
-        let columns = TraceColumns::resolve(&table(&["Host", "Role"]), &[first, second]);
+        let columns = TraceColumns::resolve(
+            &table(&["Host", "Role"]),
+            &[first, second],
+            &RoleNames::new(),
+        );
         assert_eq!(columns.actor, Some(1));
     }
 
@@ -355,5 +380,81 @@ mod tests {
             columns.missing_for_sequence(),
             vec![TraceRole::Actor, TraceRole::Timestamp]
         );
+    }
+
+    fn names(role: TraceRole, listed: &[&str]) -> RoleNames {
+        RoleNames::from([(role, listed.iter().map(|name| name.to_string()).collect())])
+    }
+
+    fn resolved(table: &Table, names: &RoleNames) -> TraceColumns {
+        TraceColumns::resolve(table, &[], names)
+    }
+
+    #[test]
+    fn listed_names_are_tried_in_order_before_the_built_in_ones() {
+        let both = table(&["MessageText", "EventText"]);
+        let message_of =
+            |listed: &[&str]| resolved(&both, &names(TraceRole::Message, listed)).message;
+        assert_eq!(resolved(&both, &RoleNames::new()).message, Some(0));
+        assert_eq!(message_of(&["EventText"]), Some(1));
+        assert_eq!(
+            message_of(&["Missing", "EventText", "MessageText"]),
+            Some(1),
+            "the first listed name that is in the table, not the first column"
+        );
+        assert_eq!(message_of(&["MessageText", "EventText"]), Some(0));
+    }
+
+    #[test]
+    fn the_built_in_names_still_work_when_others_are_listed() {
+        let only_built_in = table(&["MessageText"]);
+        let listed = names(TraceRole::Message, &["EventText"]);
+        assert_eq!(resolved(&only_built_in, &listed).message, Some(0));
+    }
+
+    #[test]
+    fn listed_names_ignore_case_and_blank_padding() {
+        let t = table(&["eventtext", " ActivityType "]);
+        let mut listed = names(TraceRole::Message, &["EventText"]);
+        listed.insert(TraceRole::Marker, vec!["ActivityType".into()]);
+        let columns = resolved(&t, &listed);
+        assert_eq!((columns.message, columns.marker), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn severity_follows_the_order_it_is_listed_in() {
+        let t = table(&["Level", "Severity"]);
+        assert_eq!(
+            resolved(&t, &RoleNames::new()).severity,
+            Some(0),
+            "level before severity"
+        );
+        let listed = names(TraceRole::Severity, &["Severity", "Level"]);
+        assert_eq!(resolved(&t, &listed).severity, Some(1));
+    }
+
+    #[test]
+    fn a_schema_wins_for_the_roles_it_names_and_listed_names_serve_the_rest() {
+        let schema = TraceSchema {
+            name: "spans".into(),
+            actor: Some("Service".into()),
+            ..TraceSchema::default()
+        };
+        let t = table(&["Service", "ProcessName", "ActivityType", "MarkerName"]);
+        let listed = names(TraceRole::Marker, &["ActivityType"]);
+        let columns = TraceColumns::resolve(&t, &[schema], &listed);
+        assert_eq!(
+            columns.actor,
+            Some(0),
+            "the schema's column, not ProcessName"
+        );
+        assert_eq!(columns.marker, Some(2), "the listed name, not MarkerName");
+    }
+
+    #[test]
+    fn a_role_nothing_names_stays_unresolved() {
+        let t = table(&["Something"]);
+        let listed = names(TraceRole::Message, &["EventText"]);
+        assert_eq!(resolved(&t, &listed).message, None);
     }
 }

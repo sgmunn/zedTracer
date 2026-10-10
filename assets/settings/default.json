@@ -147,6 +147,14 @@
     // "timestamp", "severity", "message" and may list "requires" columns. The first entry whose
     // columns are all in the table is used.
     "trace_schemas": [],
+    // The names a trace's columns may have for each part, most preferred first and tried before the
+    // built-in names, so one setting serves traces that call a column different things. For example
+    //   "message": ["MessageText", "EventText"], "marker": ["MarkerName", "ActivityType"],
+    //   "severity": ["Severity", "Level"]
+    // The parts, with their built-in names: "activity_id" (CurrentActivityId), "parent_activity_id"
+    // (ParentActivityId), "marker" (MarkerName), "actor" (ProcessName), "timestamp" (TIMESTAMP),
+    // "severity" (level, then severity) and "message" (MessageText). Case does not matter.
+    "trace_columns": {},
     // Messages that only say something started or ended and carry no content. Such rows are
     // dimmed in the grid and can be hidden. A "*" at either end matches any text.
     "structural_messages": ["Monitored scope start*", "Monitored scope end*"],

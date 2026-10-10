@@ -5,7 +5,7 @@ use kusto_results::Table;
 use kusto_results::sequence::SequenceOptions;
 use kusto_results::timeline::TimelineOptions;
 use kusto_results::waterfall::WaterfallOptions;
-use kusto_results::trace_schema::{TraceColumns, TraceSchema};
+use kusto_results::trace_schema::{RoleNames, TraceColumns, TraceRole, TraceSchema};
 use settings::{DockSide, RegisterSetting, Settings};
 
 /// The settings for the Kusto results grid.
@@ -18,6 +18,8 @@ pub struct ResultsSettings {
     pub dock: DockSide,
     /// The user's trace schemas, tried in order before the built-in column names.
     pub trace_schemas: Vec<TraceSchema>,
+    /// The column names the user lists for each part of a trace, tried before the built-in ones.
+    pub trace_names: RoleNames,
     /// How the sequence diagram of a trace is drawn.
     pub sequence: SequenceOptions,
     /// Messages that only say something started or ended, which the grid dims and can hide.
@@ -37,7 +39,7 @@ impl ResultsSettings {
 
     /// The columns of `table` that play each part of a trace.
     pub fn trace_columns(&self, table: &Table) -> TraceColumns {
-        TraceColumns::resolve(table, &self.trace_schemas)
+        TraceColumns::resolve(table, &self.trace_schemas, &self.trace_names)
     }
 }
 
@@ -117,6 +119,36 @@ fn code_roots(content: &settings::SettingsContent) -> Vec<PathBuf> {
         .collect()
 }
 
+fn trace_names(content: &settings::SettingsContent) -> RoleNames {
+    let Some(columns) = content
+        .kusto_results
+        .as_ref()
+        .and_then(|results| results.trace_columns.as_ref())
+    else {
+        return RoleNames::new();
+    };
+    [
+        (TraceRole::ActivityId, &columns.activity_id),
+        (TraceRole::ParentActivityId, &columns.parent_activity_id),
+        (TraceRole::Marker, &columns.marker),
+        (TraceRole::Actor, &columns.actor),
+        (TraceRole::Timestamp, &columns.timestamp),
+        (TraceRole::Severity, &columns.severity),
+        (TraceRole::Message, &columns.message),
+    ]
+    .into_iter()
+    .filter_map(|(role, listed)| {
+        let names: Vec<String> = listed
+            .as_deref()?
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        (!names.is_empty()).then_some((role, names))
+    })
+    .collect()
+}
+
 fn trace_schema(content: &settings::KustoTraceSchemaContent) -> TraceSchema {
     TraceSchema {
         name: content.name.clone().unwrap_or_default(),
@@ -171,6 +203,7 @@ impl Settings for ResultsSettings {
                 .iter()
                 .map(trace_schema)
                 .collect(),
+            trace_names: trace_names(content),
             structural_messages: content
                 .kusto_results
                 .as_ref()
@@ -229,6 +262,7 @@ mod tests {
                 verbose: Some("  #00ff0040  ".into()),
             }),
             trace_schemas: None,
+            trace_columns: None,
             sequence: None,
             structural_messages: None,
             waterfall: None,
@@ -421,5 +455,69 @@ mod tests {
                 .code_roots
                 .is_empty()
         );
+    }
+
+    #[gpui::test]
+    fn listed_column_names_find_the_columns_of_a_trace_that_names_them_differently(
+        cx: &mut TestAppContext,
+    ) {
+        use kusto_results::Column;
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            let table = Table {
+                name: "t".into(),
+                columns: ["EventText", "ActivityType", "Level", "MessageText"]
+                    .into_iter()
+                    .map(|name| Column::new(name, "string"))
+                    .collect(),
+                rows: Vec::new(),
+            };
+            let before = ResultsSettings::get_global(cx).trace_columns(&table);
+            assert_eq!(
+                (before.message, before.marker, before.severity),
+                (Some(3), None, Some(2))
+            );
+
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "trace_columns": {
+                            "message": ["EventText", "MessageText"],
+                            "marker": ["MarkerName", " ActivityType ", ""],
+                            "severity": ["Severity", "Level"],
+                            "actor": []
+                        } } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            let after = ResultsSettings::get_global(cx).trace_columns(&table);
+            assert_eq!(
+                (after.message, after.marker, after.severity),
+                (Some(0), Some(1), Some(2))
+            );
+        });
+    }
+
+    #[test]
+    fn column_names_are_trimmed_and_a_role_with_none_left_keeps_the_built_in_names() {
+        let mut content = settings::SettingsContent::default();
+        content.kusto_results = Some(settings::KustoResultsSettingsContent {
+            trace_columns: Some(settings::KustoTraceColumnsContent {
+                message: Some(vec![" EventText ".into(), "".into()]),
+                actor: Some(vec!["  ".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let names = ResultsSettings::from_settings(&content).trace_names;
+        assert_eq!(
+            names,
+            RoleNames::from([(TraceRole::Message, vec!["EventText".to_string()])])
+        );
+        assert!(ResultsSettings::from_settings(&settings::SettingsContent::default())
+            .trace_names
+            .is_empty());
     }
 }
