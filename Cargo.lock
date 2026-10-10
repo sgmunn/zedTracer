@@ -9447,6 +9447,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kusto_code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "log",
+ "parking_lot",
+ "pretty_assertions",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "util",
+ "which",
+]
+
+[[package]]
 name = "kusto_results"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,27 @@
+[package]
+name = "kusto_code"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/kusto_code.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+regex = { workspace = true, features = ["unicode"] }
+util.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
