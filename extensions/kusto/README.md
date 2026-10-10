@@ -226,12 +226,23 @@ leading `~` is your home folder. The section shows, best first:
 - **Marker used in** and **Marker defined as**: the method that uses the row's code marker, and where the marker is
   declared. A marker can be a class marked `[CodeMarkerName("…")]`, a `const string`, or an attribute that names a
   constant; all three are followed.
-- **Message names**: a `Class.Method` at the start of the message (or in square brackets), found as a method, or as a
-  class if the method is not there. A method the class inherits is found in its base class.
+- **Message logged at**: the line of code that logged the message, found by searching for the text the message is
+  made of. What a program fills in is left out: GUIDs, numbers, quoted values; and because code often logs only part of
+  what the message shows, every stretch of its words is tried, including ones that end at a `:` or `=` where a value
+  follows. So `Successfully fetched cluster details for [MetadataLocator: [TenantId=…` is found by
+  `Successfully fetched cluster details for`, and `Memory backed cloud cache already initialized. Taking fast path.` by
+  the whole of it. The text has to be in a string on a line of code (comments are skipped), and the most of it that any line
+  holds wins. When several lines hold the same text it says **Message text in one of N places** and shows the best three
+  (a repository named like the process first, tests last); when more than sixteen do, it is too common to say anything.
+  Rows that only say something started or ended (`kusto_results.structural_messages`) are not searched.
+- **Message names**: a `Class.Method` at the start of the message, in square brackets, or anywhere in it (a lambda like
+  `Store.<Save>b__3_0` reads as `Store.Save`), found as a method, or as a class if the method is not there. A method the
+  class inherits is found in its base class.
 - **Stack frame**: the first application frames of a call stack in the row, such as the `callStack` of an exception.
 
 Each entry gives the method or class, its repository and line, and the text of that line; clicking it opens the file at
-that line. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, and the
+that line. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, or a second
+when the text of the message is in no repository named like the process, and the
 markers of a whole result are looked up together the first time you select in it), and what it finds is kept for five
 minutes. Only `.cs` files are searched, and `git` has to be on the path of your shell. When a name is in none of the
 checkouts, the section says nothing was found; for example a class from a library you have not cloned.

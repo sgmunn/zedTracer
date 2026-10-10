@@ -63,6 +63,19 @@ A new UI-free crate, `crates/kusto_code`, in three parts. It takes plain strings
 
 Results are `CodeRef { repo, path, line, kind, symbol, enclosing }` with the kind one of marker use, marker definition, method, or type.
 
+## The text of a message
+
+A message is looked for when it has text that code could have written. `message_literals` in `keys.rs`:
+
+- Only the first line, at most 300 characters, and not when it holds a call stack (those are read as frames).
+- It is cut where a program fills something in: a GUID, a run of 16 or more hex digits, a number on its own (`\b\d…`, so the 2 of `S2S` stays), a quote that delimits a value (not the apostrophe of `doesn't`), and `"`, `\`, `{`, `}` which source code escapes. What is left are runs of text.
+- A run counts if it has 12 characters and two words. The two longest are kept.
+- Code rarely writes a whole run: `$"{path}, Resolved Lake Type: {type}"` has only the middle, `$"Fetched details for {locator}"` only the start, and `metric:{name}` ends in a colon with a value stuck to it. So every stretch of up to 24 words of a run, cut after `:` and `=` as well as at spaces, is a piece to look for, longest first.
+
+`resolve_message` searches all the pieces of both runs with one `git grep -F` per repository (a few hundred patterns cost about 30% more than one). Repositories named like the process are searched first, and the others too unless a line already holds a whole run; a line with only part of one does not end the search, which was a bug found on the real data. Only lines with a `"` that are not comments count. For each run the lines that hold the longest piece win, and if there are more than 16 of them the text says nothing. The best three are kept (a repository named like the process, then not a test, then the path), and `CodeRef::matches` says how many tied, so Row Details can say "one of N places" instead of pretending to know. Log lines in a file that another lookup of the same row found come first.
+
+A message that starts with `Class.Method:` is looked up as that method as well, and the `Class.Method` is not part of the text (code writes it with `nameof`).
+
 ## In the app
 
 `crates/kusto_results_ui/src/code_references.rs`. `CodeReferences` is an entity owned by `RowDetailsPanel`, which hands it the selection (`ActiveSelection`) each time the panel refreshes.
@@ -71,14 +84,14 @@ Results are `CodeRef { repo, path, line, kind, symbol, enclosing }` with the kin
 - **Settings.** `kusto_results.code.roots` (`ResultsSettings::code_roots`, `~` expanded). Empty means off, and the section says how to turn it on when a row has something to look up.
 - **Resolver.** One `CodeResolver` for the current roots, made on first use in a background task with the project's shell environment (`default_environment`, the same one queries use for `az`) and rebuilt when the roots change or after a failure. A failure (git missing, a root with no checkouts) is shown in the section and tried again the next time the row is looked at.
 - **Lookups** run on the background executor; selecting another row drops the running one. The first selection in a result also prefetches the literals of all its markers (up to 500), and the first lookup waits for that rather than repeating the search.
-- **Section.** Between the header and the field blocks, at most 220 px tall and scrolling. Each entry: what it is (`Marker used in`, `Marker defined as`, `Marker names`, `Message names`, `Stack frame`), the method for a marker use or else the symbol, `repository · path:line`, and the line's text in the buffer font. A click opens the file with `Workspace::open_abs_path` and moves the cursor to the line.
+- **Section.** Between the header and the field blocks, at most 220 px tall and scrolling. Each entry: what it is (`Marker used in`, `Marker defined as`, `Marker names`, `Message logged at` or `Message text in one of N places`, `Message names`, `Stack frame`), the method for a marker use or a log line, or else the symbol, `repository · path:line`, and the line's text in the buffer font. A click opens the file with `Workspace::open_abs_path` and moves the cursor to the line.
 - **Cache.** Results and the marker literal table are reused for five minutes (`CodeResolver::with_cache_lifetime`).
 
 ## Not yet
 
-- The log call that wrote a message: search the longest stable chunk of the message (split on digits, GUIDs and quoted values) inside the method found. This also covers the events that have no prefix.
 - Resolving all the markers of a result at once. `prefetch_markers` already finds every marker's literal with one search per repository; the use sites are still searched one marker at a time (about 0.2 to 0.5 s each), which is fine for the row being looked at but not for badging a whole trace.
 - Properties and fields named by a message prefix (`Class.Property`); only methods are matched as declarations, so these resolve to the type.
+- Showing the results as each lookup finishes. The marker and method lookups take about 0.4 s and the text of a message up to a second, and they are shown together.
 - A peek at the code in Row Details (several lines in a read-only editor), instead of the one line and a click.
 - The same section for the activity tree, the sequence and the timeline; a place to refresh the cache by hand.
 - The other sources in the table: Zed's own language server, tree-sitter for the enclosing method, an MCP code search for what is not on disk.
@@ -94,3 +107,5 @@ Result of that test on 2026-10-09, `sample2.ktt` against the nine checkouts unde
 - 59 distinct markers: the literals of all of them were searched in 0.8 to 1.2 s, and 57 have a use site (about 0.3 to 0.5 s each). The two without one are in no local repository. The first run found only 55: code that reaches a marker as `CodeMarkers.X.Instance.CodeMarkerName` was taken for the attribute because the line contains that word, so an attribute is now recognised by its syntax.
 - 64 distinct message prefixes (with their process): 52 resolve to a method and 6 to a type only (properties, and classes whose base class is not on disk). The rest are classes from libraries that are not checked out. A type-only result can also be the wrong class: `MemoryCache.GetObjectAsync` found an unrelated generic `MemoryCache<TKey, TValue>` in a tool, because the framework's own class is not in any repository. It is the lowest tier for that reason.
 - Before the searches were staged (home repository first) and the declaration search used fixed strings, the same run took 138 s instead of 42 s.
+
+Result of the same test for message texts, `sample2.ktt` against the nine checkouts, after the pieces were widened to every stretch of words and the search stopped ending early on a partial line: 399 distinct texts (ids that differ only by a hex string now count as one); of 133 sampled, 115 have a log line and 18 do not. The ones that do not are mostly texts that are in no checkout or only in documentation, texts that code writes with `nameof` (found as `Class.Method` instead), and texts too common to place. A lookup takes about 0.4 s when a repository named like the process holds the whole text, and about a second otherwise. Two copies of one repository (`aspaas` and `aspaas.OLD` were both under the root) count twice towards "one of N places".
