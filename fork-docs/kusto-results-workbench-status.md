@@ -59,6 +59,7 @@ Notes: `cargo test -p kusto_client` builds on its own because its `Cargo.toml` a
 - Spec decisions: one call-stack frame per line (Q-13), natural string sort ignoring case but not punctuation (Q-12), whole-view column and table selection (Q-11), non-contiguous row selection added as SEL-11 (Q-4), filters not persisted (Q-6), keep `.ktt` (Q-10).
 
 ## Working rules for this repo
+- Trace columns: `kusto_results.trace_columns` lists, per role (marker, message, severity, ...), the column names to try in order before the built-in names (TRC-7), so one setting serves tables that name a role differently. A `trace_schemas` entry still decides the roles it names. Everything that reads a trace column goes through `ResultsSettings::trace_columns`, the code lookup included; `TraceColumns::detect` (built-in names only) is for tests.
 
 Follow `CLAUDE.md` at the repo root: no `unwrap()` in non-test code, no `let _ =` on fallible calls, no `mod.rs`, crate lib path in `Cargo.toml`, full-word names, comments only for why, use `./script/clippy`. The repo `README.md` already carries the required `> [!IMPORTANT]` lines; never remove them. The only intentional panic site is the regex helper in `inspector.rs`.
 

@@ -80,7 +80,7 @@ A message that starts with `Class.Method:` is looked up as that method as well, 
 
 `crates/kusto_results_ui/src/code_references.rs`. `CodeReferences` is an entity owned by `RowDetailsPanel`, which hands it the selection (`ActiveSelection`) each time the panel refreshes.
 
-- **Keys.** `code_keys` takes the first selected row: the marker, message and actor columns by their roles (`TraceColumns`, so a user's trace schema applies), and every cell of the row as the text to look for call stacks in. A multipart message is read assembled.
+- **Keys.** `code_keys` takes the first selected row: the marker, message and actor columns by their roles (`TraceColumns`, so the names listed in `kusto_results.trace_columns` and a user's trace schema apply, and a trace that calls the message `EventText` is searched once the setting says so), and every cell of the row as the text to look for call stacks in. A multipart message is read assembled.
 - **Settings.** `kusto_results.code.roots` (`ResultsSettings::code_roots`, `~` expanded). Empty means off, and the section says how to turn it on when a row has something to look up.
 - **Resolver.** One `CodeResolver` for the current roots, made on first use in a background task with the project's shell environment (`default_environment`, the same one queries use for `az`) and rebuilt when the roots change or after a failure. A failure (git missing, a root with no checkouts) is shown in the section and tried again the next time the row is looked at.
 - **Lookups** run on the background executor; selecting another row drops the running one. The first selection in a result also prefetches the literals of all its markers (up to 500), and the first lookup waits for that rather than repeating the search.

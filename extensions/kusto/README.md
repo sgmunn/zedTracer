@@ -202,6 +202,33 @@ understood and repeated, so it needs nothing from the history:
 Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
 database. Files written before parameters were kept in them simply run without values.
 
+## Trace columns
+
+The structured, sequence and timeline views, the severity tints and the code behind a row all read a trace by its
+parts: the activity id, the parent activity id, the marker, the actor (the process), the timestamp, the severity and the
+message. A part is looked for under a built-in column name, exactly and then ignoring case: `CurrentActivityId`,
+`ParentActivityId`, `MarkerName`, `ProcessName`, `TIMESTAMP`, `level` then `severity`, and `MessageText`.
+
+A trace that calls a column something else is covered by listing the names in `kusto_results.trace_columns`, most
+preferred first:
+
+```json
+"kusto_results": {
+  "trace_columns": {
+    "message":  ["MessageText", "EventText"],
+    "marker":   ["MarkerName", "ActivityType"],
+    "severity": ["Severity", "Level"]
+  }
+}
+```
+
+The listed names are tried in order before the built-in ones, and the first that is a column of the table is the one
+used, so a single setting serves tables that name the same part differently (there is no need to list a built-in name
+unless it should come after another). The parts are `activity_id`, `parent_activity_id`, `marker`, `actor`, `timestamp`,
+`severity` and `message`. For a trace whose columns only make sense together, `kusto_results.trace_schemas` names one
+column per part and the columns that must be present; the first schema that applies decides the parts it names, and the
+other parts use the listed and the built-in names. A change applies to results opened, and rows selected, afterwards.
+
 ## Row Details
 
 Row Details shows the values of the row selected in a result. It opens by itself, in the dock on the right (the
