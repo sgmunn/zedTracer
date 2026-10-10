@@ -764,14 +764,18 @@ mod tests {
 ";
 
     fn charge_card_result() -> Arc<ResultSet> {
+        charge_card_result_named(["MarkerName", "MessageText", "ProcessName"])
+    }
+
+    /// The same rows under the names of the marker, message and process columns.
+    fn charge_card_result_named(names: [&str; 3]) -> Arc<ResultSet> {
         Arc::new(ResultSet {
             tables: vec![Table {
                 name: "PrimaryResult".into(),
-                columns: vec![
-                    Column::new("MarkerName", "string"),
-                    Column::new("MessageText", "string"),
-                    Column::new("ProcessName", "string"),
-                ],
+                columns: names
+                    .into_iter()
+                    .map(|name| Column::new(name, "string"))
+                    .collect(),
                 rows: vec![
                     vec![
                         Cell::Text("Orders-ChargeCard".into()),
@@ -790,8 +794,7 @@ mod tests {
         })
     }
 
-    fn set_code_roots(roots: &[&std::path::Path], cx: &mut gpui::VisualTestContext) {
-        let settings = serde_json::json!({ "kusto_results": { "code": { "roots": roots } } });
+    fn set_user_settings(settings: serde_json::Value, cx: &mut gpui::VisualTestContext) {
         cx.update(|_, cx| {
             cx.update_global::<settings::SettingsStore, _>(|store, cx| {
                 store
@@ -801,13 +804,46 @@ mod tests {
         });
     }
 
+    fn set_code_roots(roots: &[&std::path::Path], cx: &mut gpui::VisualTestContext) {
+        set_user_settings(
+            serde_json::json!({ "kusto_results": { "code": { "roots": roots } } }),
+            cx,
+        );
+    }
+
+    /// Makes `repository` a git checkout holding `src/Checkout.cs`.
+    fn checkout_with_the_source(repository: &std::path::Path) {
+        std::fs::create_dir_all(repository.join("src")).expect("a folder");
+        std::fs::write(repository.join("src/Checkout.cs"), CHECKOUT).expect("a file");
+        for arguments in [["init", "-q"], ["add", "-A"]] {
+            let status = futures::executor::block_on(
+                util::command::new_command("git")
+                    .arg("-C")
+                    .arg(repository)
+                    .args(arguments)
+                    .status(),
+            )
+            .expect("git runs");
+            assert!(status.success(), "git {arguments:?}");
+        }
+    }
+
     fn select_row(
         active: &Entity<ActiveSelection>,
         row: usize,
         cx: &mut gpui::VisualTestContext,
     ) {
+        select_row_of(active, charge_card_result(), row, cx);
+    }
+
+    fn select_row_of(
+        active: &Entity<ActiveSelection>,
+        result: Arc<ResultSet>,
+        row: usize,
+        cx: &mut gpui::VisualTestContext,
+    ) {
         active.update(cx, |active, cx| {
-            active.result = Some(charge_card_result());
+            active.result = Some(result);
             active.table_index = 0;
             active.rows = vec![row];
             cx.notify();
@@ -868,19 +904,7 @@ mod tests {
         cx.executor().allow_parking();
         let root = tempfile::tempdir().expect("a temporary directory");
         let repository = root.path().join("orders");
-        std::fs::create_dir_all(repository.join("src")).expect("a folder");
-        std::fs::write(repository.join("src/Checkout.cs"), CHECKOUT).expect("a file");
-        for arguments in [["init", "-q"], ["add", "-A"]] {
-            let status = futures::executor::block_on(
-                util::command::new_command("git")
-                    .arg("-C")
-                    .arg(&repository)
-                    .args(arguments)
-                    .status(),
-            )
-            .expect("git runs");
-            assert!(status.success(), "git {arguments:?}");
-        }
+        checkout_with_the_source(&repository);
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -949,6 +973,55 @@ mod tests {
             "text that no checkout holds is searched for and not found"
         );
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// The columns the code is looked up by are the ones the settings name, so a trace that calls
+    /// them `ActivityType`, `EventText` and `Host` is searched once the setting says so.
+    #[gpui::test]
+    async fn looks_the_code_up_in_the_columns_the_settings_name(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let root = tempfile::tempdir().expect("a temporary directory");
+        checkout_with_the_source(&root.path().join("orders"));
+        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        let other_names = || charge_card_result_named(["ActivityType", "EventText", "Host"]);
+        let state = |cx: &mut gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone())
+        };
+
+        set_code_roots(&[root.path()], cx);
+        select_row_of(&active, other_names(), 0, cx);
+        assert_eq!(
+            state(cx),
+            CodeState::Idle,
+            "none of those columns is a built-in name, so the row names no code"
+        );
+
+        set_user_settings(
+            serde_json::json!({ "kusto_results": {
+                "code": { "roots": [root.path()] },
+                "trace_columns": {
+                    "marker": ["MarkerName", "ActivityType"],
+                    "message": ["MessageText", "EventText"],
+                    "actor": ["ProcessName", "Host"]
+                }
+            } }),
+            cx,
+        );
+        select_row_of(&active, other_names(), 0, cx);
+        let CodeState::Found { references, .. } = finished_state(&panel, cx) else {
+            panic!("the code was not found");
+        };
+        let kinds: Vec<CodeRefKind> = references.iter().map(|reference| reference.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                CodeRefKind::LogLine,
+                CodeRefKind::MarkerUse,
+                CodeRefKind::MarkerDefinition,
+                CodeRefKind::Method
+            ]
+        );
     }
 
     #[gpui::test]
