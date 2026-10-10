@@ -1,6 +1,6 @@
 # Code references: from a trace to the code that wrote it
 
-Design notes, written 2026-10-09. Local repositories come first; the other sources are listed so the first slice does not close them off. Status of the build is in [`kusto-results-workbench-status.md`](kusto-results-workbench-status.md).
+Design notes, written 2026-10-09. Local repositories come first and are built; the other sources are listed so they stay possible. Status of the build is in [`kusto-results-workbench-status.md`](kusto-results-workbench-status.md).
 
 ## Goal
 
@@ -63,14 +63,25 @@ A new UI-free crate, `crates/kusto_code`, in three parts. It takes plain strings
 
 Results are `CodeRef { repo, path, line, kind, symbol, enclosing }` with the kind one of marker use, marker definition, method, or type.
 
-## Not in the first slice
+## In the app
 
-- Row Details "Code" section and opening the file at the line (the selection it follows is `ActiveSelection` in `row_details_panel.rs`).
-- Settings for the repository roots (the crate takes them as an argument).
+`crates/kusto_results_ui/src/code_references.rs`. `CodeReferences` is an entity owned by `RowDetailsPanel`, which hands it the selection (`ActiveSelection`) each time the panel refreshes.
+
+- **Keys.** `code_keys` takes the first selected row: the marker, message and actor columns by their roles (`TraceColumns`, so a user's trace schema applies), and every cell of the row as the text to look for call stacks in. A multipart message is read assembled.
+- **Settings.** `kusto_results.code.roots` (`ResultsSettings::code_roots`, `~` expanded). Empty means off, and the section says how to turn it on when a row has something to look up.
+- **Resolver.** One `CodeResolver` for the current roots, made on first use in a background task with the project's shell environment (`default_environment`, the same one queries use for `az`) and rebuilt when the roots change or after a failure. A failure (git missing, a root with no checkouts) is shown in the section and tried again the next time the row is looked at.
+- **Lookups** run on the background executor; selecting another row drops the running one. The first selection in a result also prefetches the literals of all its markers (up to 500), and the first lookup waits for that rather than repeating the search.
+- **Section.** Between the header and the field blocks, at most 220 px tall and scrolling. Each entry: what it is (`Marker used in`, `Marker defined as`, `Marker names`, `Message names`, `Stack frame`), the method for a marker use or else the symbol, `repository · path:line`, and the line's text in the buffer font. A click opens the file with `Workspace::open_abs_path` and moves the cursor to the line.
+- **Cache.** Results and the marker literal table are reused for five minutes (`CodeResolver::with_cache_lifetime`).
+
+## Not yet
+
 - The log call that wrote a message: search the longest stable chunk of the message (split on digits, GUIDs and quoted values) inside the method found. This also covers the events that have no prefix.
-- Resolving all the markers of a result at once. `prefetch_markers` already finds every marker's literal with one search per repository; the use sites are still searched one marker at a time (about 0.2 to 0.5 s each), which is fine for the event being looked at but not for badging a whole trace.
-- Properties and fields named by a message prefix (`Class.Property`); only methods are declared-matched, so these resolve to the type.
-- The other sources in the table.
+- Resolving all the markers of a result at once. `prefetch_markers` already finds every marker's literal with one search per repository; the use sites are still searched one marker at a time (about 0.2 to 0.5 s each), which is fine for the row being looked at but not for badging a whole trace.
+- Properties and fields named by a message prefix (`Class.Property`); only methods are matched as declarations, so these resolve to the type.
+- A peek at the code in Row Details (several lines in a read-only editor), instead of the one line and a click.
+- The same section for the activity tree, the sequence and the timeline; a place to refresh the cache by hand.
+- The other sources in the table: Zed's own language server, tree-sitter for the enclosing method, an MCP code search for what is not on disk.
 
 ## Verification
 

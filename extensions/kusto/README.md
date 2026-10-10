@@ -211,6 +211,31 @@ you open from the history, and to a run when `kusto.results_location` is `editor
 that holds no result and a failed run leave it as it is. If you close it, it stays closed until the next result is
 shown, and moving a tab to another pane does not bring it back.
 
+### The code behind a row
+
+Set `kusto_results.code.roots` to the folders that hold your git checkouts, and Row Details lists the code that the
+selected row points at (the setting is empty by default, which leaves this off; Row Details then says how to turn it on):
+
+```json
+"kusto_results": { "code": { "roots": ["~/Projects/mwc"] } }
+```
+
+A root that is a checkout is searched itself, and a root that is not is searched for checkouts one level below it. A
+leading `~` is your home folder. The section shows, best first:
+
+- **Marker used in** and **Marker defined as**: the method that uses the row's code marker, and where the marker is
+  declared. A marker can be a class marked `[CodeMarkerName("…")]`, a `const string`, or an attribute that names a
+  constant; all three are followed.
+- **Message names**: a `Class.Method` at the start of the message (or in square brackets), found as a method, or as a
+  class if the method is not there. A method the class inherits is found in its base class.
+- **Stack frame**: the first application frames of a call stack in the row, such as the `callStack` of an exception.
+
+Each entry gives the method or class, its repository and line, and the text of that line; clicking it opens the file at
+that line. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, and the
+markers of a whole result are looked up together the first time you select in it), and what it finds is kept for five
+minutes. Only `.cs` files are searched, and `git` has to be on the path of your shell. When a name is in none of the
+checkouts, the section says nothing was found; for example a class from a library you have not cloned.
+
 ## Query threads
 
 A query thread keeps the queries of one investigation together without a file to name or a long file of
