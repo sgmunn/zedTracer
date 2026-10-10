@@ -30,7 +30,7 @@ fn track(repository: &Path) {
 }
 
 fn search() -> GitSearch {
-    GitSearch::locate(std::env::vars().collect()).expect("git is installed")
+    GitSearch::locate(std::env::vars()).expect("git is installed")
 }
 
 /// Three repositories: `orders` and `billing` each have their own `CodeMarkers.CheckoutRun` and

@@ -185,7 +185,8 @@ pub struct GitSearch {
 impl GitSearch {
     /// `environment` is the shell environment git runs in. A desktop app does not inherit the
     /// `PATH` of the user's shell.
-    pub fn locate(environment: HashMap<String, String>) -> Result<Self> {
+    pub fn locate(environment: impl IntoIterator<Item = (String, String)>) -> Result<Self> {
+        let environment: HashMap<String, String> = environment.into_iter().collect();
         let git = match environment.get("PATH") {
             Some(search_path) => which::which_in("git", Some(search_path), "."),
             None => which::which("git"),
@@ -194,8 +195,11 @@ impl GitSearch {
         Ok(Self::at(git, environment))
     }
 
-    pub fn at(git: PathBuf, environment: HashMap<String, String>) -> Self {
-        Self { git, environment }
+    pub fn at(git: PathBuf, environment: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self {
+            git,
+            environment: environment.into_iter().collect(),
+        }
     }
 
     pub async fn grep(&self, repository: &Repository, query: &GrepQuery) -> Result<Vec<Hit>> {
