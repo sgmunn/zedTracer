@@ -477,6 +477,48 @@ fn something_that_is_in_no_repository_resolves_to_nothing() {
 }
 
 #[test]
+fn a_reference_carries_the_text_of_its_line() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&marker_keys("Contoso.Orders.Checkout.Run")));
+    let texts: Vec<(CodeRefKind, &str)> = references
+        .iter()
+        .map(|reference| (reference.kind, reference.text.as_str()))
+        .collect();
+    assert_eq!(
+        texts.first(),
+        Some(&(
+            CodeRefKind::MarkerUse,
+            "await CodeMarkers.CheckoutRun.ExecuteAsync(async _ =>"
+        ))
+    );
+    // The definition is reported at the class, not at the attribute above it.
+    assert_eq!(
+        texts.last(),
+        Some(&(
+            CodeRefKind::MarkerDefinition,
+            "public sealed class CheckoutRun : SingletonMonitoredScopeCodeMarker<CheckoutRun> { }"
+        ))
+    );
+}
+
+#[test]
+fn what_was_found_is_looked_up_again_once_it_is_old() {
+    let (root, resolver) = fixture();
+    let resolver = resolver.with_cache_lifetime(std::time::Duration::ZERO);
+    assert!(block_on(resolver.resolve(&marker_keys("Later-Added"))).is_empty());
+    write(
+        &root.path().join("billing"),
+        "src/Billing/Later.cs",
+        "namespace Contoso.Billing\n{\n    public class Later\n    {\n        public void Go()\n        {\n            using (new MonitoredScope(\"Later-Added\"))\n            {\n            }\n        }\n    }\n}\n",
+    );
+    track(&root.path().join("billing"));
+    assert_eq!(
+        block_on(resolver.resolve(&marker_keys("Later-Added"))).len(),
+        1
+    );
+}
+
+#[test]
 fn clearing_the_cache_sees_a_changed_checkout() {
     let (root, resolver) = fixture();
     assert!(block_on(resolver.resolve(&marker_keys("Later-Added"))).is_empty());

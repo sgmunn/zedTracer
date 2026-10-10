@@ -3,6 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use futures::future::{join_all, join3};
 use parking_lot::Mutex;
@@ -22,6 +23,9 @@ const MAX_DEFINITION_DEPTH: usize = 2;
 const MAX_USES: usize = 8;
 const MAX_DEFINITIONS: usize = 3;
 const MAX_DECLARATIONS: usize = 3;
+/// How long a result is kept. A checkout moves under a running editor (a pull, a branch), and a
+/// lookup is cheap enough to repeat.
+const CACHE_LIFETIME: Duration = Duration::from_secs(300);
 /// How many base classes up a method is looked for.
 const MAX_BASE_DEPTH: usize = 3;
 /// Declarations whose namespace is read to rank them; a name this common is not worth more.
@@ -60,6 +64,22 @@ pub struct CodeRef {
     pub symbol: String,
     /// For a use of a marker, the method it is in.
     pub enclosing: Option<String>,
+    /// The text of the line, without its indentation.
+    pub text: String,
+}
+
+struct Expiring<T> {
+    stored: Instant,
+    value: T,
+}
+
+impl<T> Expiring<T> {
+    fn new(value: T) -> Self {
+        Self {
+            stored: Instant::now(),
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +104,9 @@ enum Marked {
 pub struct CodeResolver {
     search: GitSearch,
     repositories: Vec<Repository>,
-    marker_literals: Mutex<HashMap<String, Vec<Located>>>,
-    cache: Mutex<HashMap<String, Vec<CodeRef>>>,
+    marker_literals: Mutex<HashMap<String, Expiring<Vec<Located>>>>,
+    cache: Mutex<HashMap<String, Expiring<Vec<CodeRef>>>>,
+    cache_lifetime: Duration,
 }
 
 impl CodeResolver {
@@ -95,11 +116,30 @@ impl CodeResolver {
             repositories,
             marker_literals: Mutex::default(),
             cache: Mutex::default(),
+            cache_lifetime: CACHE_LIFETIME,
         }
+    }
+
+    /// How long what was found is reused before it is looked up again.
+    pub fn with_cache_lifetime(mut self, lifetime: Duration) -> Self {
+        self.cache_lifetime = lifetime;
+        self
     }
 
     pub fn repositories(&self) -> &[Repository] {
         &self.repositories
+    }
+
+    fn cached(&self, key: &str) -> Option<Vec<CodeRef>> {
+        self.cache
+            .lock()
+            .get(key)
+            .filter(|entry| entry.stored.elapsed() < self.cache_lifetime)
+            .map(|entry| entry.value.clone())
+    }
+
+    fn remember(&self, key: String, found: &[CodeRef]) {
+        self.cache.lock().insert(key, Expiring::new(found.to_vec()));
     }
 
     /// Forget what was found, for when the repositories have changed.
@@ -140,7 +180,12 @@ impl CodeResolver {
             let known = self.marker_literals.lock();
             markers
                 .iter()
-                .filter(|marker| !known.contains_key(*marker) && seen.insert(*marker))
+                .filter(|marker| {
+                    let fresh = known
+                        .get(*marker)
+                        .is_some_and(|entry| entry.stored.elapsed() < self.cache_lifetime);
+                    !fresh && seen.insert(*marker)
+                })
                 .collect()
         };
         if missing.is_empty() {
@@ -169,7 +214,11 @@ impl CodeResolver {
                 }
             }
         }
-        self.marker_literals.lock().extend(found);
+        self.marker_literals.lock().extend(
+            found
+                .into_iter()
+                .map(|(marker, locations)| (marker, Expiring::new(locations))),
+        );
     }
 
     pub async fn resolve(&self, keys: &CodeKeys) -> Vec<CodeRef> {
@@ -238,6 +287,7 @@ impl CodeResolver {
             line,
             symbol,
             enclosing,
+            text: location.hit.text.trim().to_string(),
         })
     }
 
@@ -254,7 +304,7 @@ impl CodeResolver {
 
     async fn resolve_marker(&self, marker: &str) -> Vec<CodeRef> {
         let cache_key = format!("marker:{marker}");
-        if let Some(cached) = self.cache.lock().get(&cache_key).cloned() {
+        if let Some(cached) = self.cached(&cache_key) {
             return cached;
         }
 
@@ -263,7 +313,7 @@ impl CodeResolver {
             .marker_literals
             .lock()
             .get(marker)
-            .cloned()
+            .map(|entry| entry.value.clone())
             .unwrap_or_default();
 
         let mut definitions = VecDeque::new();
@@ -345,7 +395,7 @@ impl CodeResolver {
         declared.truncate(MAX_DEFINITIONS);
         let mut found = uses;
         found.extend(declared);
-        self.cache.lock().insert(cache_key, found.clone());
+        self.remember(cache_key, &found);
         found
     }
 
@@ -424,12 +474,11 @@ impl CodeResolver {
             symbol.full_name(),
             process.unwrap_or_default()
         );
-        let cached = self.cache.lock().get(&cache_key).cloned();
-        let found = match cached {
+        let found = match self.cached(&cache_key) {
             Some(found) => found,
             None => {
                 let found = self.find_symbol(symbol, process).await;
-                self.cache.lock().insert(cache_key, found.clone());
+                self.remember(cache_key, &found);
                 found
             }
         };
@@ -706,6 +755,7 @@ fn mark(location: &Located, lines: &[String]) -> Marked {
                     repository_index: location.repository_index,
                     hit: Hit {
                         line: type_index + 1,
+                        text: lines.get(type_index).cloned().unwrap_or_default(),
                         ..location.hit.clone()
                     },
                 },
