@@ -46,6 +46,11 @@ static ASYNC_STATE_MACHINE: LazyLock<Regex> =
 static GENERATED_LAMBDA: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"[.+]<>c(?:__DisplayClass[0-9]+(?:_[0-9]+)?)?\.<([^>]+)>b__[0-9]+(?:_[0-9]+)?\([^)]*\)")
 });
+// A frame as `format_call_stack` leaves it when the stack gave a source file:
+// `at Contoso.Orders.Checkout.Charge(Cart cart) in Checkout.cs:line 17`.
+static FRAME_WITH_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"\bat\s+([^\s(]+)\(.*?\)\s+in\s+([^\s:]+(?:\s[^\s:]+)*?):line\s+([0-9]+)")
+});
 static MULTIPART_MARKER: LazyLock<Regex> =
     LazyLock::new(|| regex(r"(?s)^([0-9]+)\s*/\s*([0-9]+)\s*:\s?(.*)$"));
 
@@ -449,6 +454,37 @@ pub struct InspectorDocument {
     pub json_tokens: Vec<JsonToken>,
     /// The values shown as JSON, which are set apart from plain values as code (JSN-2).
     pub code_blocks: Vec<Range<usize>>,
+    /// The call stack frames that name a source file.
+    pub frames: Vec<StackFrameLink>,
+}
+
+/// A call stack frame in the text of a document that names its source file, so that the file
+/// can be opened: `Checkout.cs:line 17` in `at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackFrameLink {
+    /// The bytes of `Checkout.cs:line 17`.
+    pub range: Range<usize>,
+    /// The method of the frame, as written: `Contoso.Orders.Checkout.Charge`.
+    pub symbol: String,
+    pub file_name: String,
+    /// 1-based.
+    pub line: usize,
+}
+
+/// The frames in `text` that name a source file, as `format_call_stack` writes them.
+pub fn stack_frame_links(text: &str) -> Vec<StackFrameLink> {
+    FRAME_WITH_FILE
+        .captures_iter(text)
+        .filter_map(|frame| {
+            let (symbol, file, line) = (frame.get(1)?, frame.get(2)?, frame.get(3)?);
+            Some(StackFrameLink {
+                range: file.start()..line.end(),
+                symbol: symbol.as_str().to_string(),
+                file_name: file.as_str().to_string(),
+                line: line.as_str().parse().ok()?,
+            })
+        })
+        .collect()
 }
 
 impl InspectorDocument {
@@ -516,6 +552,7 @@ pub fn build_document(table: &Table, subject: &InspectorSubject) -> InspectorDoc
             }
         }
     }
+    document.frames = stack_frame_links(&document.text);
     document
 }
 
@@ -856,6 +893,64 @@ mod tests {
         assert_eq!(
             build_document(&table, &InspectorSubject::Empty),
             InspectorDocument::default()
+        );
+    }
+
+    #[test]
+    fn finds_the_frames_that_name_a_source_file() {
+        let stack = r"at Contoso.Orders.Checkout.Charge(Cart cart) in C:\__w\1\s\src\Checkout.cs:line 17 at Contoso.Orders.Ledger.Post() in D:\a\Ledger.cs:line 203 at System.Threading.Tasks.Task.Wait()";
+        let shown = format_call_stack(stack);
+        let links = stack_frame_links(&shown);
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| (link.symbol.as_str(), link.file_name.as_str(), link.line))
+                .collect::<Vec<_>>(),
+            [
+                ("Contoso.Orders.Checkout.Charge", "Checkout.cs", 17),
+                ("Contoso.Orders.Ledger.Post", "Ledger.cs", 203),
+            ]
+        );
+        assert_eq!(&shown[links[0].range.clone()], "Checkout.cs:line 17");
+        assert_eq!(&shown[links[1].range.clone()], "Ledger.cs:line 203");
+    }
+
+    #[test]
+    fn a_frame_without_a_file_is_not_a_link() {
+        assert_eq!(
+            stack_frame_links("at App.A() at App.B() in nothing"),
+            Vec::new()
+        );
+        assert_eq!(stack_frame_links("in Checkout.cs:line 17"), Vec::new());
+    }
+
+    #[test]
+    fn the_frames_of_a_json_call_stack_are_found_in_the_document_text() {
+        let table = Table {
+            name: "t".into(),
+            columns: vec![Column::new("CustomData", "dynamic")],
+            rows: vec![vec![Cell::Text(
+                r#"{"callStack":"at App.Store.Save(Order o) in C:\\src\\Store.cs:line 40\r\n at App.Run() in C:\\src\\Run.cs:line 9","other":"x"}"#
+                    .into(),
+            )]],
+        };
+        let document = build_document(&table, &resolve_subject(&table, &[0]));
+        let named: Vec<(&str, &str)> = document
+            .frames
+            .iter()
+            .map(|frame| {
+                (
+                    frame.file_name.as_str(),
+                    &document.text[frame.range.clone()],
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("Store.cs", "Store.cs:line 40"),
+                ("Run.cs", "Run.cs:line 9")
+            ]
         );
     }
 }
