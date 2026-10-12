@@ -46,10 +46,12 @@ static ASYNC_STATE_MACHINE: LazyLock<Regex> =
 static GENERATED_LAMBDA: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"[.+]<>c(?:__DisplayClass[0-9]+(?:_[0-9]+)?)?\.<([^>]+)>b__[0-9]+(?:_[0-9]+)?\([^)]*\)")
 });
-// A frame as `format_call_stack` leaves it when the stack gave a source file:
-// `at Contoso.Orders.Checkout.Charge(Cart cart) in Checkout.cs:line 17`.
+// A frame that gives a source file. `format_call_stack` leaves it as
+// `at Contoso.Orders.Checkout.Charge(Cart cart) in Checkout.cs:line 17`, but a stack in a plain
+// message keeps the build machine's path, with any number of backslashes and a space before
+// `:line`: `in F:\\1\\s\\src\\Checkout.cs :line 17`. The file is the name before `:line`.
 static FRAME_WITH_FILE: LazyLock<Regex> = LazyLock::new(|| {
-    regex(r"\bat\s+([^\s(]+)\(.*?\)\s+in\s+([^\s:]+(?:\s[^\s:]+)*?):line\s+([0-9]+)")
+    regex(r"\bat\s+([^\s(]+)\(.*?\)\s+in\s+[^\n]{0,300}?([^\\/\s:]+\.[A-Za-z0-9]+)\s*:line\s*([0-9]+)")
 });
 static MULTIPART_MARKER: LazyLock<Regex> =
     LazyLock::new(|| regex(r"(?s)^([0-9]+)\s*/\s*([0-9]+)\s*:\s?(.*)$"));
@@ -459,10 +461,11 @@ pub struct InspectorDocument {
 }
 
 /// A call stack frame in the text of a document that names its source file, so that the file
-/// can be opened: `Checkout.cs:line 17` in `at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`.
+/// can be opened: `Checkout.cs:line 17` in `at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`,
+/// or `Checkout.cs :line 17` in a stack that kept its build path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackFrameLink {
-    /// The bytes of `Checkout.cs:line 17`.
+    /// The bytes of the file name and the line, from `Checkout.cs` to `17`.
     pub range: Range<usize>,
     /// The method of the frame, as written: `Contoso.Orders.Checkout.Charge`.
     pub symbol: String,
@@ -952,5 +955,45 @@ mod tests {
                 ("Run.cs", "Run.cs:line 9")
             ]
         );
+    }
+
+    #[test]
+    fn finds_frames_in_a_stack_that_kept_its_build_path() {
+        let text = [
+            r"at App.A() in F:\1\s\src\A.cs:line 4",
+            r"at App.B(String s) in F:\\1\\s\\src\\B.cs :line 5 ",
+            r"at App.C() in F:\\\\1\\\\s\\\\C.cs :line 6 \\r\\n",
+            "at App.D() in /_/Dapper/D.Async.cs:line 7",
+            "at App.E() in C:\\agent\\E.cs:line 8\n--- End of stack trace",
+        ]
+        .join("\n");
+        let links = stack_frame_links(&text);
+        let names: Vec<(String, String, usize)> = links
+            .iter()
+            .map(|link| (link.symbol.clone(), link.file_name.clone(), link.line))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("App.A".to_string(), "A.cs".to_string(), 4),
+                ("App.B".to_string(), "B.cs".to_string(), 5),
+                ("App.C".to_string(), "C.cs".to_string(), 6),
+                ("App.D".to_string(), "D.Async.cs".to_string(), 7),
+                ("App.E".to_string(), "E.cs".to_string(), 8),
+            ]
+        );
+        assert_eq!(&text[links[1].range.clone()], "B.cs :line 5");
+        assert_eq!(&text[links[0].range.clone()], "A.cs:line 4");
+    }
+
+    #[test]
+    fn a_path_is_not_taken_for_a_file_just_because_it_has_dots() {
+        // The file is what comes straight before `:line`, not a dotted folder name before it.
+        let text = r"at App.A() in F:\1\s\ASPaaS.FrontEnd.Service\Exceptions\A.cs :line 28";
+        let links = stack_frame_links(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].file_name, "A.cs");
+        // And a sentence is not a frame.
+        assert!(stack_frame_links("we arrived at the (old) station in the line of fire :line 3").is_empty());
     }
 }
