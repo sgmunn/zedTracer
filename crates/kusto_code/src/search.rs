@@ -228,6 +228,33 @@ impl GitSearch {
             ),
         }
     }
+
+    /// The files git tracks in the repository, relative to it, with `/` separators.
+    pub async fn list_files(&self, repository: &Repository) -> Result<Vec<String>> {
+        let output = util::command::new_command(&self.git)
+            .arg("-C")
+            .arg(&repository.root)
+            .args(["ls-files", "-z"])
+            .envs(&self.environment)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(util::command::Stdio::null())
+            .output()
+            .await
+            .with_context(|| format!("could not run git in {}", repository.root.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git ls-files failed in {}: {}",
+                repository.root.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect())
+    }
 }
 
 #[cfg(test)]

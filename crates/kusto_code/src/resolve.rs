@@ -3,6 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::future::{join_all, join4};
@@ -56,6 +57,8 @@ pub enum CodeRefKind {
     Type,
     /// A line with the text of the message in a string, so that it may have logged it.
     LogLine,
+    /// The line of a call stack frame, in the file the frame names.
+    StackLine,
 }
 
 /// A place in a repository.
@@ -94,6 +97,12 @@ impl<T> Expiring<T> {
     }
 }
 
+/// The tracked files of the repositories by lower-case file name, so that the file a call stack
+/// frame names is found without a search.
+struct FileIndex {
+    by_name: HashMap<String, Vec<(usize, String)>>,
+}
+
 #[derive(Debug, Clone)]
 struct Located {
     repository_index: usize,
@@ -118,6 +127,7 @@ pub struct CodeResolver {
     repositories: Vec<Repository>,
     marker_literals: Mutex<HashMap<String, Expiring<Vec<Located>>>>,
     cache: Mutex<HashMap<String, Expiring<Vec<CodeRef>>>>,
+    files: Mutex<Option<Expiring<Arc<FileIndex>>>>,
     cache_lifetime: Duration,
 }
 
@@ -128,6 +138,7 @@ impl CodeResolver {
             repositories,
             marker_literals: Mutex::default(),
             cache: Mutex::default(),
+            files: Mutex::default(),
             cache_lifetime: CACHE_LIFETIME,
         }
     }
@@ -158,6 +169,7 @@ impl CodeResolver {
     pub fn clear_cache(&self) {
         self.marker_literals.lock().clear();
         self.cache.lock().clear();
+        self.files.lock().take();
     }
 
     /// Searches the repositories at `indexes` together. One that cannot be searched is logged and
@@ -413,6 +425,157 @@ impl CodeResolver {
         }
         self.remember(cache_key, &found);
         found
+    }
+
+    async fn file_index(&self) -> Arc<FileIndex> {
+        let known = self
+            .files
+            .lock()
+            .as_ref()
+            .filter(|entry| entry.stored.elapsed() < self.cache_lifetime)
+            .map(|entry| entry.value.clone());
+        if let Some(index) = known {
+            return index;
+        }
+        let listings = join_all(self.repositories.iter().enumerate().map(
+            |(repository_index, repository)| async move {
+                match self.search.list_files(repository).await {
+                    Ok(files) => (repository_index, files),
+                    Err(error) => {
+                        log::warn!("listing the files of {} failed: {error:#}", repository.name);
+                        (repository_index, Vec::new())
+                    }
+                }
+            },
+        ))
+        .await;
+        let mut by_name: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+        for (repository_index, files) in listings {
+            for path in files {
+                let name = path.rsplit('/').next().unwrap_or(&path).to_lowercase();
+                by_name
+                    .entry(name)
+                    .or_default()
+                    .push((repository_index, path));
+            }
+        }
+        let index = Arc::new(FileIndex { by_name });
+        *self.files.lock() = Some(Expiring::new(index.clone()));
+        index
+    }
+
+    /// Where the file a call stack frame names is. `file_name` is as the stack gives it (a bare
+    /// name, or a path from the machine that built the code, of which only the name is used),
+    /// `line` is where the frame was, and `symbol` is its method. Files of that name are ordered
+    /// by whether they declare the frame's class, then as declarations are (the process, the
+    /// namespace). The line is the frame's, unless the checkout has moved on and that line is
+    /// not in the frame's method, when it is the method's declaration.
+    pub async fn find_source_file(
+        &self,
+        file_name: &str,
+        line: usize,
+        symbol: Option<&SymbolPath>,
+        process: Option<&str>,
+    ) -> Vec<CodeRef> {
+        let name = file_name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(file_name)
+            .trim()
+            .to_lowercase();
+        let index = self.file_index().await;
+        let Some(files) = index.by_name.get(&name) else {
+            return Vec::new();
+        };
+        let candidates: Vec<Located> = files
+            .iter()
+            .map(|(repository_index, path)| Located {
+                repository_index: *repository_index,
+                hit: Hit {
+                    path: path.clone(),
+                    line,
+                    text: String::new(),
+                },
+            })
+            .collect();
+        let nameless = SymbolPath {
+            namespace: Vec::new(),
+            class_name: String::new(),
+            method_name: String::new(),
+        };
+        let ranked = self.rank_declarations(candidates, symbol.unwrap_or(&nameless), process);
+
+        let mut found: Vec<(bool, Located, Vec<String>)> = ranked
+            .into_iter()
+            .take(MAX_RANKED_FILES)
+            .map(|location| {
+                let lines = self.read(&location).unwrap_or_default();
+                let declares_the_class = symbol.is_some_and(|symbol| {
+                    lines.iter().any(|text| {
+                        type_declaration_name(text).as_deref() == Some(symbol.class_name.as_str())
+                    })
+                });
+                (declares_the_class, location, lines)
+            })
+            .collect();
+        // Stable, so the order of the ranking stays among files that all declare the class or none do.
+        found.sort_by_key(|(declares_the_class, ..)| !declares_the_class);
+
+        found
+            .into_iter()
+            .take(MAX_DECLARATIONS)
+            .filter_map(|(_, location, lines)| {
+                let method = symbol.map(|symbol| symbol.method_name.as_str());
+                let declaration_line = method.and_then(|method| {
+                    lines
+                        .iter()
+                        .position(|text| method_declaration_name(text).as_deref() == Some(method))
+                        .map(|index| index + 1)
+                });
+                let enclosing = line
+                    .checked_sub(1)
+                    .and_then(|index| enclosing_method(&lines, index));
+                // The checkout is not the build the trace came from, so the line may have moved
+                // out of the method. A line in no method at all counts, if the method is declared.
+                let in_the_method = match (method, &enclosing) {
+                    (Some(method), Some(found)) => method == found,
+                    (Some(_), None) => declaration_line.is_none(),
+                    (None, _) => true,
+                };
+                let shown_line = match declaration_line {
+                    Some(declaration) if !(in_the_method && (1..=lines.len()).contains(&line)) => {
+                        declaration
+                    }
+                    _ => line.clamp(1, lines.len().max(1)),
+                };
+                let located = Located {
+                    hit: Hit {
+                        line: shown_line,
+                        text: lines
+                            .get(shown_line - 1)
+                            .map(|text| text.trim().to_string())
+                            .unwrap_or_default(),
+                        ..location.hit.clone()
+                    },
+                    ..location
+                };
+                let label = match symbol {
+                    Some(symbol) => symbol.display(),
+                    None => file_name.to_string(),
+                };
+                let enclosing = shown_line
+                    .checked_sub(1)
+                    .and_then(|index| enclosing_method(&lines, index));
+                self.reference(
+                    KeyOrigin::Frame,
+                    CodeRefKind::StackLine,
+                    &located,
+                    shown_line,
+                    label,
+                    enclosing,
+                )
+            })
+            .collect()
     }
 
     fn reference(

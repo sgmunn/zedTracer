@@ -4,7 +4,7 @@ use std::path::Path;
 
 use futures::executor::block_on;
 use kusto_code::{
-    CodeKeys, CodeRef, CodeRefKind, CodeResolver, EventText, GitSearch, KeyOrigin,
+    CodeKeys, CodeRef, CodeRefKind, CodeResolver, EventText, GitSearch, KeyOrigin, SymbolPath,
     discover_repositories,
 };
 use pretty_assertions::assert_eq;
@@ -708,6 +708,134 @@ fn a_repository_named_like_the_process_is_searched_first_for_a_message() {
     assert_eq!(repositories_for(Some("Contoso.Billing.Host")), ["billing"]);
     assert_eq!(repositories_for(Some("Contoso.Orders.Host")), ["orders"]);
     assert_eq!(repositories_for(None), ["billing", "orders"]);
+}
+
+fn source_file(
+    resolver: &CodeResolver,
+    file_name: &str,
+    line: usize,
+    symbol: &str,
+    process: Option<&str>,
+) -> Vec<CodeRef> {
+    block_on(resolver.find_source_file(
+        file_name,
+        line,
+        SymbolPath::parse(symbol).as_ref(),
+        process,
+    ))
+}
+
+#[test]
+fn a_frame_opens_at_its_line_in_the_file_it_names() {
+    let (_root, resolver) = fixture();
+    let charge = "Contoso.Orders.Checkout.Charge";
+    for file_name in [
+        "Checkout.cs",
+        "CHECKOUT.CS",
+        r"C:\__w\1\s\src\Orders\Checkout.cs",
+        "/agent/build/src/Orders/Checkout.cs",
+    ] {
+        let found = source_file(&resolver, file_name, 17, charge, None);
+        assert_eq!(
+            found
+                .iter()
+                .map(|reference| (
+                    place(reference),
+                    reference.line,
+                    reference.kind,
+                    reference.origin
+                ))
+                .collect::<Vec<_>>(),
+            vec![(
+                ("orders", "src/Orders/Checkout.cs", Some("Charge")),
+                17,
+                CodeRefKind::StackLine,
+                KeyOrigin::Frame
+            )],
+            "{file_name}"
+        );
+        assert!(found[0].text.starts_with("using (new MonitoredScope"));
+    }
+}
+
+#[test]
+fn a_line_that_is_not_in_the_frames_method_opens_the_method_instead() {
+    let (_root, resolver) = fixture();
+    let charge = "Contoso.Orders.Checkout.Charge";
+    // The checkout has moved on from the build: line 9 is in `RunAsync` here, line 500 is past the end.
+    for stale_line in [9, 5, 500] {
+        let found = source_file(&resolver, "Checkout.cs", stale_line, charge, None);
+        assert_eq!(
+            found
+                .first()
+                .map(|reference| (reference.line, reference.text.as_str())),
+            Some((15, "public void Charge(Cart cart)")),
+            "line {stale_line}"
+        );
+    }
+    // Without a method to check against the line is kept, up to the end of the file.
+    let found = source_file(&resolver, "Checkout.cs", 500, "lower.case", None);
+    assert!(
+        found
+            .first()
+            .is_some_and(|reference| reference.line < 500 && reference.line > 40)
+    );
+}
+
+#[test]
+fn files_of_one_name_are_ordered_by_the_frames_namespace_and_the_process() {
+    let (_root, resolver) = fixture();
+    let repositories_of = |symbol: &str, process: Option<&str>| -> Vec<String> {
+        source_file(&resolver, "Ledger.cs", 6, symbol, process)
+            .into_iter()
+            .map(|reference| reference.repository)
+            .collect()
+    };
+    assert_eq!(
+        repositories_of("Contoso.Billing.Ledger.Post", None),
+        ["billing", "orders"]
+    );
+    assert_eq!(
+        repositories_of("Contoso.Orders.Ledger.Post", None),
+        ["orders", "billing"]
+    );
+    assert_eq!(
+        repositories_of("Ledger.Post", Some("Contoso.Billing.Host")),
+        ["billing", "orders"]
+    );
+}
+
+#[test]
+fn a_file_in_no_checkout_gives_nothing() {
+    let (_root, resolver) = fixture();
+    assert!(
+        source_file(
+            &resolver,
+            "Missing.cs",
+            3,
+            "Contoso.Orders.Missing.Go",
+            None
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn the_list_of_files_is_read_again_after_the_cache_is_cleared() {
+    let (root, resolver) = fixture();
+    assert!(source_file(&resolver, "Later.cs", 7, "Contoso.Billing.Later.Go", None).is_empty());
+    write(
+        &root.path().join("billing"),
+        "src/Billing/Later.cs",
+        "namespace Contoso.Billing\n{\n    public class Later\n    {\n        public void Go()\n        {\n            this.Work();\n        }\n    }\n}\n",
+    );
+    track(&root.path().join("billing"));
+    assert!(source_file(&resolver, "Later.cs", 7, "Contoso.Billing.Later.Go", None).is_empty());
+    resolver.clear_cache();
+    assert_eq!(
+        source_file(&resolver, "Later.cs", 7, "Contoso.Billing.Later.Go", None).len(),
+        1
+    );
 }
 
 #[test]
