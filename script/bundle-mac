@@ -15,6 +15,11 @@ can_code_sign=false
 IDENTITY="Zed Industries, Inc."
 APPLE_NOTARIZATION_TEAM="MQ55VZLNZQ"
 
+# Local builds are signed with a stable identity because macOS drops privacy permission grants
+# (camera, microphone, file access) whenever an ad-hoc signature changes. Set MACOS_SIGNING_KEY=-
+# to sign ad-hoc instead.
+MACOS_SIGNING_KEY="${MACOS_SIGNING_KEY:-Apple Development: Shane Munn (6J2LKJXRH8)}"
+
 # Function for displaying help info
 help_info() {
   echo "
