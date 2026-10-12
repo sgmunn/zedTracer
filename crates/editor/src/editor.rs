@@ -3425,6 +3425,21 @@ impl Editor {
         self.read_only = read_only;
     }
 
+    /// The offset of the character under `position`, a point in the window, as the editor was
+    /// last painted. `None` before it has been painted, and for a point that is not on text:
+    /// past the end of a line, or outside the editor.
+    pub fn offset_at_window_position(
+        &self,
+        position: gpui::Point<Pixels>,
+    ) -> Option<MultiBufferOffset> {
+        let position_map = self.last_position_map.as_ref()?;
+        if !position_map.text_hitbox.bounds.contains(&position) {
+            return None;
+        }
+        let point = position_map.point_for_position(position).as_valid()?;
+        Some(point.to_offset(&position_map.snapshot.display_snapshot, Bias::Left))
+    }
+
     pub fn set_use_selection_highlight(&mut self, highlight: bool) {
         self.use_selection_highlight = highlight;
     }
