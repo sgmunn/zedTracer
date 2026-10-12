@@ -34,6 +34,36 @@ const STATEMENT_WORDS: &[&str] = &[
     "switch", "catch", "lock", "case", "goto", "var", "base", "this", "where", "when", "fixed",
 ];
 
+/// Words that end a line that is not a declaration, or that are modifiers, never a method's name:
+/// `async` is what `action: async (x) =>` ends in before its parenthesis.
+const NOT_A_NAME: &[&str] = &[
+    "async",
+    "await",
+    "static",
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "override",
+    "virtual",
+    "abstract",
+    "sealed",
+    "extern",
+    "unsafe",
+    "partial",
+    "readonly",
+    "const",
+    "ref",
+    "out",
+    "in",
+    "params",
+    "delegate",
+    "operator",
+    "var",
+    "new",
+    "return",
+];
+
 pub fn read_lines(path: &Path) -> Result<Vec<String>> {
     let bytes =
         std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
@@ -82,13 +112,18 @@ pub fn method_declaration_name(line: &str) -> Option<String> {
     // Generic arguments go first: a tuple in a return type, `Task<(int A, int B)>`, has parentheses.
     let text = without_generic_arguments(&without_attributes);
     let head = text.get(..text.find('(')?)?;
-    if head.contains('=') || head.starts_with(':') {
+    // A colon is a named argument (`action: async (x) =>`), a label or a base call; `::` is not.
+    if head.contains('=') || head.replace("::", "").contains(':') {
         return None;
     }
 
     let words: Vec<&str> = head.split_whitespace().collect();
     let (first, name) = (words.first()?, words.last()?);
-    if words.len() < 2 || STATEMENT_WORDS.contains(first) || !IDENTIFIER.is_match(name) {
+    if words.len() < 2
+        || STATEMENT_WORDS.contains(first)
+        || NOT_A_NAME.contains(name)
+        || !IDENTIFIER.is_match(name)
+    {
         return None;
     }
     Some((*name).to_string())
@@ -161,19 +196,29 @@ fn indent(line: &str) -> usize {
         .sum()
 }
 
-/// Walks up from `index` to the header of the block it is in. A header is the nearest line above
-/// with less indentation; an opening brace on a line of its own belongs to the header just above
-/// it. `inspect` sees each header and says whether it is the one wanted.
+/// Walks up from `index` through the headers of the blocks it is in. A header is the nearest line
+/// above with less indentation; an opening brace on a line of its own belongs to the header just
+/// above it. `inspect` sees each header and says whether it is one wanted, and the walk goes on
+/// outwards until a type or a namespace. Preprocessor lines (`#if`, `#endif`) start in the first
+/// column whatever they are inside, so they say nothing about the nesting.
 fn find_enclosing<T>(
     lines: &[String],
     index: usize,
     mut inspect: impl FnMut(&str) -> Option<T>,
-) -> Option<T> {
-    let mut limit = indent(lines.get(index)?);
+) -> Vec<T> {
+    let mut found = Vec::new();
+    let Some(line_at_index) = lines.get(index) else {
+        return found;
+    };
+    // A closing brace is in the block it closes, whose header has the same indentation.
+    let closes_a_block = line_at_index.trim_start().starts_with('}');
+    let mut limit = indent(line_at_index) + usize::from(closes_a_block);
     for earlier in (0..index).rev() {
-        let line = lines.get(earlier)?;
+        let Some(line) = lines.get(earlier) else {
+            break;
+        };
         let trimmed = line.trim();
-        if trimmed.is_empty() || is_comment(line) {
+        if trimmed.is_empty() || is_comment(line) || trimmed.starts_with('#') {
             continue;
         }
         let line_indent = indent(line);
@@ -184,25 +229,33 @@ fn find_enclosing<T>(
             limit = line_indent + 1;
             continue;
         }
-        if let Some(found) = inspect(line) {
-            return Some(found);
-        }
-        if type_declaration_name(line).is_some() || trimmed.starts_with("namespace ") {
-            return None;
+        if let Some(wanted) = inspect(line) {
+            found.push(wanted);
+        } else if type_declaration_name(line).is_some() || trimmed.starts_with("namespace ") {
+            break;
         }
         limit = line_indent;
     }
-    None
+    found
 }
 
-/// The method that contains the line at `index` (0-based).
+/// The method that contains the line at `index` (0-based): the innermost one, which is a local
+/// function when the line is in one.
 pub fn enclosing_method(lines: &[String], index: usize) -> Option<String> {
+    enclosing_methods(lines, index).into_iter().next()
+}
+
+/// Every method that contains the line at `index` (0-based), the innermost first: a local
+/// function, then the method it is declared in.
+pub fn enclosing_methods(lines: &[String], index: usize) -> Vec<String> {
     find_enclosing(lines, index, method_declaration_name)
 }
 
 /// The type that contains the line at `index` (0-based).
 pub fn enclosing_type(lines: &[String], index: usize) -> Option<String> {
     find_enclosing(lines, index, type_declaration_name)
+        .into_iter()
+        .next()
 }
 
 /// The first type declared within `within` lines below `index` (0-based), skipping attributes
@@ -215,7 +268,11 @@ pub fn type_declared_below(
     for later in index + 1..=index + within {
         let line = lines.get(later)?;
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('[') || is_comment(line) {
+        if trimmed.is_empty()
+            || trimmed.starts_with('[')
+            || trimmed.starts_with('#')
+            || is_comment(line)
+        {
             continue;
         }
         return type_declaration_name(line).map(|name| (name, later));
@@ -458,5 +515,114 @@ public sealed class Wrapped
         assert_eq!(base_types(&source, 2), ["Shape"]);
         assert_eq!(base_types(&source, 3), ["Parent"]);
         assert_eq!(base_types(&source, 99), Vec::<String>::new());
+    }
+
+    const WITH_PREPROCESSOR_LINES: &str = "\
+namespace Contoso.Orders
+{
+    public class Forwarder
+    {
+        public async Task<Response> ForwardAsync(
+            Request request,
+            Uri uri)
+        {
+#if NETFRAMEWORK
+            request.Legacy = true;
+#elif NETCOREAPP
+            request.Legacy = false;
+#endif
+            var response = await this.client.SendAsync(
+                request,
+                async (result) =>
+                {
+                    return result.Succeeded(true);
+                });
+            return response;
+        }
+    }
+}
+";
+
+    #[test]
+    fn a_line_in_the_first_column_does_not_end_the_walk_up_to_the_method() {
+        let source = lines(WITH_PREPROCESSOR_LINES);
+        for needle in ["request.Legacy = false", "return response;", "request,"] {
+            assert_eq!(
+                enclosing_method(&source, line_of(&source, needle)).as_deref(),
+                Some("ForwardAsync"),
+                "{needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lambda_given_as_a_named_argument_is_not_a_method() {
+        for line in [
+            "                action: async (certifiedEvent) =>",
+            "                func: async ms =>",
+            "                }, exceptionFilter: (Exception e) =>",
+            "            await this.Run(async (token) =>",
+        ] {
+            assert_eq!(method_declaration_name(line), None, "{line}");
+        }
+        let source = lines(WITH_PREPROCESSOR_LINES);
+        assert_eq!(
+            enclosing_method(&source, line_of(&source, "return result.Succeeded")).as_deref(),
+            Some("ForwardAsync")
+        );
+    }
+
+    #[test]
+    fn a_line_in_a_local_function_is_in_it_and_in_the_method_around_it() {
+        let source = lines(
+            "\
+public class Cache
+{
+    public async Task<int> PerformAsync()
+    {
+        async Task<int> WithTimeout()
+        {
+            return await this.Work();
+        }
+
+        return await WithTimeout();
+    }
+}
+",
+        );
+        let inside = line_of(&source, "return await this.Work");
+        assert_eq!(
+            enclosing_methods(&source, inside),
+            ["WithTimeout", "PerformAsync"]
+        );
+        assert_eq!(
+            enclosing_method(&source, inside).as_deref(),
+            Some("WithTimeout")
+        );
+        assert_eq!(
+            enclosing_methods(&source, line_of(&source, "return await WithTimeout")),
+            ["PerformAsync"]
+        );
+    }
+
+    #[test]
+    fn a_closing_brace_is_in_the_method_it_closes() {
+        let source = lines(WITH_PREPROCESSOR_LINES);
+        let closing = source
+            .iter()
+            .rposition(|text| text.trim() == "}")
+            .unwrap_or(0);
+        // The last two closing braces close the class and the namespace.
+        assert_eq!(enclosing_method(&source, closing), None);
+        let method_end = source
+            .iter()
+            .position(|text| text.contains("return response;"))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        assert_eq!(source.get(method_end).map(|text| text.trim()), Some("}"));
+        assert_eq!(
+            enclosing_method(&source, method_end).as_deref(),
+            Some("ForwardAsync")
+        );
     }
 }

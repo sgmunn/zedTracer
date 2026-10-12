@@ -179,6 +179,11 @@ namespace Contoso.Orders
     );
     write(
         &orders,
+        "src/Orders/Forwarder.cs",
+        "namespace Contoso.Orders\n{\n    public class Forwarder\n    {\n        public async Task<int> ForwardAsync()\n        {\n#if NETFRAMEWORK\n            this.Legacy = true;\n#else\n            this.Legacy = false;\n#endif\n            async Task<int> WithTimeout()\n            {\n                return await this.Send();\n            }\n\n            return await WithTimeout();\n        }\n    }\n}\n",
+    );
+    write(
+        &orders,
         "src/Orders/Warm.cs",
         "namespace Contoso.Orders\n{\n    public class Warm\n    {\n        public void Use()\n        {\n            this.logger.LogInfo(\"Warm cache ready for use\");\n        }\n    }\n}\n",
     );
@@ -780,6 +785,21 @@ fn a_line_that_is_not_in_the_frames_method_opens_the_method_instead() {
             .first()
             .is_some_and(|reference| reference.line < 500 && reference.line > 40)
     );
+}
+
+#[test]
+fn a_frame_after_preprocessor_lines_or_in_a_local_function_keeps_its_line() {
+    let (_root, resolver) = fixture();
+    let forward = "Contoso.Orders.Forwarder.ForwardAsync";
+    // Line 10 is after `#if`/`#else`, and line 14 is in the local function `WithTimeout`.
+    for line in [10, 14, 17] {
+        let found = source_file(&resolver, "Forwarder.cs", line, forward, None);
+        assert_eq!(
+            found.first().map(|reference| reference.line),
+            Some(line),
+            "line {line}"
+        );
+    }
 }
 
 #[test]

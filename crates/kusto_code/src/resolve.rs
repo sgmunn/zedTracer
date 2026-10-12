@@ -12,9 +12,9 @@ use parking_lot::Mutex;
 use crate::keys::{CodeKeys, SymbolPath};
 use crate::search::{GitSearch, GrepQuery, Hit, Repository};
 use crate::source::{
-    base_types, enclosing_method, enclosing_type, is_comment, is_marker_attribute,
-    method_declaration_name, namespace_of, read_lines, string_constant_name, type_declaration_name,
-    type_declared_below,
+    base_types, enclosing_method, enclosing_methods, enclosing_type, is_comment,
+    is_marker_attribute, method_declaration_name, namespace_of, read_lines, string_constant_name,
+    type_declaration_name, type_declared_below,
 };
 
 /// How far below `[CodeMarkerName]` the class it marks may be.
@@ -532,15 +532,18 @@ impl CodeResolver {
                         .position(|text| method_declaration_name(text).as_deref() == Some(method))
                         .map(|index| index + 1)
                 });
+                // Every method the line is in, so that a frame of the method matches a line in a
+                // local function or a lambda declared inside it.
                 let enclosing = line
                     .checked_sub(1)
-                    .and_then(|index| enclosing_method(&lines, index));
+                    .map(|index| enclosing_methods(&lines, index))
+                    .unwrap_or_default();
                 // The checkout is not the build the trace came from, so the line may have moved
                 // out of the method. A line in no method at all counts, if the method is declared.
-                let in_the_method = match (method, &enclosing) {
-                    (Some(method), Some(found)) => method == found,
-                    (Some(_), None) => declaration_line.is_none(),
-                    (None, _) => true,
+                let in_the_method = match method {
+                    Some(_) if enclosing.is_empty() => declaration_line.is_none(),
+                    Some(method) => enclosing.iter().any(|found| found == method),
+                    None => true,
                 };
                 let shown_line = match declaration_line {
                     Some(declaration) if !(in_the_method && (1..=lines.len()).contains(&line)) => {
