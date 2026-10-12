@@ -120,13 +120,16 @@ fn normalized_segments(text: &str) -> Vec<String> {
             continue;
         }
         if let Some(generated) = part.strip_prefix('<') {
+            let generated = generated.trim_start_matches('<');
             let Some((name, tail)) = generated.split_once('>') else {
                 continue;
             };
             if name.is_empty() {
                 continue;
             }
-            skip_move_next = tail.starts_with("d__");
+            // `<Run>d__5` is an async method's state machine, and so is the `d` of the lambda
+            // inside one, `<<Run>b__4>d`.
+            skip_move_next = tail.starts_with("d__") || tail.ends_with(">d");
             segments.push(name.to_string());
             continue;
         }
@@ -185,10 +188,11 @@ fn stack_frames(text: &str) -> Vec<SymbolPath> {
 /// `$"Fetched details for {locator}"` only `Fetched details for`, though the message goes on with
 /// what `locator` printed.
 fn message_literals(message: &str) -> Vec<Vec<String>> {
-    // The frames of a call stack are looked up as frames.
-    if STACK_FRAME.is_match(message) {
-        return Vec::new();
-    }
+    // The frames of a call stack are looked up as frames; what comes before the first is the
+    // sentence the code logged ("Failed to get the service due to X: reason").
+    let message = STACK_FRAME.find(message).map_or(message, |frame| {
+        message.get(..frame.start()).unwrap_or_default()
+    });
     let Some(first_line) = message.lines().map(str::trim).find(|line| !line.is_empty()) else {
         return Vec::new();
     };
@@ -546,6 +550,21 @@ mod tests {
     }
 
     #[test]
+    fn the_sentence_before_a_call_stack_is_looked_for_and_the_stack_is_not() {
+        let message = r"Failed to get the optimal service from the cache due to Contoso.RoutingException: There are no available services\r\n   at Contoso.RoutingException..ctor(String message) in F:\\1\\s\\Routing.cs :line 28 \r\n   at Contoso.Router.Run()";
+        let literals = literals_of(message);
+        let longest = longest(&literals);
+        assert_eq!(
+            longest,
+            [
+                "Failed to get the optimal service from the cache due to Contoso.RoutingException: There are no available services"
+            ]
+        );
+        // A message that is nothing but a stack has nothing to look for.
+        assert!(literals_of(r"   at Contoso.Router.Run() in Router.cs:line 3").is_empty());
+    }
+
+    #[test]
     fn the_text_of_a_call_stack_is_not_looked_for_as_text() {
         assert_eq!(
             literals_of("n   at System.Runtime.CompilerServices.TaskAwaiter.Handle(Task task)"),
@@ -586,6 +605,20 @@ mod tests {
         assert_eq!(
             found.prefix,
             Some(symbol(&[], "FeatureFlightProvider", "IsEnabledForTips"))
+        );
+    }
+
+    #[test]
+    fn a_lambda_inside_an_async_method_reads_as_the_method() {
+        let stack = "at Contoso.Utility.ScaleOutRouter+<>c__DisplayClass12_1+<<GetOptimalAsync>b__4>d.MoveNext() in F:\\x\\R.cs :line 5\nat Contoso.Utility.ScaleOutRouter+<ExecuteAsync>d__25`1.MoveNext()\nat Contoso.Errors.RoutingException..ctor(String message)";
+        let found = keys(None, None, Some(stack));
+        let names: Vec<String> = found.frames.iter().map(SymbolPath::display).collect();
+        assert_eq!(
+            names,
+            [
+                "ScaleOutRouter.GetOptimalAsync",
+                "ScaleOutRouter.ExecuteAsync"
+            ]
         );
     }
 }
