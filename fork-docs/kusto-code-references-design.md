@@ -76,6 +76,18 @@ A message is looked for when it has text that code could have written. `message_
 
 A message that starts with `Class.Method:` is looked up as that method as well, and the `Class.Method` is not part of the text (code writes it with `nameof`).
 
+## Files named in call stacks
+
+A frame that gives a source file (`at Ns.Class.Method(args) in File.cs:line 17` once `format_call_stack` has shortened the path) is a link in Row Details.
+
+- **Finding the frames.** `stack_frame_links` in `inspector.rs` scans the text of the finished document, so it finds frames in any field and its ranges are offsets into exactly the text the editor shows. `InspectorDocument::frames` holds them. The directory of the build machine is gone by then, and is no loss: it never matches a path on this machine.
+- **Clicking.** `InspectorText` underlines the ranges (a highlight with the accent colour) and, on a plain left click that is not the end of a drag and not a double click, asks the editor for the offset under the pointer (`Editor::offset_at_window_position`, a small addition to the editor that uses the position map the editor already keeps for its own mouse handling) and emits `InspectorEvent::OpenFrame` if it is inside a range. A capture listener sees the mouse events without taking them from the editor, so selecting, copying and finding work as before.
+- **Resolving.** `CodeResolver::find_source_file`. The list of tracked files of every checkout (`git ls-files -z`, in parallel) is read on the first click and kept for the cache lifetime, as a map from lower-cased file name to paths, so a click costs nothing after that and no search runs. Candidates are ordered by whether they declare the frame's class, and then as declarations are (the process name, the namespace). The first three are returned as `CodeRefKind::StackLine`.
+- **Moved lines.** The trace comes from a build, the checkout is something else. If the line is not inside the frame's method (`enclosing_method`), or is outside any method, or past the end of the file, and the file declares the method, the declaration line is used. Otherwise the frame's own line is kept.
+- **Failures** are shown as a notification: no folder set, no git, or a file in no checkout.
+
+Frames without a file are not links. In `sample2` 22 of about 2,200 frames carry a file and in `sample1` none, because release builds ship without symbols; the top application frames of a stack are found by name in the Code section.
+
 ## In the app
 
 `crates/kusto_results_ui/src/code_references.rs`. `CodeReferences` is an entity owned by `RowDetailsPanel`, which hands it the selection (`ActiveSelection`) each time the panel refreshes.
@@ -84,7 +96,7 @@ A message that starts with `Class.Method:` is looked up as that method as well, 
 - **Settings.** `kusto_results.code.roots` (`ResultsSettings::code_roots`, `~` expanded). Empty means off, and the section says how to turn it on when a row has something to look up.
 - **Resolver.** One `CodeResolver` for the current roots, made on first use in a background task with the project's shell environment (`default_environment`, the same one queries use for `az`) and rebuilt when the roots change or after a failure. A failure (git missing, a root with no checkouts) is shown in the section and tried again the next time the row is looked at.
 - **Lookups** run on the background executor; selecting another row drops the running one. The first selection in a result also prefetches the literals of all its markers (up to 500), and the first lookup waits for that rather than repeating the search.
-- **Section.** Between the header and the field blocks, at most 220 px tall and scrolling. Each entry: what it is (`Marker used in`, `Marker defined as`, `Marker names`, `Message logged at` or `Message text in one of N places`, `Message names`, `Stack frame`), the method for a marker use or a log line, or else the symbol, `repository · path:line`, and the line's text in the buffer font. A click opens the file with `Workspace::open_abs_path` and moves the cursor to the line.
+- **Section.** Between the header and the field blocks, at most 220 px tall and scrolling. Each entry: what it is (`Marker used in`, `Marker defined as`, `Marker names`, `Message logged at` or `Message text in one of N places`, `Message names`, `Stack frame`), the method for a marker use or a log line, or else the symbol, `repository · path:line`, and the line's text in the buffer font. A click opens the file with `Workspace::open_abs_path` and moves the cursor to the line, and so does a click on the file of a call stack frame (`CodeReferences::open_frame`).
 - **Cache.** Results and the marker literal table are reused for five minutes (`CodeResolver::with_cache_lifetime`).
 
 ## Not yet

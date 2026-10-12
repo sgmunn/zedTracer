@@ -267,11 +267,21 @@ leading `~` is your home folder. The section shows, best first:
   class inherits is found in its base class.
 - **Stack frame**: the first application frames of a call stack in the row, such as the `callStack` of an exception.
 
+**Call stacks.** In a field that holds a call stack (a `callStack` property), a frame that names a source file, such as
+`at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`, has the file and line underlined. Clicking it opens that
+file in the checkouts under `kusto_results.code.roots`, at that line (a plain click; a drag still selects text). The stack
+gives the file as the build machine knew it, so what is looked for is the file name, ignoring case and the build
+folders, among the files git tracks in the checkouts. Of several files with that name, the one that declares the frame's
+class comes first, then one in a repository named like the process, then the one whose namespace is nearest the frame's.
+If the checkout has moved on from the build and the line is not inside the frame's method, the method's declaration is
+opened instead. A file that is in none of the checkouts is reported. Frames without a file name, which is most of them in
+a release build, are not links; the top application frames of the stack are in the list above, found by method name.
+
 Each entry gives the method or class, its repository and line, and the text of that line; clicking it opens the file at
 that line. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, or a second
 when the text of the message is in no repository named like the process, and the
 markers of a whole result are looked up together the first time you select in it), and what it finds is kept for five
-minutes. Only `.cs` files are searched, and `git` has to be on the path of your shell. When a name is in none of the
+minutes. Only `.cs` files are searched for text and names (a call stack's file can be of any kind), and `git` has to be on the path of your shell. When a name is in none of the
 checkouts, the section says nothing was found; for example a class from a library you have not cloned.
 
 ## Query threads
