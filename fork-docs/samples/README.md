@@ -13,7 +13,7 @@ Test data for the Kusto Results Workbench ([spec](../kusto-results-workbench-fea
 | `synthetic-trace-edge.expected.json` | yes | Expected outcome for every case in `synthetic-trace-edge.ktt`. |
 | `generate_samples.py` | yes | Writes all of the above (deterministic). |
 | `generated/synthetic-large.ktt` | **no** (git-ignored) | Scale fixture: 200,000 rows by 20 columns, about 230 MB. Made with `python3 generate_samples.py --large`. `--rows N` changes the size. |
-| `sample1.ktt`, `sample2.ktt` | **no** (git-ignored) | Real telemetry from a production cluster. Kept for local use only; never commit. |
+| `sample1.ktt`, `sample2.ktt`, `sample3.ktt` (any `sampleN.ktt`) | **no** (git-ignored) | Real telemetry from a production cluster. Kept for local use only; never commit. |
 
 Everything synthetic is invented: no real identifiers, hostnames or messages. Regenerate with:
 
