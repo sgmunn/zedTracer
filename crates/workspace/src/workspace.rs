@@ -6230,12 +6230,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_pinned = pane.read(cx).is_active_item_pinned();
         let Some(item) = pane.update(cx, |pane, cx| pane.take_active_item(window, cx)) else {
             return;
         };
+        let item_id = item.item_id();
         let new_pane = self.add_pane(window, cx);
         new_pane.update(cx, |pane, cx| {
-            pane.add_item(item, true, true, None, window, cx)
+            pane.add_item(item, true, true, None, window, cx);
+            if was_pinned {
+                pane.pin_item(item_id, cx);
+            }
         });
         self.center.split(&pane, &new_pane, direction, cx);
         cx.notify();
@@ -12210,6 +12215,8 @@ fn move_all_items(
         .collect::<Vec<_>>()
     {
         let ix = item_ix - moved_items;
+        let item_id = item_handle.item_id();
+        let was_pinned = destination_is_different && from_pane.read(cx).is_item_pinned(item_id);
         if destination_is_different {
             // Close item from previous pane
             from_pane.update(cx, |source, cx| {
@@ -12221,6 +12228,9 @@ fn move_all_items(
         // This automatically removes duplicate items in the pane
         to_pane.update(cx, |destination, cx| {
             destination.add_item(item_handle, true, true, None, window, cx);
+            if was_pinned {
+                destination.pin_item(item_id, cx);
+            }
             window.focus(&destination.focus_handle(cx), cx)
         });
     }
@@ -12286,6 +12296,7 @@ pub fn move_active_item(
     };
     source.update(cx, |source_pane, cx| {
         let item_id = active_item.item_id();
+        let was_pinned = source_pane.is_item_pinned(item_id);
         source_pane.remove_item(item_id, false, close_if_empty, window, cx);
         destination.update(cx, |target_pane, cx| {
             target_pane.add_item(
@@ -12296,6 +12307,9 @@ pub fn move_active_item(
                 window,
                 cx,
             );
+            if was_pinned {
+                target_pane.pin_item(item_id, cx);
+            }
         });
     });
 }
