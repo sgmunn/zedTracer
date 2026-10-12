@@ -267,14 +267,15 @@ leading `~` is your home folder. The section shows, best first:
   class inherits is found in its base class.
 - **Stack frame**: the first application frames of a call stack in the row, such as the `callStack` of an exception.
 
-**Call stacks.** In a field that holds a call stack (a `callStack` property), a frame that names a source file, such as
-`at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`, has the file and line underlined. Clicking it opens that
+**Call stacks.** In a call stack, whether it is a `callStack` property or a stack in the text of a message, a frame that
+names a source file, such as `at Contoso.Orders.Checkout.Charge() in Checkout.cs:line 17`, has the file and line
+underlined (a stack that kept its build path, `in F:\\1\\s\\src\\Checkout.cs :line 17`, is a link too). Clicking it opens that
 file in the checkouts under `kusto_results.code.roots`, at that line (a plain click; a drag still selects text). The stack
 gives the file as the build machine knew it, so what is looked for is the file name, ignoring case and the build
 folders, among the files git tracks in the checkouts. Of several files with that name, the one that declares the frame's
 class comes first, then one in a repository named like the process, then the one whose namespace is nearest the frame's.
-If the checkout has moved on from the build and the line is not inside the frame's method, the method's declaration is
-opened instead. A file that is in none of the checkouts is reported. Frames without a file name, which is most of them in
+If the checkout has moved on from the build and the line is not inside the frame's method (a local function or a lambda
+inside it counts as inside), the method's declaration is opened instead. A file that is in none of the checkouts is reported. Frames without a file name, which is most of them in
 a release build, are not links; the top application frames of the stack are in the list above, found by method name.
 
 Each entry gives the method or class, its repository and line, and the text of that line; clicking it opens the file at
