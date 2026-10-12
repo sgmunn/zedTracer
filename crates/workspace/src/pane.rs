@@ -1299,10 +1299,15 @@ impl Pane {
 
             if existing_item_index != insertion_index {
                 let existing_item_is_active = existing_item_index == self.active_item_index;
+                let existing_item_is_pinned = self.is_tab_pinned(existing_item_index);
 
                 // If the caller didn't specify a destination and the added item is already
-                // the active one, don't move it
-                if existing_item_is_active && destination_index.is_none() {
+                // the active one, don't move it. Nor if it is pinned: the pinned tabs are the
+                // first ones, and moving it out of them would leave the tab that took its place
+                // pinned instead.
+                if (existing_item_is_active || existing_item_is_pinned)
+                    && destination_index.is_none()
+                {
                     insertion_index = existing_item_index;
                 } else {
                     self.items.remove(existing_item_index);
@@ -6427,6 +6432,39 @@ mod tests {
 
         // A stays pinned
         assert_item_labels(&pane_a, ["B!", "A*!"], cx);
+    }
+
+    #[gpui::test]
+    async fn test_adding_a_pinned_tab_that_is_already_in_the_pane_does_not_move_the_pin(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane_a = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        // A is pinned and B is the active tab
+        let item_a = add_labeled_item(&pane_a, "A", false, cx);
+        add_labeled_item(&pane_a, "B", false, cx);
+        add_labeled_item(&pane_a, "C", false, cx);
+        pane_a.update_in(cx, |pane, window, cx| {
+            let ix = pane.index_for_item_id(item_a.item_id()).unwrap();
+            pane.pin_tab_at(ix, window, cx);
+            pane.activate_item(2, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        assert_item_labels(&pane_a, ["A!", "B", "C*"], cx);
+
+        // Adding it again, with no place asked for, only activates it. The pinned tabs are the
+        // first of the pane, so moving it would hand its pin to the tab that took its place.
+        pane_a.update_in(cx, |pane, window, cx| {
+            pane.add_item(item_a.clone(), true, true, None, window, cx)
+        });
+        cx.run_until_parked();
+        assert_item_labels(&pane_a, ["A*!", "B", "C"], cx);
     }
 
     #[gpui::test]
