@@ -18,7 +18,7 @@ use settings::{DockSide, Settings as _};
 use ui::{Button, ButtonCommon, ButtonSize, Clickable, IconName, Label, prelude::*};
 use workspace::Workspace;
 
-use crate::code_references::CodeReferences;
+use crate::code_references::{CodeReferences, OpenIn};
 use crate::results_settings::ResultsSettings;
 
 use crate::inspector_text::{InspectorEvent, InspectorPalette, InspectorText};
@@ -151,9 +151,11 @@ impl RowDetailsPanel {
                 this.refresh(window, cx);
             }),
             cx.subscribe_in(&inspector, window, |this, _, event, window, cx| {
-                let InspectorEvent::OpenFrame(frame) = event;
-                this.code
-                    .update(cx, |code, cx| code.open_frame(frame, window, cx));
+                let InspectorEvent::OpenFrame { frame, modifiers } = event;
+                if let Some(how) = OpenIn::from_modifiers(modifiers) {
+                    this.code
+                        .update(cx, |code, cx| code.open_frame(frame, how, window, cx));
+                }
             }),
             cx.subscribe_in(&find_editor, window, |this, _, event, window, cx| {
                 if matches!(event, editor::EditorEvent::BufferEdited) {
@@ -446,6 +448,7 @@ mod tests {
 
     use super::*;
     use crate::code_references::CodeState;
+    use workspace::SplitDirection;
 
     fn messages() -> Arc<ResultSet> {
         Arc::new(ResultSet {
@@ -769,6 +772,18 @@ mod tests {
 }
 ";
 
+    const LEDGER: &str = "namespace Contoso.Orders
+{
+    public class Ledger
+    {
+        public void Post()
+        {
+            this.Write();
+        }
+    }
+}
+";
+
     fn charge_card_result() -> Arc<ResultSet> {
         charge_card_result_named(["MarkerName", "MessageText", "ProcessName"])
     }
@@ -821,6 +836,7 @@ mod tests {
     fn checkout_with_the_source(repository: &std::path::Path) {
         std::fs::create_dir_all(repository.join("src")).expect("a folder");
         std::fs::write(repository.join("src/Checkout.cs"), CHECKOUT).expect("a file");
+        std::fs::write(repository.join("src/Ledger.cs"), LEDGER).expect("a file");
         for arguments in [["init", "-q"], ["add", "-A"]] {
             let status = futures::executor::block_on(
                 util::command::new_command("git")
@@ -947,7 +963,11 @@ mod tests {
 
         let code = panel.read_with(cx, |panel, _| panel.code.clone());
         let first = references.first().expect("a reference").clone();
-        cx.update(|window, cx| code.update(cx, |code, cx| code.open(&first, window, cx)));
+        cx.update(|window, cx| {
+            code.update(cx, |code, cx| {
+                code.open(&first, OpenIn::CodePane, window, cx)
+            })
+        });
         cx.run_until_parked();
         let editor = workspace
             .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
@@ -1066,6 +1086,10 @@ mod tests {
         });
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         select_row_of(&active, result, 0, cx);
+        // The section of code above the inspector changes height when its lookup finishes, which
+        // would move the link between the press and the release of a click.
+        finished_state(&panel, cx);
+        cx.run_until_parked();
 
         let (inspector, shown) = panel.read_with(cx, |panel, _| {
             (panel.inspector().clone(), panel.shown.clone())
@@ -1105,6 +1129,232 @@ mod tests {
         });
         assert_eq!(text, CHECKOUT);
         assert_eq!(cursor_row, 12, "line 13, counting from zero");
+    }
+
+    /// The file names on the tabs of every pane, left to right.
+    fn tabs(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> Vec<Vec<String>> {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .panes()
+                .iter()
+                .map(|pane| {
+                    pane.read(cx)
+                        .items()
+                        .map(|item| {
+                            // A file outside the project is titled with its whole path.
+                            let title = item.tab_content_text(0, cx);
+                            title.rsplit('/').next().unwrap_or_default().to_string()
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+    }
+
+    /// Waits for the tabs to be `expected`, because opening a file takes a few turns of the
+    /// executor and a lookup that runs git takes real time.
+    fn wait_for_tabs(
+        workspace: &Entity<Workspace>,
+        expected: &[&[&str]],
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let expected: Vec<Vec<String>> = expected
+            .iter()
+            .map(|pane| pane.iter().map(|tab| tab.to_string()).collect())
+            .collect();
+        for _ in 0..400 {
+            cx.run_until_parked();
+            if tabs(workspace, cx) == expected {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(tabs(workspace, cx), expected);
+    }
+
+    fn click_frame(
+        panel: &Entity<RowDetailsPanel>,
+        index: usize,
+        modifiers: gpui::Modifiers,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let (inspector, frames) = panel.read_with(cx, |panel, _| {
+            (panel.inspector().clone(), panel.shown.frames.clone())
+        });
+        let range = frames.get(index).expect("a frame").range.clone();
+        let position =
+            crate::inspector_text::point_over(&inspector, cx, |offset| range.contains(&offset));
+        cx.simulate_click(position, modifiers);
+    }
+
+    fn active_pane_index(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> usize {
+        workspace.read_with(cx, |workspace, _| {
+            let active = workspace.active_pane();
+            workspace
+                .panes()
+                .iter()
+                .position(|pane| pane == active)
+                .expect("the active pane is one of the panes")
+        })
+    }
+
+    /// A trace in one tab and a call stack in Row Details that names two files.
+    async fn trace_beside_a_call_stack(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<RowDetailsPanel>,
+        tempfile::TempDir,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.executor().allow_parking();
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let repository = root.path().join("orders");
+        checkout_with_the_source(&repository);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            repository.join("src"),
+            serde_json::json!({ "Checkout.cs": CHECKOUT, "Ledger.cs": LEDGER }),
+        )
+        .await;
+        fs.insert_tree("/trace", serde_json::json!({ "trace.txt": "the trace" }))
+            .await;
+        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        cx.simulate_resize(gpui::size(px(900.), px(700.)));
+        set_code_roots(&[root.path()], cx);
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    std::path::PathBuf::from("/trace/trace.txt"),
+                    workspace::OpenOptions {
+                        visible: Some(workspace::OpenVisible::None),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("the trace opens");
+
+        let stack = r"   at Contoso.Orders.Checkout.Charge() in C:\\__w\\1\\s\\src\\Checkout.cs:line 13
+   at Contoso.Orders.Ledger.Post() in C:\\__w\\1\\s\\src\\Ledger.cs:line 7";
+        let result = Arc::new(ResultSet {
+            tables: vec![Table {
+                name: "PrimaryResult".into(),
+                columns: vec![
+                    Column::new("MessageText", "string"),
+                    Column::new("CustomData", "dynamic"),
+                ],
+                rows: vec![vec![
+                    Cell::Text("ok".into()),
+                    Cell::Text(serde_json::json!({ "callStack": stack }).to_string()),
+                ]],
+            }],
+            ..Default::default()
+        });
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        select_row_of(&active, result, 0, cx);
+        finished_state(&panel, cx);
+        cx.run_until_parked();
+        (workspace, panel, root, cx)
+    }
+
+    /// A click on the file of a frame opens it in a pane beside the trace, and the next one uses
+    /// that pane whichever pane has the focus, so the trace is never covered.
+    #[gpui::test]
+    async fn code_opens_beside_the_trace_and_keeps_using_that_pane(cx: &mut TestAppContext) {
+        let (workspace, panel, _root, cx) = trace_beside_a_call_stack(cx).await;
+        wait_for_tabs(&workspace, &[&["trace.txt"]], cx);
+
+        click_frame(&panel, 0, gpui::Modifiers::none(), cx);
+        wait_for_tabs(&workspace, &[&["trace.txt"], &["Checkout.cs"]], cx);
+        assert_eq!(
+            active_pane_index(&workspace, cx),
+            1,
+            "the focus goes to the code"
+        );
+        let editor = workspace
+            .read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx))
+            .expect("the code is in an editor");
+        assert!(cx.update(|window, cx| editor.focus_handle(cx).is_focused(window)));
+
+        // Back to the trace's pane, and another click: the code still goes to the code pane, and
+        // replaces the preview tab instead of adding to it.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_pane_in_direction(SplitDirection::Left, window, cx)
+        });
+        assert_eq!(active_pane_index(&workspace, cx), 0);
+        click_frame(&panel, 1, gpui::Modifiers::none(), cx);
+        wait_for_tabs(&workspace, &[&["trace.txt"], &["Ledger.cs"]], cx);
+        assert_eq!(active_pane_index(&workspace, cx), 1);
+    }
+
+    #[gpui::test]
+    async fn the_keys_held_choose_the_pane(cx: &mut TestAppContext) {
+        let (workspace, panel, _root, cx) = trace_beside_a_call_stack(cx).await;
+        click_frame(&panel, 0, gpui::Modifiers::none(), cx);
+        wait_for_tabs(&workspace, &[&["trace.txt"], &["Checkout.cs"]], cx);
+
+        // The secondary key (command on macOS) opens where Zed would: the pane last active.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_pane_in_direction(SplitDirection::Left, window, cx)
+        });
+        click_frame(&panel, 1, gpui::Modifiers::secondary_key(), cx);
+        wait_for_tabs(
+            &workspace,
+            &[&["trace.txt", "Ledger.cs"], &["Checkout.cs"]],
+            cx,
+        );
+
+        // Alt opens in a new split beside the code pane, which is the code pane from then on.
+        let alt = gpui::Modifiers {
+            alt: true,
+            ..gpui::Modifiers::none()
+        };
+        click_frame(&panel, 0, alt, cx);
+        wait_for_tabs(
+            &workspace,
+            &[
+                &["trace.txt", "Ledger.cs"],
+                &["Checkout.cs"],
+                &["Checkout.cs"],
+            ],
+            cx,
+        );
+        click_frame(&panel, 1, gpui::Modifiers::none(), cx);
+        wait_for_tabs(
+            &workspace,
+            &[
+                &["trace.txt", "Ledger.cs"],
+                &["Checkout.cs"],
+                &["Ledger.cs"],
+            ],
+            cx,
+        );
+
+        // Shift is for extending a selection, not for opening anything.
+        click_frame(&panel, 0, gpui::Modifiers::shift(), cx);
+        cx.run_until_parked();
+        assert_eq!(tabs(&workspace, cx).len(), 3);
+        assert_eq!(tabs(&workspace, cx)[2], ["Ledger.cs"]);
+    }
+
+    #[gpui::test]
+    async fn a_closed_code_pane_is_made_again(cx: &mut TestAppContext) {
+        let (workspace, panel, _root, cx) = trace_beside_a_call_stack(cx).await;
+        click_frame(&panel, 0, gpui::Modifiers::none(), cx);
+        wait_for_tabs(&workspace, &[&["trace.txt"], &["Checkout.cs"]], cx);
+
+        let code_pane = workspace.read_with(cx, |workspace, _| workspace.panes()[1].clone());
+        let closing = code_pane.update_in(cx, |pane, window, cx| {
+            pane.close_active_item(&workspace::CloseActiveItem::default(), window, cx)
+        });
+        closing.await.expect("it closes");
+        wait_for_tabs(&workspace, &[&["trace.txt"]], cx);
+
+        click_frame(&panel, 1, gpui::Modifiers::none(), cx);
+        wait_for_tabs(&workspace, &[&["trace.txt"], &["Ledger.cs"]], cx);
     }
 
     #[gpui::test]

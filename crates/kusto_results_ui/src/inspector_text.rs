@@ -11,8 +11,8 @@ use editor::display_map::HighlightKey;
 use editor::scroll::Autoscroll;
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, FontStyle, FontWeight, HighlightStyle, Hsla,
-    IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Render, UnderlineStyle, Window,
-    div, point, prelude::*, px,
+    IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Render,
+    UnderlineStyle, Window, div, point, prelude::*, px,
 };
 use kusto_results::inspector::{InspectorDocument, JsonTokenKind, StackFrameLink, highlight_json};
 use language::language_settings::SoftWrap;
@@ -59,8 +59,11 @@ const TOKEN_KINDS: [JsonTokenKind; 5] = [
 
 /// What the inspector asks of whoever shows it.
 pub enum InspectorEvent {
-    /// A call stack frame's file was clicked.
-    OpenFrame(StackFrameLink),
+    /// A call stack frame's file was clicked, with the modifier keys held.
+    OpenFrame {
+        frame: StackFrameLink,
+        modifiers: Modifiers,
+    },
 }
 
 pub struct InspectorText {
@@ -233,13 +236,12 @@ impl InspectorText {
         };
     }
 
-    /// A plain click with the left button, on a frame's file and not a drag across it, asks to
-    /// open that frame.
+    /// A click with the left button, on a frame's file and not a drag across it or a double
+    /// click, asks to open that frame. The modifier keys go with it, and say where.
     fn clicked(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let pressed_at = self.pressed_at.take();
         let is_a_plain_click = event.button == MouseButton::Left
             && event.click_count == 1
-            && !event.modifiers.modified()
             && pressed_at.is_some_and(|pressed| {
                 let moved = point(
                     (event.position.x - pressed.x).abs(),
@@ -263,7 +265,10 @@ impl InspectorText {
             .find(|frame| frame.range.contains(&offset.0))
             .cloned();
         if let Some(frame) = clicked {
-            cx.emit(InspectorEvent::OpenFrame(frame));
+            cx.emit(InspectorEvent::OpenFrame {
+                frame,
+                modifiers: event.modifiers,
+            });
         }
     }
 
@@ -582,19 +587,18 @@ mod tests {
         document.frames
     }
 
+    type Opened = std::rc::Rc<std::cell::RefCell<Vec<(StackFrameLink, Modifiers)>>>;
+
     fn record_events(
         view: &Entity<InspectorText>,
         cx: &mut VisualTestContext,
-    ) -> (
-        std::rc::Rc<std::cell::RefCell<Vec<StackFrameLink>>>,
-        gpui::Subscription,
-    ) {
-        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    ) -> (Opened, gpui::Subscription) {
+        let opened = Opened::default();
         let subscription = cx.update(|_, cx| {
             let opened = opened.clone();
             cx.subscribe(view, move |_, event: &InspectorEvent, _| {
-                let InspectorEvent::OpenFrame(frame) = event;
-                opened.borrow_mut().push(frame.clone());
+                let InspectorEvent::OpenFrame { frame, modifiers } = event;
+                opened.borrow_mut().push((frame.clone(), *modifiers));
             })
         });
         (opened, subscription)
@@ -615,14 +619,21 @@ mod tests {
             opened
                 .borrow()
                 .iter()
-                .map(|frame| (frame.file_name.as_str(), frame.line, frame.symbol.as_str()))
+                .map(|(frame, modifiers)| (
+                    frame.file_name.as_str(),
+                    frame.line,
+                    frame.symbol.as_str(),
+                    *modifiers
+                ))
                 .collect::<Vec<_>>(),
-            [("Main.cs", 3, "App.Main")]
+            [("Main.cs", 3, "App.Main", Modifiers::none())]
         );
     }
 
     #[gpui::test]
-    async fn a_click_elsewhere_a_drag_or_a_modified_click_opens_nothing(cx: &mut TestAppContext) {
+    async fn a_click_elsewhere_or_a_drag_opens_nothing_and_a_modified_click_says_which_keys(
+        cx: &mut TestAppContext,
+    ) {
         let (view, cx) = open(cx);
         let frames = show_stack(&view, cx);
         let (opened, _subscription) = record_events(&view, cx);
@@ -632,18 +643,29 @@ mod tests {
         let plain = STACK.find("plain").expect("plain text");
         let on_plain = point_over(&view, cx, |offset| (plain..plain + 5).contains(&offset));
 
-        cx.simulate_click(on_plain, gpui::Modifiers::none());
+        cx.simulate_click(on_plain, Modifiers::none());
         assert!(opened.borrow().is_empty(), "text that is not a link");
 
-        cx.simulate_click(on_first, gpui::Modifiers::secondary_key());
-        assert!(opened.borrow().is_empty(), "a modified click");
-
-        cx.simulate_mouse_down(on_first, MouseButton::Left, gpui::Modifiers::none());
-        cx.simulate_mouse_up(on_plain, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_down(on_first, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(on_plain, MouseButton::Left, Modifiers::none());
         assert!(opened.borrow().is_empty(), "a drag that ends elsewhere");
 
-        cx.simulate_click(on_first, gpui::Modifiers::none());
-        assert_eq!(opened.borrow().len(), 1, "and a plain click still works");
+        cx.simulate_click(on_first, Modifiers::none());
+        cx.simulate_click(on_first, Modifiers::secondary_key());
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::none()
+        };
+        cx.simulate_click(on_first, alt);
+        assert_eq!(
+            opened
+                .borrow()
+                .iter()
+                .map(|(_, modifiers)| *modifiers)
+                .collect::<Vec<_>>(),
+            [Modifiers::none(), Modifiers::secondary_key(), alt],
+            "each click goes with the keys that were down"
+        );
     }
 
     #[gpui::test]

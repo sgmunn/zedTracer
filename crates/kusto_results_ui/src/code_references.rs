@@ -11,7 +11,10 @@ use std::sync::{Arc, Weak};
 use editor::Editor;
 use futures::FutureExt as _;
 use futures::future::Shared;
-use gpui::{App, Context, FontWeight, SharedString, Task, WeakEntity, Window, px};
+use gpui::{
+    App, ClickEvent, Context, Entity, FontWeight, Modifiers, SharedString, Task, WeakEntity,
+    Window, px,
+};
 use gpui_util::ResultExt as _;
 use kusto_code::{
     CodeKeys, CodeRef, CodeRefKind, CodeResolver, EventText, GitSearch, KeyOrigin, SymbolPath,
@@ -24,7 +27,7 @@ use language::Point;
 use settings::Settings as _;
 use ui::prelude::*;
 use workspace::notifications::DetachAndPromptErr as _;
-use workspace::{OpenOptions, OpenVisible, Workspace};
+use workspace::{OpenOptions, OpenVisible, Pane, SplitDirection, Workspace};
 
 use crate::results_settings::ResultsSettings;
 
@@ -121,6 +124,39 @@ impl CodeState {
     }
 }
 
+/// Where a place in the code is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIn {
+    /// The pane for code, beside the trace. It is found or made the first time and then used
+    /// whichever pane has the focus, so the trace is never covered by the code it points to.
+    CodePane,
+    /// A new split beside the code pane, which then becomes the code pane.
+    NewSplit,
+    /// The pane that was last active, which is where Zed opens a file.
+    ActivePane,
+}
+
+impl OpenIn {
+    /// A plain click opens in the code pane, alt in a new split, and the secondary key (command
+    /// on macOS) in the active pane. Any other combination, such as shift to extend a selection,
+    /// is not a click on a link.
+    pub fn from_modifiers(modifiers: &Modifiers) -> Option<Self> {
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::none()
+        };
+        if *modifiers == Modifiers::none() {
+            Some(Self::CodePane)
+        } else if *modifiers == alt {
+            Some(Self::NewSplit)
+        } else if *modifiers == Modifiers::secondary_key() {
+            Some(Self::ActivePane)
+        } else {
+            None
+        }
+    }
+}
+
 type SharedResolver = Shared<Task<Result<Arc<CodeResolver>, SharedString>>>;
 
 pub struct CodeReferences {
@@ -133,6 +169,8 @@ pub struct CodeReferences {
     prefetched: Option<Weak<ResultSet>>,
     prefetch: Option<Shared<Task<()>>>,
     lookup: Option<Task<()>>,
+    /// The pane code is opened in, once there is one.
+    code_pane: Option<WeakEntity<Pane>>,
 }
 
 impl CodeReferences {
@@ -146,6 +184,7 @@ impl CodeReferences {
             prefetched: None,
             prefetch: None,
             lookup: None,
+            code_pane: None,
         }
     }
 
@@ -322,6 +361,7 @@ impl CodeReferences {
     pub fn open_frame(
         &mut self,
         frame: &StackFrameLink,
+        how: OpenIn,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -353,7 +393,7 @@ impl CodeReferences {
                 .await;
             this.update_in(cx, |this, window, cx| match outcome {
                 Ok((found, repositories, file_name)) => match found.first() {
-                    Some(first) => this.open(first, window, cx),
+                    Some(first) => this.open(first, how, window, cx),
                     None => this.show_problem(
                         format!("{file_name} is not in any of the {repositories} checkouts."),
                         cx,
@@ -375,23 +415,98 @@ impl CodeReferences {
         });
     }
 
-    /// Opens the file of a reference at its line.
-    pub fn open(&mut self, reference: &CodeRef, window: &mut Window, cx: &mut Context<Self>) {
+    /// The pane to open code in, or `None` for the one Zed would use.
+    fn pane_for(
+        &mut self,
+        how: OpenIn,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Option<Entity<Pane>> {
+        let remembered = self
+            .code_pane
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .filter(|pane| workspace.panes().contains(pane));
+        let pane = match how {
+            OpenIn::ActivePane => return None,
+            OpenIn::CodePane => remembered.unwrap_or_else(|| {
+                // Another pane that is already there, wherever it is, rather than a third.
+                [
+                    SplitDirection::Right,
+                    SplitDirection::Left,
+                    SplitDirection::Down,
+                    SplitDirection::Up,
+                ]
+                .into_iter()
+                .find_map(|direction| workspace.find_pane_in_direction(direction, cx))
+                .unwrap_or_else(|| {
+                    let active = workspace.active_pane().clone();
+                    workspace.split_pane(active, SplitDirection::Right, window, cx)
+                })
+            }),
+            OpenIn::NewSplit => {
+                let beside = remembered.unwrap_or_else(|| workspace.active_pane().clone());
+                workspace.split_pane(beside, SplitDirection::Right, window, cx)
+            }
+        };
+        self.code_pane = Some(pane.downgrade());
+        Some(pane)
+    }
+
+    /// Opens the file of a reference at its line, in the pane `how` says. Code in the code pane is
+    /// a preview tab, so going through several places leaves one tab, and it takes the focus.
+    pub fn open(
+        &mut self,
+        reference: &CodeRef,
+        how: OpenIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) else {
             return;
         };
         let line = u32::try_from(reference.line.saturating_sub(1)).unwrap_or(u32::MAX);
-        let opened = workspace.update(cx, |workspace, cx| {
-            workspace.open_abs_path(
-                reference.path.clone(),
-                OpenOptions {
-                    visible: Some(OpenVisible::None),
-                    ..Default::default()
-                },
-                window,
-                cx,
-            )
+        let path = reference.path.clone();
+        let pane = workspace.update(cx, |workspace, cx| {
+            self.pane_for(how, workspace, window, cx)
         });
+        let opened = match pane {
+            None => workspace.update(cx, |workspace, cx| {
+                workspace.open_abs_path(
+                    path,
+                    OpenOptions {
+                        visible: Some(OpenVisible::None),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            }),
+            Some(pane) => {
+                let project = workspace.read(cx).project().clone();
+                let project_path = Workspace::project_path_for_path(project, &path, false, cx);
+                let workspace = workspace.downgrade();
+                window.spawn(cx, async move |cx| {
+                    // A worktree made for a file outside the project is only held weakly by the
+                    // project, and goes away unless something keeps it until the file is open.
+                    let (_worktree, project_path) = project_path.await?;
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            workspace.open_path_preview(
+                                project_path,
+                                Some(pane.downgrade()),
+                                true,
+                                true,
+                                true,
+                                window,
+                                cx,
+                            )
+                        })?
+                        .await
+                })
+            }
+        };
         cx.spawn_in(window, async move |_, cx| {
             let item = opened.await?;
             if let Some(editor) = item.downcast::<Editor>() {
@@ -482,8 +597,10 @@ impl Render for CodeReferences {
                             .gap_0p5()
                             .cursor_pointer()
                             .hover(move |style| style.bg(hover_background))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open(&opened, window, cx)
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                if let Some(how) = OpenIn::from_modifiers(&event.modifiers()) {
+                                    this.open(&opened, how, window, cx)
+                                }
                             }))
                             .child(
                                 h_flex()
