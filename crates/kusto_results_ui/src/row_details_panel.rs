@@ -21,7 +21,7 @@ use workspace::Workspace;
 use crate::code_references::CodeReferences;
 use crate::results_settings::ResultsSettings;
 
-use crate::inspector_text::{InspectorPalette, InspectorText};
+use crate::inspector_text::{InspectorEvent, InspectorPalette, InspectorText};
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 actions!(row_details, [ToggleRowDetails, FocusFind]);
@@ -150,6 +150,11 @@ impl RowDetailsPanel {
                 this.shown = InspectorDocument::default();
                 this.refresh(window, cx);
             }),
+            cx.subscribe_in(&inspector, window, |this, _, event, window, cx| {
+                let InspectorEvent::OpenFrame(frame) = event;
+                this.code
+                    .update(cx, |code, cx| code.open_frame(frame, window, cx));
+            }),
             cx.subscribe_in(&find_editor, window, |this, _, event, window, cx| {
                 if matches!(event, editor::EditorEvent::BufferEdited) {
                     this.apply_find(window, cx);
@@ -214,6 +219,7 @@ impl RowDetailsPanel {
             header: theme.colors().text_accent,
             null: theme.colors().text_muted,
             code_background: theme.colors().element_background,
+            link: theme.colors().text_accent,
         }
     }
 
@@ -1022,6 +1028,83 @@ mod tests {
                 CodeRefKind::Method
             ]
         );
+    }
+
+    /// Clicking the file of a call stack frame in the inspector opens it, at the frame's line, from
+    /// the checkout under the configured folder.
+    #[gpui::test]
+    async fn a_click_on_the_file_of_a_call_stack_frame_opens_it(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let repository = root.path().join("orders");
+        checkout_with_the_source(&repository);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            repository.join("src"),
+            serde_json::json!({ "Checkout.cs": CHECKOUT }),
+        )
+        .await;
+        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        cx.simulate_resize(gpui::size(px(900.), px(700.)));
+        set_code_roots(&[root.path()], cx);
+
+        let stack = r"   at Contoso.Orders.Checkout.Charge() in C:\__w\1\s\src\Orders\Checkout.cs:line 13
+   at System.Threading.Tasks.Task.Wait()";
+        let result = Arc::new(ResultSet {
+            tables: vec![Table {
+                name: "PrimaryResult".into(),
+                columns: vec![
+                    Column::new("MessageText", "string"),
+                    Column::new("CustomData", "dynamic"),
+                ],
+                rows: vec![vec![
+                    Cell::Text("ok".into()),
+                    Cell::Text(serde_json::json!({ "callStack": stack }).to_string()),
+                ]],
+            }],
+            ..Default::default()
+        });
+        let active = cx.update(|_, cx| ActiveSelection::shared(cx));
+        select_row_of(&active, result, 0, cx);
+
+        let (inspector, shown) = panel.read_with(cx, |panel, _| {
+            (panel.inspector().clone(), panel.shown.clone())
+        });
+        let frame = shown
+            .frames
+            .first()
+            .expect("a frame that names a file")
+            .clone();
+        assert_eq!(frame.file_name, "Checkout.cs");
+        let position = crate::inspector_text::point_over(&inspector, cx, |offset| {
+            frame.range.contains(&offset)
+        });
+        cx.simulate_click(position, gpui::Modifiers::none());
+
+        let mut opened = None;
+        for _ in 0..400 {
+            cx.run_until_parked();
+            opened =
+                workspace.read_with(cx, |workspace, cx| workspace.active_item_as::<Editor>(cx));
+            if opened.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let editor = opened.expect("the file opened in an editor");
+        let (text, cursor_row) = editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            (
+                editor.text(cx),
+                editor
+                    .selections
+                    .newest::<language::Point>(&snapshot)
+                    .head()
+                    .row,
+            )
+        });
+        assert_eq!(text, CHECKOUT);
+        assert_eq!(cursor_row, 12, "line 13, counting from zero");
     }
 
     #[gpui::test]

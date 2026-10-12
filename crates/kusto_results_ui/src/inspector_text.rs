@@ -10,10 +10,11 @@ use editor::SelectionEffects;
 use editor::display_map::HighlightKey;
 use editor::scroll::Autoscroll;
 use gpui::{
-    AppContext as _, Context, Entity, FontStyle, FontWeight, HighlightStyle, Hsla, IntoElement,
-    Render, Window, div, prelude::*,
+    AppContext as _, Context, Entity, EventEmitter, FontStyle, FontWeight, HighlightStyle, Hsla,
+    IntoElement, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Render, UnderlineStyle, Window,
+    div, point, prelude::*, px,
 };
-use kusto_results::inspector::{InspectorDocument, JsonTokenKind, highlight_json};
+use kusto_results::inspector::{InspectorDocument, JsonTokenKind, StackFrameLink, highlight_json};
 use language::language_settings::SoftWrap;
 use multi_buffer::MultiBufferOffset;
 
@@ -31,6 +32,11 @@ fn token_key(kind: JsonTokenKind) -> HighlightKey {
 const HEADER_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(5);
 const NULL_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(6);
 pub(crate) const CODE_BACKGROUND_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(7);
+const FRAME_LINK_KEY: HighlightKey = HighlightKey::ConsoleAnsiHighlight(8);
+
+/// How far a press and its release may be apart and still be a click, not the start of a
+/// selection.
+const CLICK_SLOP: Pixels = px(4.);
 
 /// The colours an inspector document is drawn with.
 pub struct InspectorPalette {
@@ -39,6 +45,8 @@ pub struct InspectorPalette {
     pub null: Hsla,
     /// The background behind a value shown as JSON.
     pub code_background: Hsla,
+    /// The text of a call stack frame's file, which opens it.
+    pub link: Hsla,
 }
 
 const TOKEN_KINDS: [JsonTokenKind; 5] = [
@@ -49,10 +57,21 @@ const TOKEN_KINDS: [JsonTokenKind; 5] = [
     JsonTokenKind::Null,
 ];
 
+/// What the inspector asks of whoever shows it.
+pub enum InspectorEvent {
+    /// A call stack frame's file was clicked.
+    OpenFrame(StackFrameLink),
+}
+
 pub struct InspectorText {
     editor: Entity<Editor>,
     wrap: bool,
+    /// The frames of the document shown, whose files can be clicked.
+    frames: Vec<StackFrameLink>,
+    pressed_at: Option<gpui::Point<Pixels>>,
 }
+
+impl EventEmitter<InspectorEvent> for InspectorText {}
 
 impl InspectorText {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -62,7 +81,12 @@ impl InspectorText {
             editor.set_soft_wrap_mode(SoftWrap::EditorWidth, cx);
             editor
         });
-        Self { editor, wrap: true }
+        Self {
+            editor,
+            wrap: true,
+            frames: Vec::new(),
+            pressed_at: None,
+        }
     }
 
     pub fn editor(&self) -> &Entity<Editor> {
@@ -102,6 +126,7 @@ impl InspectorText {
             header: Hsla::default(),
             null: Hsla::default(),
             code_background: Hsla::default(),
+            link: Hsla::default(),
         };
         self.set_document(&document, &palette, window, cx);
     }
@@ -115,7 +140,7 @@ impl InspectorText {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.editor.update(cx, |editor, cx| {
+        let styled = self.editor.update(cx, |editor, cx| {
             editor.set_read_only(false);
             editor.set_text(document.text.as_str(), window, cx);
             editor.set_read_only(true);
@@ -128,7 +153,7 @@ impl InspectorText {
                     snapshot.len().0,
                     document.text.len()
                 );
-                return;
+                return false;
             }
             let anchors = |ranges: &mut dyn Iterator<Item = &Range<usize>>| {
                 ranges
@@ -184,7 +209,62 @@ impl InspectorText {
                 },
                 cx,
             );
+            editor.highlight_text(
+                FRAME_LINK_KEY,
+                anchors(&mut document.frames.iter().map(|frame| &frame.range)),
+                HighlightStyle {
+                    color: Some(palette.link),
+                    underline: Some(UnderlineStyle {
+                        thickness: px(1.),
+                        color: Some(palette.link),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                },
+                cx,
+            );
+            true
         });
+        // Links whose offsets do not match the text shown would open the wrong frame.
+        self.frames = if styled {
+            document.frames.clone()
+        } else {
+            Vec::new()
+        };
+    }
+
+    /// A plain click with the left button, on a frame's file and not a drag across it, asks to
+    /// open that frame.
+    fn clicked(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        let pressed_at = self.pressed_at.take();
+        let is_a_plain_click = event.button == MouseButton::Left
+            && event.click_count == 1
+            && !event.modifiers.modified()
+            && pressed_at.is_some_and(|pressed| {
+                let moved = point(
+                    (event.position.x - pressed.x).abs(),
+                    (event.position.y - pressed.y).abs(),
+                );
+                moved.x <= CLICK_SLOP && moved.y <= CLICK_SLOP
+            });
+        if !is_a_plain_click {
+            return;
+        }
+        let Some(offset) = self
+            .editor
+            .read(cx)
+            .offset_at_window_position(event.position)
+        else {
+            return;
+        };
+        let clicked = self
+            .frames
+            .iter()
+            .find(|frame| frame.range.contains(&offset.0))
+            .cloned();
+        if let Some(frame) = clicked {
+            cx.emit(InspectorEvent::OpenFrame(frame));
+        }
     }
 
     /// Highlights every case-insensitive match of `query` and returns how many there are.
@@ -235,8 +315,16 @@ impl InspectorText {
 }
 
 impl Render for InspectorText {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.editor.clone())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                this.pressed_at = Some(event.position);
+            }))
+            .capture_any_mouse_up(
+                cx.listener(|this, event: &MouseUpEvent, _, cx| this.clicked(event, cx)),
+            )
+            .child(self.editor.clone())
     }
 }
 
@@ -256,6 +344,39 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
         .match_indices(&lower_query)
         .map(|(start, found)| start..start + found.len())
         .collect()
+}
+
+/// A point of the window over the character at `offset` of the text, found by looking, because
+/// the editor lays the text out by itself.
+#[cfg(test)]
+pub(crate) fn point_over(
+    view: &Entity<InspectorText>,
+    cx: &mut gpui::VisualTestContext,
+    wanted: impl Fn(usize) -> bool,
+) -> gpui::Point<Pixels> {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let editor = view.read_with(cx, |view, _| view.editor().clone());
+    editor
+        .read_with(cx, |editor, _| {
+            let bounds = *editor.last_bounds()?;
+            let mut y = bounds.origin.y;
+            while y < bounds.bottom() {
+                let mut x = bounds.origin.x;
+                while x < bounds.right() {
+                    let candidate = point(x, y);
+                    if editor
+                        .offset_at_window_position(candidate)
+                        .is_some_and(|offset| wanted(offset.0))
+                    {
+                        return Some(candidate);
+                    }
+                    x += px(2.);
+                }
+                y += px(3.);
+            }
+            None
+        })
+        .expect("a point over that text")
 }
 
 #[cfg(test)]
@@ -313,6 +434,7 @@ mod tests {
             header: Hsla::default(),
             null: Hsla::default(),
             code_background: Hsla::default(),
+            link: Hsla::default(),
         };
         view.update_in(cx, |view, window, cx| {
             view.set_document(&document, &palette, window, cx)
@@ -432,5 +554,107 @@ mod tests {
             );
         }
         let _ = Arc::new(());
+    }
+
+    const STACK: &str =
+        "at App.Run() in Run.cs:line 9\nat App.Main() in Main.cs:line 3\nplain text further down";
+
+    fn palette() -> InspectorPalette {
+        InspectorPalette {
+            token: Box::new(colour),
+            header: Hsla::default(),
+            null: Hsla::default(),
+            code_background: Hsla::default(),
+            link: hsla(0.6, 0.8, 0.6, 1.),
+        }
+    }
+
+    fn show_stack(view: &Entity<InspectorText>, cx: &mut VisualTestContext) -> Vec<StackFrameLink> {
+        let document = InspectorDocument {
+            text: STACK.to_string(),
+            frames: kusto_results::inspector::stack_frame_links(STACK),
+            ..InspectorDocument::default()
+        };
+        view.update_in(cx, |view, window, cx| {
+            view.set_document(&document, &palette(), window, cx)
+        });
+        cx.run_until_parked();
+        document.frames
+    }
+
+    fn record_events(
+        view: &Entity<InspectorText>,
+        cx: &mut VisualTestContext,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<Vec<StackFrameLink>>>,
+        gpui::Subscription,
+    ) {
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let subscription = cx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.subscribe(view, move |_, event: &InspectorEvent, _| {
+                let InspectorEvent::OpenFrame(frame) = event;
+                opened.borrow_mut().push(frame.clone());
+            })
+        });
+        (opened, subscription)
+    }
+
+    #[gpui::test]
+    async fn a_click_on_the_file_of_a_frame_asks_to_open_it(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let frames = show_stack(&view, cx);
+        let (opened, _subscription) = record_events(&view, cx);
+        assert_eq!(frames.len(), 2);
+
+        let second = frames[1].range.clone();
+        let on_second = point_over(&view, cx, |offset| second.contains(&offset));
+        cx.simulate_click(on_second, gpui::Modifiers::none());
+
+        assert_eq!(
+            opened
+                .borrow()
+                .iter()
+                .map(|frame| (frame.file_name.as_str(), frame.line, frame.symbol.as_str()))
+                .collect::<Vec<_>>(),
+            [("Main.cs", 3, "App.Main")]
+        );
+    }
+
+    #[gpui::test]
+    async fn a_click_elsewhere_a_drag_or_a_modified_click_opens_nothing(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let frames = show_stack(&view, cx);
+        let (opened, _subscription) = record_events(&view, cx);
+
+        let first = frames[0].range.clone();
+        let on_first = point_over(&view, cx, |offset| first.contains(&offset));
+        let plain = STACK.find("plain").expect("plain text");
+        let on_plain = point_over(&view, cx, |offset| (plain..plain + 5).contains(&offset));
+
+        cx.simulate_click(on_plain, gpui::Modifiers::none());
+        assert!(opened.borrow().is_empty(), "text that is not a link");
+
+        cx.simulate_click(on_first, gpui::Modifiers::secondary_key());
+        assert!(opened.borrow().is_empty(), "a modified click");
+
+        cx.simulate_mouse_down(on_first, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(on_plain, MouseButton::Left, gpui::Modifiers::none());
+        assert!(opened.borrow().is_empty(), "a drag that ends elsewhere");
+
+        cx.simulate_click(on_first, gpui::Modifiers::none());
+        assert_eq!(opened.borrow().len(), 1, "and a plain click still works");
+    }
+
+    #[gpui::test]
+    async fn the_files_of_frames_are_underlined(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        show_stack(&view, cx);
+        let editor = view.read_with(cx, |view, _| view.editor().clone());
+        let underlined = editor.read_with(cx, |editor, cx| {
+            let (style, ranges) = editor.text_highlights(FRAME_LINK_KEY, cx)?;
+            Some((style.underline.is_some(), ranges.len()))
+        });
+        assert_eq!(underlined, Some((true, 2)));
     }
 }

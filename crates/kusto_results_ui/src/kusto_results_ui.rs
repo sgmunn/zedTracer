@@ -24,7 +24,7 @@ mod waterfall_view;
 pub use activity_tree::{ActivityTree, ActivityTreeEvent};
 pub use filter_popover::{FilterChanged, FilterPopover};
 pub use grid::{GridOptions, ResultGrid, ResultGridEvent};
-pub use inspector_text::{InspectorPalette, InspectorText};
+pub use inspector_text::{InspectorEvent, InspectorPalette, InspectorText};
 pub use query_thread::{QueryThread, threads_folder};
 pub use results_panel::{ResultsPanel, ToggleResults};
 pub use results_settings::ResultsSettings;

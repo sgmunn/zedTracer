@@ -14,10 +14,10 @@ use futures::future::Shared;
 use gpui::{App, Context, FontWeight, SharedString, Task, WeakEntity, Window, px};
 use gpui_util::ResultExt as _;
 use kusto_code::{
-    CodeKeys, CodeRef, CodeRefKind, CodeResolver, EventText, GitSearch, KeyOrigin,
+    CodeKeys, CodeRef, CodeRefKind, CodeResolver, EventText, GitSearch, KeyOrigin, SymbolPath,
     discover_repositories,
 };
-use kusto_results::inspector::{InspectorSubject, resolve_subject};
+use kusto_results::inspector::{InspectorSubject, StackFrameLink, resolve_subject};
 use kusto_results::trace_schema::{TraceColumns, matches_pattern};
 use kusto_results::{ResultSet, Table};
 use language::Point;
@@ -317,6 +317,64 @@ impl CodeReferences {
         resolver
     }
 
+    /// Opens the file a call stack frame names, found in the checkouts under the configured
+    /// folders, at the frame's line. Says so when there is no such file.
+    pub fn open_frame(
+        &mut self,
+        frame: &StackFrameLink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let roots = Self::roots(cx);
+        if roots.is_empty() {
+            self.show_problem(
+                "Set kusto_results.code.roots to open the files of a call stack.".into(),
+                cx,
+            );
+            return;
+        }
+        let resolver = self.resolver(roots, cx);
+        let process = self
+            .requested
+            .as_ref()
+            .and_then(|(keys, _)| keys.process.clone());
+        let symbol = SymbolPath::parse(&frame.symbol);
+        let (file_name, line) = (frame.file_name.clone(), frame.line);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let resolver = resolver.await?;
+                    let found = resolver
+                        .find_source_file(&file_name, line, symbol.as_ref(), process.as_deref())
+                        .await;
+                    Ok::<_, SharedString>((found, resolver.repositories().len(), file_name))
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| match outcome {
+                Ok((found, repositories, file_name)) => match found.first() {
+                    Some(first) => this.open(first, window, cx),
+                    None => this.show_problem(
+                        format!("{file_name} is not in any of the {repositories} checkouts."),
+                        cx,
+                    ),
+                },
+                Err(message) => this.show_problem(message.to_string(), cx),
+            })
+            .log_err();
+        })
+        .detach();
+    }
+
+    fn show_problem(&self, message: String, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_error(anyhow::anyhow!(message), cx)
+        });
+    }
+
     /// Opens the file of a reference at its line.
     pub fn open(&mut self, reference: &CodeRef, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) else {
@@ -356,6 +414,7 @@ fn heading(reference: &CodeRef) -> String {
             return format!("Message text in one of {} places", reference.matches);
         }
         (_, CodeRefKind::LogLine) => "Message logged at",
+        (_, CodeRefKind::StackLine) => "Stack frame at",
         (KeyOrigin::Marker, _) => "Marker names",
         (KeyOrigin::Prefix, CodeRefKind::Method) => "Message names",
         (KeyOrigin::Prefix, _) => "Message names class",
@@ -370,7 +429,9 @@ fn heading(reference: &CodeRef) -> String {
 /// method it is in.
 fn title(reference: &CodeRef) -> String {
     match (reference.kind, &reference.enclosing) {
-        (CodeRefKind::MarkerUse | CodeRefKind::LogLine, Some(method)) => method.clone(),
+        (CodeRefKind::MarkerUse | CodeRefKind::LogLine | CodeRefKind::StackLine, Some(method)) => {
+            method.clone()
+        }
         _ => reference.symbol.clone(),
     }
 }
