@@ -204,9 +204,8 @@ function sign_app_binaries() {
     echo "Downloading git binary"
     download_git "${target_triple}" "${app_path}/Contents/MacOS/git"
 
-    # Note: The app identifier for our development builds is the same as the app identifier for nightly.
-    cp crates/zed/contents/$channel/embedded.provisionprofile "${app_path}/Contents/"
-
+    # The profiles in crates/zed/contents are issued to Zed Industries for their bundle identifiers, so
+    # they cannot be embedded in a bundle with another identifier. Nothing in zed.entitlements needs one.
     if [[ $can_code_sign = true ]]; then
         echo "Code signing binaries"
         # sequence of codesign commands modeled after this example: https://developer.apple.com/forums/thread/701514
@@ -228,7 +227,7 @@ function sign_app_binaries() {
         # then comment out this line.
         cat crates/zed/resources/zed.entitlements | sed '/com.apple.developer.associated-domains/,+1d' > "${app_path}/Contents/Resources/zed.entitlements"
 
-        codesign --force --deep --entitlements "${app_path}/Contents/Resources/zed.entitlements" --sign ${MACOS_SIGNING_KEY:- -} "${app_path}" -v
+        codesign --force --deep --entitlements "${app_path}/Contents/Resources/zed.entitlements" --sign "${MACOS_SIGNING_KEY:--}" "${app_path}" -v
     fi
 
     bundle_name=$(basename "$app_path")
@@ -245,8 +244,8 @@ function sign_app_binaries() {
         open "$app_path"
     fi
 
-    if [[ "$target_dir" = "debug" ]]; then
-        echo "Debug build detected - skipping DMG creation and signing"
+    if [[ "$target_dir" = "debug" || "$local_install" = true ]]; then
+        echo "Debug build or local install detected - skipping DMG creation and signing"
         if [ "$local_install" = false ]; then
             echo "Created application bundle:"
             echo "$app_path"
