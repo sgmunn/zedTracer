@@ -540,13 +540,29 @@ fn mermaid_zoom_ticks(delta: ScrollDelta) -> f32 {
     .clamp(-1.0, 1.0)
 }
 
-fn on_mermaid_zoom_scroll(
+/// Whether a wheel event moves only sideways, as a mouse's horizontal wheel does.
+fn is_horizontal_scroll(delta: ScrollDelta) -> bool {
+    match delta {
+        ScrollDelta::Lines(lines) => lines.x != 0.0 && lines.y == 0.0,
+        ScrollDelta::Pixels(pixels) => pixels.x != px(0.) && pixels.y == px(0.),
+    }
+}
+
+fn on_mermaid_scroll(
     markdown: Entity<Markdown>,
     source_offset: usize,
+    scroll_handle: ScrollHandle,
     on_zoom: Option<MermaidZoomCallback>,
 ) -> impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static {
     move |event, window, cx| {
         if !(event.modifiers.control || event.modifiers.platform) {
+            // The container has already scrolled by now, and a view around it that scrolls only
+            // vertically would turn the same sideways delta into a scroll down (see
+            // `paint_scroll_listener` in gpui's div), so a diagram that can scroll sideways keeps
+            // a sideways wheel to itself.
+            if is_horizontal_scroll(event.delta) && scroll_handle.max_offset().x > px(0.) {
+                cx.stop_propagation();
+            }
             return;
         }
         let scroll_ticks = mermaid_zoom_ticks(event.delta);
@@ -760,7 +776,12 @@ fn mermaid_scroll_container(
         .w_full()
         .overflow_x_scroll()
         .track_scroll(scroll_handle)
-        .on_scroll_wheel(on_mermaid_zoom_scroll(markdown, source_offset, on_zoom));
+        .on_scroll_wheel(on_mermaid_scroll(
+            markdown,
+            source_offset,
+            scroll_handle.clone(),
+            on_zoom,
+        ));
     // Without this, gpui maps vertical wheel deltas onto the x axis for
     // x-only scroll containers (see `paint_scroll_listener` in gpui's div),
     // hijacking plain vertical scrolls. Restricting to the actual axis lets
@@ -968,7 +989,8 @@ mod tests {
     };
     use collections::HashMap;
     use gpui::{
-        Context, Entity, IntoElement, Render, RenderImage, TestAppContext, Window, point, size,
+        Context, Entity, IntoElement, Modifiers, Render, RenderImage, ScrollDelta, ScrollHandle,
+        ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, size,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1832,5 +1854,76 @@ mod tests {
                 .position_for_source_index(mermaid_diagram.content_range.end.saturating_sub(1))
                 .is_some()
         );
+    }
+    #[test]
+    fn a_wheel_that_moves_only_sideways_is_a_horizontal_scroll() {
+        use super::is_horizontal_scroll;
+        assert!(is_horizontal_scroll(ScrollDelta::Lines(point(-3., 0.))));
+        assert!(is_horizontal_scroll(ScrollDelta::Pixels(point(px(12.), px(0.)))));
+        assert!(!is_horizontal_scroll(ScrollDelta::Lines(point(0., -3.))));
+        assert!(!is_horizontal_scroll(ScrollDelta::Pixels(point(px(12.), px(1.)))), "a diagonal one is not");
+        assert!(!is_horizontal_scroll(ScrollDelta::Lines(point(0., 0.))));
+    }
+
+    struct ScrollingDiagram {
+        markdown: Entity<Markdown>,
+        view: ScrollHandle,
+        diagram: ScrollHandle,
+    }
+
+    impl Render for ScrollingDiagram {
+        /// A view that scrolls only down, holding a diagram wider than it is.
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("view")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.view)
+                .child(
+                    super::mermaid_scroll_container(self.markdown.clone(), 0, &self.diagram, None)
+                        .child(div().w(px(3000.)).h(px(100.))),
+                )
+                .child(div().h(px(2000.)))
+        }
+    }
+
+    #[gpui::test]
+    async fn a_horizontal_wheel_over_a_wide_diagram_scrolls_only_the_diagram(
+        cx: &mut TestAppContext,
+    ) {
+        ensure_theme_initialized(cx);
+        let (scrolling, cx) = cx.add_window_view(|_, cx| ScrollingDiagram {
+            markdown: cx.new(|cx| {
+                Markdown::new_with_options("".into(), None, None, MarkdownOptions::default(), cx)
+            }),
+            view: ScrollHandle::new(),
+            diagram: ScrollHandle::new(),
+        });
+        cx.simulate_resize(size(px(600.), px(400.)));
+        let draw = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        draw(cx);
+        let (view, diagram) = scrolling.read_with(cx, |scrolling, _| {
+            (scrolling.view.clone(), scrolling.diagram.clone())
+        });
+        assert!(diagram.max_offset().x > px(0.), "the diagram is wider than the view");
+        assert!(view.max_offset().y > px(0.), "and the view is taller than the window");
+
+        let over_diagram = point(px(100.), px(50.));
+        let wheel = |delta: ScrollDelta, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: over_diagram,
+                delta,
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+
+        wheel(ScrollDelta::Lines(point(-3., 0.)), cx);
+        assert!(diagram.offset().x < px(0.), "the diagram scrolled sideways");
+        assert_eq!(view.offset().y, px(0.), "and the view around it did not scroll down");
+
+        wheel(ScrollDelta::Lines(point(0., -3.)), cx);
+        assert!(view.offset().y < px(0.), "a vertical wheel still scrolls the view");
     }
 }
