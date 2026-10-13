@@ -155,6 +155,7 @@ pub struct ResultGrid {
     view_state: ViewState,
     /// Which rows only say something started or ended, when any do.
     structural: Option<StructuralRows>,
+    secondary: bool,
     /// Original column indexes in the order they are displayed.
     column_order: Vec<usize>,
     visible_rows: Arc<Vec<usize>>,
@@ -209,6 +210,10 @@ pub struct GridOptions {
     /// The source rows the grid starts from, when it shows only some of the table, as the
     /// structured view shows one activity's events.
     pub scope: Option<Arc<Vec<usize>>>,
+    /// Whether the table is one besides the result's first. The views that read a trace are built
+    /// from the first table only, so a row of another table cannot be focused on, and none of its
+    /// rows is dimmed as structural.
+    pub secondary: bool,
 }
 
 impl EventEmitter<ResultGridEvent> for ResultGrid {}
@@ -296,7 +301,7 @@ impl ResultGrid {
             }
         });
 
-        let structural = table.and_then(|table| {
+        let structural = table.filter(|_| !options.secondary).and_then(|table| {
             let settings = ResultsSettings::get_global(cx);
             let columns = settings.trace_columns(table);
             let mask = structural_rows(table, &columns, &settings.structural_messages);
@@ -312,6 +317,7 @@ impl ResultGrid {
             table_index,
             view_state: ViewState::default(),
             structural,
+            secondary: options.secondary,
             column_order,
             visible_rows: options
                 .scope
@@ -917,10 +923,8 @@ impl ResultGrid {
 
     /// Whether the table is a trace, whose rows belong to activities that can be focused on.
     fn offers_focus(&self, cx: &gpui::App) -> bool {
-        self.result
-            .tables
-            .get(self.table_index)
-            .is_some_and(|table| {
+        !self.secondary
+            && self.result.tables.get(self.table_index).is_some_and(|table| {
                 ResultsSettings::get_global(cx)
                     .trace_columns(table)
                     .supports_activity()
@@ -2087,6 +2091,56 @@ mod tests {
         assert!(!plain.read_with(cx, |grid, _| grid.hides_structural_rows()));
     }
 
+    /// A table after the first is not the trace the other views are built from, so it dims no
+    /// rows as structural and offers no focus, however much it looks like a trace.
+    #[gpui::test]
+    async fn a_secondary_table_has_no_structural_rows_and_offers_no_focus(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let columns = vec![
+            kusto_results::Column::new("CurrentActivityId", "string"),
+            kusto_results::Column::new("ParentActivityId", "string"),
+            kusto_results::Column::new("MessageText", "string"),
+        ];
+        let rows: Vec<Vec<kusto_results::Cell>> = ["Monitored scope start.", "Done"]
+            .into_iter()
+            .map(|message| {
+                vec![
+                    kusto_results::Cell::Text("a".into()),
+                    kusto_results::Cell::Text(String::new()),
+                    kusto_results::Cell::Text(message.into()),
+                ]
+            })
+            .collect();
+        let table = kusto_results::Table {
+            name: "t".into(),
+            columns,
+            rows,
+        };
+        let result = Arc::new(ResultSet {
+            tables: vec![table.clone(), table],
+            ..ResultSet::default()
+        });
+        let (first, cx) = cx.add_window_view(|window, cx| ResultGrid::new(result.clone(), 0, window, cx));
+        let (second, cx) = cx.add_window_view(|window, cx| {
+            ResultGrid::with_options(
+                result,
+                1,
+                GridOptions {
+                    secondary: true,
+                    ..GridOptions::default()
+                },
+                window,
+                cx,
+            )
+        });
+        assert_eq!(first.read_with(cx, |grid, _| grid.structural_row_count()), 1);
+        assert!(first.read_with(cx, |grid, cx| grid.offers_focus_for_test(cx)));
+        assert_eq!(second.read_with(cx, |grid, _| grid.structural_row_count()), 0);
+        assert!(!second.read_with(cx, |grid, cx| grid.offers_focus_for_test(cx)));
+    }
+
     /// A link from another view selects the rows it names, in display order, and leaves out
     /// rows the view does not show.
     #[gpui::test]
@@ -2677,6 +2731,7 @@ mod tests {
                     GridOptions {
                         view_name: Some("PrimaryResult::activity-structured:0".into()),
                         scope: Some(scope),
+                        ..GridOptions::default()
                     },
                     window,
                     cx,

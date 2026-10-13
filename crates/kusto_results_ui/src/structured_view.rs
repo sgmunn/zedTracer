@@ -97,6 +97,7 @@ impl StructuredView {
                             .map(|activity| activity.event_rows.clone())
                             .unwrap_or_default(),
                     )),
+                    ..GridOptions::default()
                 },
                 window,
                 cx,

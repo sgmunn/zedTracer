@@ -1,5 +1,5 @@
 //! Opening a `.ktt` or `.kqr` file in a tab: the project item that loads and parses it, and the
-//! tab that shows its first table in a results grid.
+//! tab that shows its first table in a results grid, and each further table in a grid of its own.
 
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem}
 use worktree::Worktree;
 
 use crate::findings_strip::{FindingsStrip, FindingsStripEvent};
-use crate::grid::{ResultGrid, ResultGridEvent};
+use crate::grid::{GridOptions, ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
 use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
@@ -340,7 +340,10 @@ impl project::ProjectItem for ResultsFile {
 /// Which view of the table the tab shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
+    /// The first table of the result, which every other view of the trace is built from.
     Data,
+    /// The table after the first at this position among the tables after the first.
+    ExtraData(usize),
     Structured,
     /// The calls between the actors of a trace, as a sequence diagram.
     Sequence,
@@ -391,6 +394,8 @@ pub struct ResultsViewer {
     focus_handle: FocusHandle,
     results_file: Entity<ResultsFile>,
     grid: Option<Entity<ResultGrid>>,
+    /// A grid for each table after the first, in the order of the tables.
+    extra_grids: Vec<Entity<ResultGrid>>,
     problem: Option<&'static str>,
     mode: ViewMode,
     /// Whether the table has the columns the structured view needs.
@@ -427,6 +432,7 @@ pub struct ResultsViewer {
     /// the workspace again, which must not bring back a panel the user has closed since.
     offered_row_details: bool,
     _grid_subscription: Option<Subscription>,
+    _extra_grid_subscriptions: Vec<Subscription>,
     _structured_subscription: Option<Subscription>,
     _structured_events_subscription: Option<Subscription>,
     _reload_subscription: Subscription,
@@ -523,6 +529,7 @@ impl ResultsViewer {
             focus_handle: cx.focus_handle(),
             results_file: item.clone(),
             grid: None,
+            extra_grids: Vec::new(),
             problem: None,
             mode: ViewMode::Data,
             can_show_structured: false,
@@ -547,6 +554,7 @@ impl ResultsViewer {
             query_view: None,
             offered_row_details: false,
             _grid_subscription: None,
+            _extra_grid_subscriptions: Vec::new(),
             _structured_subscription: None,
             _structured_events_subscription: None,
             _reload_subscription: reload,
@@ -579,6 +587,32 @@ impl ResultsViewer {
                 grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
             }
         }
+        let extra_table_count = if self.grid.is_some() {
+            result.tables.len().saturating_sub(1)
+        } else {
+            0
+        };
+        self.extra_grids = (1..=extra_table_count)
+            .map(|table_index| {
+                cx.new(|cx| {
+                    ResultGrid::with_options(
+                        result.clone(),
+                        table_index,
+                        GridOptions {
+                            secondary: true,
+                            ..GridOptions::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .collect();
+        self._extra_grid_subscriptions = self
+            .extra_grids
+            .iter()
+            .map(|grid| Self::watch_grid(grid, window, cx))
+            .collect();
         let settings = ResultsSettings::get_global(cx);
         let columns = result
             .tables
@@ -621,11 +655,7 @@ impl ResultsViewer {
                 .as_deref()
                 .is_some_and(|query| !query.trim().is_empty());
         self.query_view = None;
-        if self.mode == ViewMode::Structured && !self.can_show_structured
-            || self.mode == ViewMode::Sequence && !self.can_show_sequence
-            || self.mode == ViewMode::Timeline && !self.can_show_timeline
-            || self.mode == ViewMode::Query && !self.can_show_query
-        {
+        if !self.can_show(self.mode) {
             self.mode = ViewMode::Data;
         } else if self.mode == ViewMode::Structured {
             self.build_structured(window, cx);
@@ -735,12 +765,19 @@ impl ResultsViewer {
         }
     }
 
+    fn can_show(&self, mode: ViewMode) -> bool {
+        match mode {
+            ViewMode::Data => true,
+            ViewMode::ExtraData(position) => position < self.extra_grids.len(),
+            ViewMode::Structured => self.can_show_structured,
+            ViewMode::Sequence => self.can_show_sequence,
+            ViewMode::Timeline => self.can_show_timeline,
+            ViewMode::Query => self.can_show_query,
+        }
+    }
+
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
-        if mode == ViewMode::Structured && !self.can_show_structured
-            || mode == ViewMode::Sequence && !self.can_show_sequence
-            || mode == ViewMode::Timeline && !self.can_show_timeline
-            || mode == ViewMode::Query && !self.can_show_query
-        {
+        if !self.can_show(mode) {
             return;
         }
         self.mode = mode;
@@ -828,7 +865,7 @@ impl ResultsViewer {
             ViewMode::Structured => self.build_structured(window, cx),
             ViewMode::Sequence => self.build_sequence(window, cx),
             ViewMode::Timeline => self.build_timeline(window, cx),
-            ViewMode::Data | ViewMode::Query => {}
+            ViewMode::Data | ViewMode::ExtraData(_) | ViewMode::Query => {}
         }
         cx.notify();
     }
@@ -1307,6 +1344,12 @@ impl ResultsViewer {
 impl Render for ResultsViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match (self.mode, &self.timeline) {
+            (ViewMode::ExtraData(position), _) => match self.extra_grids.get(position) {
+                Some(grid) => div().size_full().child(grid.clone()),
+                None => div()
+                    .p_4()
+                    .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
+            },
             (ViewMode::Timeline, Some(TimelineState::Ready(view))) => {
                 div().size_full().child(view.clone())
             }
@@ -1358,6 +1401,33 @@ impl Render for ResultsViewer {
         let collapse = self.sequence_options.collapse_repeats;
         let rerun = self.rerun_action(cx);
         let save = self.save_action(cx);
+        let extra_tabs: Vec<_> = self
+            .extra_grids
+            .iter()
+            .enumerate()
+            .map(|(position, grid)| {
+                let grid = grid.read(cx);
+                let rows = grid.scope_row_count();
+                let tooltip = format!(
+                    "{} · {rows} {}",
+                    grid.table_name(),
+                    if rows == 1 { "row" } else { "rows" }
+                );
+                div()
+                    .debug_selector(move || format!("extra-data-tab-{position}"))
+                    .child(
+                        Button::new(
+                            ("results-extra-data-tab", position),
+                            format!("Data {}", position + 2),
+                        )
+                        .toggle_state(mode == ViewMode::ExtraData(position))
+                            .tooltip(ui::Tooltip::text(tooltip))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_mode(ViewMode::ExtraData(position), window, cx)
+                            })),
+                    )
+            })
+            .collect();
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
@@ -1378,6 +1448,7 @@ impl Render for ResultsViewer {
                                     })),
                             ),
                         )
+                        .children(extra_tabs)
                         .when(self.can_show_structured, |bar| {
                             bar.child(
                                 div().debug_selector(|| "structured-tab".to_string()).child(
@@ -2040,6 +2111,163 @@ mod tests {
             ViewMode::Data,
             "there is no query to show"
         );
+    }
+
+    const TRACE_AND_TWO_MORE_TABLES: &str = r#"{
+      "tables": [
+        {"name": "PrimaryResult",
+         "columns": [{"name": "CurrentActivityId", "type": "string"}, {"name": "ParentActivityId", "type": "string"}, {"name": "ProcessName", "type": "string"}, {"name": "MarkerName", "type": "string"}, {"name": "TIMESTAMP", "type": "datetime"}],
+         "rows": [
+           ["r", "", "A", "Run", "2026-01-01T00:00:00.0000000Z"],
+           ["a", "r", "B", "Step", "2026-01-01T00:00:00.1000000Z"],
+           ["a", "r", "B", "Step", "2026-01-01T00:00:00.6000000Z"],
+           ["r", "", "A", "Run", "2026-01-01T00:00:01.0000000Z"]]},
+        {"name": "PrimaryResult_2",
+         "columns": [{"name": "CurrentActivityId", "type": "string"}, {"name": "ParentActivityId", "type": "string"}, {"name": "ProcessName", "type": "string"}, {"name": "MarkerName", "type": "string"}, {"name": "TIMESTAMP", "type": "datetime"}],
+         "rows": [["x", "", "C", "Other", "2026-01-01T00:00:02.0000000Z"]]},
+        {"name": "PrimaryResult_3",
+         "columns": [{"name": "Metric", "type": "string"}, {"name": "Value", "type": "long"}],
+         "rows": [["rows", 4], ["errors", 0]]}
+      ]
+    }"#;
+
+    /// Every table after the first has a Data tab of its own, and the views of a trace keep
+    /// reading the first table.
+    #[gpui::test]
+    async fn each_table_after_the_first_has_a_data_tab_of_its_own(cx: &mut TestAppContext) {
+        let (viewers, cx) = open_files(cx, &[("many.ktt", TRACE_AND_TWO_MORE_TABLES)]).await;
+        let viewer = &viewers[0];
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("extra-data-tab-0").is_some());
+        assert!(cx.debug_bounds("extra-data-tab-1").is_some());
+        assert!(cx.debug_bounds("extra-data-tab-2").is_none());
+        assert!(cx.debug_bounds("cell-3-0").is_some(), "the first table shows first");
+
+        let tab = cx
+            .debug_bounds("extra-data-tab-1")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::ExtraData(1)
+        );
+        assert!(cx.debug_bounds("cell-1-0").is_some());
+        assert!(
+            cx.debug_bounds("cell-2-0").is_none(),
+            "the third table has two rows, the first has four"
+        );
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::ExtraData(2), window, cx)
+        });
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::ExtraData(1),
+            "there is no fourth table"
+        );
+
+        let data = cx
+            .debug_bounds("data-tab")
+            .map(|bounds| bounds.center())
+            .expect("the tab shows");
+        cx.simulate_click(data, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Data);
+        assert!(cx.debug_bounds("cell-3-0").is_some());
+
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Structured, window, cx)
+        });
+        cx.run_until_parked();
+        let structured = viewer
+            .read_with(cx, |viewer, _| viewer.structured_view().cloned())
+            .expect("the structured view is built");
+        assert_eq!(
+            structured.read_with(cx, |view, cx| view.grid().read(cx).table_name()),
+            "PrimaryResult"
+        );
+    }
+
+    /// The Row Details panel follows a selection made in the grid of any table, and says which
+    /// table the row is from.
+    #[gpui::test]
+    async fn a_selection_in_a_later_table_is_published_for_that_table(cx: &mut TestAppContext) {
+        let (viewers, cx) = open_files(cx, &[("many.ktt", TRACE_AND_TWO_MORE_TABLES)]).await;
+        let extra_grids = viewers[0].read_with(cx, |viewer, _| viewer.extra_grids.clone());
+        let [trace_like, stats] = extra_grids.as_slice() else {
+            panic!("two tables after the first, got {}", extra_grids.len());
+        };
+        assert!(!trace_like.read_with(cx, |grid, cx| grid.offers_focus_for_test(cx)));
+        assert_eq!(stats.read_with(cx, |grid, _| grid.table_name()), "PrimaryResult_3");
+
+        stats.update_in(cx, |grid, window, cx| grid.select_source_rows(&[1], window, cx));
+        let (table_index, rows) = cx.update(|_, cx| {
+            let selection = crate::row_details_panel::ActiveSelection::shared(cx);
+            let selection = selection.read(cx);
+            (selection.table_index, selection.rows.clone())
+        });
+        assert_eq!((table_index, rows), (2, vec![1]));
+    }
+
+    /// An outside edit that leaves fewer tables takes the tab of a table that is gone with it.
+    #[gpui::test]
+    async fn a_reload_with_fewer_tables_leaves_the_tab_of_a_table_that_is_gone(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "many.ktt": TRACE_AND_TWO_MORE_TABLES }))
+            .await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let path = ProjectPath {
+            worktree_id,
+            path: RelPath::new(Path::new("many.ktt"), util::paths::PathStyle::Unix)
+                .expect("relative path")
+                .into_arc(),
+        };
+        let viewer = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("the file opens")
+            .downcast::<ResultsViewer>()
+            .expect("a results viewer");
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::ExtraData(1), window, cx)
+        });
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::ExtraData(1)
+        );
+
+        fs.insert_file("/root/many.ktt", WITHOUT_QUERY.as_bytes().to_vec())
+            .await;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(viewer.read_with(cx, |viewer, _| viewer.mode()), ViewMode::Data);
+        assert!(viewer.read_with(cx, |viewer, _| viewer.extra_grids.is_empty()));
     }
 
     /// ACT-6, PER-4: a trace offers a Structured tab next to Data, built when first asked for;
