@@ -307,6 +307,9 @@ impl ActivityTree {
         if let Some(issue) = activity.issue {
             tooltip.push('\n');
             tooltip.push_str(match issue {
+                HierarchyIssue::Orphan if activity.parent.is_some() => {
+                    "Parent not found; placed under the root that carries its parent id"
+                }
                 HierarchyIssue::Orphan => "Parent not found",
                 HierarchyIssue::ConflictingParents => "Conflicting parents",
                 HierarchyIssue::Cycle => "Cycle broken here",

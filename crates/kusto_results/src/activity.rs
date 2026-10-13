@@ -4,6 +4,11 @@
 //! activity's parent comes from `ParentActivityId`. The result is a forest, and a problem in
 //! the data (a missing, conflicting or circular parent) never drops a row: the activity
 //! becomes a root and is marked.
+//!
+//! When the table has a root activity id, an activity whose parent is not in the result is
+//! still placed under the root that carries that id, if there is one: the id of a request's
+//! root is what a caller that logged nothing here may have handed on as the parent. It stays
+//! marked, because the parent it names is still missing.
 
 use std::collections::HashMap;
 
@@ -290,6 +295,9 @@ fn build_from_rows(
             _ => group.issue = Some(HierarchyIssue::ConflictingParents),
         }
     }
+    if let Some(root_column) = columns.root_activity_id {
+        link_orphans_to_roots(table, root_column, &mut groups);
+    }
     break_cycles(&mut groups);
 
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
@@ -346,6 +354,56 @@ fn identifier(cell: Option<&Cell>) -> Option<String> {
     let text = cell?.display_text();
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Places each activity whose parent is not in the result under the root whose root activity id
+/// is that parent, so a request that was handed on from another one shows as part of it. Of
+/// several roots with the id, the one seen first is chosen. A link that would make an activity
+/// its own ancestor is not made.
+fn link_orphans_to_roots(table: &Table, root_column: usize, groups: &mut [Group]) {
+    let mut root_by_id: HashMap<String, usize> = HashMap::new();
+    for (index, group) in groups.iter().enumerate() {
+        if group.parent.is_some() {
+            continue;
+        }
+        let root_id = group
+            .rows
+            .iter()
+            .find_map(|row| identifier(table.rows.get(*row)?.get(root_column)));
+        if let Some(root_id) = root_id {
+            root_by_id.entry(root_id).or_insert(index);
+        }
+    }
+    for index in 0..groups.len() {
+        if groups[index].issue != Some(HierarchyIssue::Orphan) {
+            continue;
+        }
+        let target = groups[index]
+            .parent_candidates
+            .first()
+            .and_then(|parent_id| root_by_id.get(parent_id));
+        if let Some(&target) = target
+            && !is_at_or_under(groups, target, index)
+        {
+            groups[index].parent = Some(target);
+        }
+    }
+}
+
+/// Whether `group` is `ancestor` or lies below it. A chain that does not end counts as yes, so
+/// that nothing is linked into it.
+fn is_at_or_under(groups: &[Group], group: usize, ancestor: usize) -> bool {
+    let mut current = group;
+    for _ in 0..=groups.len() {
+        if current == ancestor {
+            return true;
+        }
+        match groups[current].parent {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Breaks every parent loop at the activity seen first, leaving the rest of the branch intact.
@@ -566,6 +624,103 @@ mod tests {
         let a = find(&projection, "a");
         assert_eq!((a.parent, a.issue), (None, Some(HierarchyIssue::Orphan)));
         assert!(!a.shows_warning_triangle());
+    }
+
+    /// Each event is (activity, parent, root activity id), and the table has a root id column.
+    fn trace_with_root_ids(events: &[(&str, &str, &str)]) -> Table {
+        let text = |value: &str| {
+            if value.is_empty() {
+                Cell::Null
+            } else {
+                Cell::Text(value.into())
+            }
+        };
+        Table {
+            name: "t".into(),
+            columns: vec![
+                Column::new("CurrentActivityId", "string"),
+                Column::new("ParentActivityId", "string"),
+                Column::new("RootActivityId", "string"),
+            ],
+            rows: events
+                .iter()
+                .map(|(current, parent, root)| vec![text(current), text(parent), text(root)])
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn an_activity_whose_parent_is_missing_hangs_under_the_root_that_has_that_id_as_its_root_id() {
+        let table = trace_with_root_ids(&[
+            ("gateway", "caller", "flow"),
+            ("inner", "gateway", "flow"),
+            ("api", "flow", "api"),
+            ("work", "api", "api"),
+        ]);
+        let projection = build_projection(&table).unwrap();
+        let gateway = find(&projection, "gateway");
+        let api = find(&projection, "api");
+        assert_eq!(api.parent, Some(0), "under the gateway");
+        assert_eq!(api.issue, Some(HierarchyIssue::Orphan), "its own parent is still missing");
+        assert_eq!(api.depth, 1);
+        assert_eq!(find(&projection, "work").depth, 2);
+        assert_eq!((gateway.child_count, gateway.subtree_activity_count), (2, 4));
+        assert_eq!(gateway.parent, None);
+        assert_eq!(gateway.issue, Some(HierarchyIssue::Orphan), "the gateway's caller is missing too");
+    }
+
+    #[test]
+    fn nothing_is_linked_without_a_root_id_column_or_a_root_with_that_id() {
+        let mut table = trace_with_root_ids(&[("gateway", "caller", "flow"), ("api", "flow", "api")]);
+        table.columns.remove(2);
+        for row in &mut table.rows {
+            row.remove(2);
+        }
+        assert_eq!(find(&build_projection(&table).unwrap(), "api").parent, None);
+
+        let other = trace_with_root_ids(&[("gateway", "caller", "elsewhere"), ("api", "flow", "api")]);
+        assert_eq!(find(&build_projection(&other).unwrap(), "api").parent, None);
+    }
+
+    #[test]
+    fn of_several_roots_with_the_id_the_one_seen_first_is_chosen() {
+        let table = trace_with_root_ids(&[
+            ("first", "x", "flow"),
+            ("second", "y", "flow"),
+            ("api", "flow", "api"),
+        ]);
+        let projection = build_projection(&table).unwrap();
+        assert_eq!(find(&projection, "api").parent, Some(0));
+        assert_eq!(find(&projection, "second").parent, None);
+    }
+
+    #[test]
+    fn a_parent_that_is_in_the_result_is_never_replaced() {
+        let table = trace_with_root_ids(&[
+            ("p", "", "r1"),
+            ("c", "p", "r2"),
+            ("other", "x", "r2"),
+        ]);
+        let projection = build_projection(&table).unwrap();
+        assert_eq!(find(&projection, "c").parent, Some(0));
+        assert_eq!(find(&projection, "c").issue, None);
+    }
+
+    #[test]
+    fn two_roots_that_name_each_other_are_not_linked_into_a_loop() {
+        let table = trace_with_root_ids(&[("a", "flow-b", "flow-a"), ("b", "flow-a", "flow-b")]);
+        let projection = build_projection(&table).unwrap();
+        assert_eq!(find(&projection, "a").parent, Some(1), "a goes under b");
+        assert_eq!(find(&projection, "b").parent, None, "and b is not put under a as well");
+        assert_eq!(find(&projection, "a").issue, Some(HierarchyIssue::Orphan));
+        assert_ne!(find(&projection, "b").issue, Some(HierarchyIssue::Cycle));
+    }
+
+    #[test]
+    fn an_activity_is_not_linked_to_itself() {
+        let table = trace_with_root_ids(&[("a", "flow", "flow")]);
+        let projection = build_projection(&table).unwrap();
+        assert_eq!(find(&projection, "a").parent, None);
     }
 
     #[test]
