@@ -372,3 +372,56 @@ fn no_empty_attributes_or_nan_with_rgb_theme() {
         );
     }
 }
+
+#[test]
+fn sequence_diagram_participants_take_the_accent_colors_in_the_order_they_are_declared() {
+    let accent = |r, g, b| mermaid_render::AccentColor {
+        foreground: rgb(r, g, b),
+        background: rgb(r, g, b),
+    };
+    let mut theme = rgb_theme();
+    theme.accent_colors = vec![
+        accent(0x11, 0x22, 0x33),
+        accent(0x44, 0x55, 0x66),
+        accent(0x77, 0x88, 0x99),
+        accent(0xaa, 0xbb, 0xcc),
+    ];
+    let source = "sequenceDiagram\n    participant caller as (caller not in result)\n    participant a0 as Shared\n    participant a1 as FrontEnd\n    participant a2 as Lakehouse\n    caller->>a0: Request\n    a0->>a1: Call\n    a1->>a2: Call";
+    let svg = mermaid_render::render_to_svg(source, &theme).expect("render failed");
+
+    use quick_xml::XmlVersion;
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(&svg);
+    let mut top_boxes: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(e) | Event::Empty(e)) if e.name().as_ref() == b"rect" => {
+                let class = e
+                    .try_get_attribute("class")
+                    .ok()
+                    .flatten()
+                    .and_then(|attr| attr.normalized_value(XmlVersion::Implicit1_0).ok().map(|value| value.to_string()))
+                    .unwrap_or_default();
+                if class.contains("actor-top") {
+                    top_boxes.push(
+                        class
+                            .split_whitespace()
+                            .find(|token| token.starts_with("zed-accent-"))
+                            .unwrap_or("none")
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        top_boxes,
+        ["zed-accent-0", "zed-accent-1", "zed-accent-2", "zed-accent-3"],
+        "the caller is the first participant and so takes the first color",
+    );
+    for hex in ["#112233", "#445566", "#778899", "#aabbcc"] {
+        assert!(svg.contains(hex), "the accent {hex} is in the stylesheet");
+    }
+}
