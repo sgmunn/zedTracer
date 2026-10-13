@@ -1531,6 +1531,10 @@ pub struct KustoTraceColumnsContent {
     pub activity_id: Option<Vec<String>>,
     /// Columns holding the id of an activity's parent. Built-in: `ParentActivityId`.
     pub parent_activity_id: Option<Vec<String>>,
+    /// Columns holding the id of the root of the request an activity belongs to. When there is one,
+    /// an activity whose parent is not in the result is placed under the root that carries that id.
+    /// Built-in: `RootActivityId`.
+    pub root_activity_id: Option<Vec<String>>,
     /// Columns naming what an event marks, which is also what the code behind a row is looked
     /// up by. Built-in: `MarkerName`.
     pub marker: Option<Vec<String>>,
@@ -1560,6 +1564,9 @@ pub struct KustoTraceSchemaContent {
     pub activity_id: Option<String>,
     /// The column holding the id of an activity's parent. Built-in: `ParentActivityId`.
     pub parent_activity_id: Option<String>,
+    /// The column holding the id of the root of the request an activity belongs to. Built-in:
+    /// `RootActivityId`.
+    pub root_activity_id: Option<String>,
     /// The column naming what an event marks. Built-in: `MarkerName`.
     pub marker: Option<String>,
     /// The column naming who logged the event, usually a process. Built-in: `ProcessName`.

@@ -130,6 +130,7 @@ fn trace_names(content: &settings::SettingsContent) -> RoleNames {
     [
         (TraceRole::ActivityId, &columns.activity_id),
         (TraceRole::ParentActivityId, &columns.parent_activity_id),
+        (TraceRole::RootActivityId, &columns.root_activity_id),
         (TraceRole::Marker, &columns.marker),
         (TraceRole::Actor, &columns.actor),
         (TraceRole::Timestamp, &columns.timestamp),
@@ -155,6 +156,7 @@ fn trace_schema(content: &settings::KustoTraceSchemaContent) -> TraceSchema {
         requires: content.requires.clone().unwrap_or_default(),
         activity_id: content.activity_id.clone(),
         parent_activity_id: content.parent_activity_id.clone(),
+        root_activity_id: content.root_activity_id.clone(),
         marker: content.marker.clone(),
         actor: content.actor.clone(),
         timestamp: content.timestamp.clone(),
@@ -519,5 +521,27 @@ mod tests {
         assert!(ResultsSettings::from_settings(&settings::SettingsContent::default())
             .trace_names
             .is_empty());
+    }
+
+    #[test]
+    fn the_root_activity_id_can_be_named_in_the_column_lists_and_in_a_schema() {
+        let mut content = settings::SettingsContent::default();
+        content.kusto_results = Some(settings::KustoResultsSettingsContent {
+            trace_columns: Some(settings::KustoTraceColumnsContent {
+                root_activity_id: Some(vec![" FlowId ".into(), "".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            ResultsSettings::from_settings(&content).trace_names,
+            RoleNames::from([(TraceRole::RootActivityId, vec!["FlowId".to_string()])])
+        );
+
+        let schema = trace_schema(&settings::KustoTraceSchemaContent {
+            root_activity_id: Some("FlowId".into()),
+            ..Default::default()
+        });
+        assert_eq!(schema.root_activity_id.as_deref(), Some("FlowId"));
     }
 }

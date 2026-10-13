@@ -143,17 +143,19 @@
       "verbose": "#75beff17",
     },
     // Which columns of a trace table play which part, for traces that do not use the built-in
-    // names. Each entry names any of: "activity_id", "parent_activity_id", "marker", "actor",
-    // "timestamp", "severity", "message" and may list "requires" columns. The first entry whose
-    // columns are all in the table is used.
+    // names. Each entry names any of: "activity_id", "parent_activity_id", "root_activity_id",
+    // "marker", "actor", "timestamp", "severity", "message" and may list "requires" columns. The
+    // first entry whose columns are all in the table is used.
     "trace_schemas": [],
     // The names a trace's columns may have for each part, most preferred first and tried before the
     // built-in names, so one setting serves traces that call a column different things. For example
     //   "message": ["MessageText", "EventText"], "marker": ["MarkerName", "ActivityType"],
     //   "severity": ["Severity", "Level"]
     // The parts, with their built-in names: "activity_id" (CurrentActivityId), "parent_activity_id"
-    // (ParentActivityId), "marker" (MarkerName), "actor" (ProcessName), "timestamp" (TIMESTAMP),
-    // "severity" (level, then severity) and "message" (MessageText). Case does not matter.
+    // (ParentActivityId), "root_activity_id" (RootActivityId), "marker" (MarkerName), "actor"
+    // (ProcessName), "timestamp" (TIMESTAMP), "severity" (level, then severity) and "message"
+    // (MessageText). Case does not matter. With a root activity id, an activity whose parent is not
+    // in the result is placed under the root that carries that id.
     "trace_columns": {},
     // Messages that only say something started or ended and carry no content. Such rows are
     // dimmed in the grid and can be hidden. A "*" at either end matches any text.

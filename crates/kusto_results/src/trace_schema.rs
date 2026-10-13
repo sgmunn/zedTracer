@@ -12,6 +12,7 @@ use crate::result::Table;
 pub enum TraceRole {
     ActivityId,
     ParentActivityId,
+    RootActivityId,
     Marker,
     Actor,
     Timestamp,
@@ -20,9 +21,10 @@ pub enum TraceRole {
 }
 
 impl TraceRole {
-    pub const ALL: [TraceRole; 7] = [
+    pub const ALL: [TraceRole; 8] = [
         TraceRole::ActivityId,
         TraceRole::ParentActivityId,
+        TraceRole::RootActivityId,
         TraceRole::Marker,
         TraceRole::Actor,
         TraceRole::Timestamp,
@@ -34,6 +36,7 @@ impl TraceRole {
         match self {
             TraceRole::ActivityId => "activity id",
             TraceRole::ParentActivityId => "parent activity id",
+            TraceRole::RootActivityId => "root activity id",
             TraceRole::Marker => "marker",
             TraceRole::Actor => "actor",
             TraceRole::Timestamp => "timestamp",
@@ -47,6 +50,7 @@ impl TraceRole {
         match self {
             TraceRole::ActivityId => &["CurrentActivityId"],
             TraceRole::ParentActivityId => &["ParentActivityId"],
+            TraceRole::RootActivityId => &["RootActivityId"],
             TraceRole::Marker => &["MarkerName"],
             TraceRole::Actor => &["ProcessName"],
             TraceRole::Timestamp => &["TIMESTAMP"],
@@ -70,6 +74,7 @@ pub struct TraceSchema {
     pub requires: Vec<String>,
     pub activity_id: Option<String>,
     pub parent_activity_id: Option<String>,
+    pub root_activity_id: Option<String>,
     pub marker: Option<String>,
     pub actor: Option<String>,
     pub timestamp: Option<String>,
@@ -82,6 +87,7 @@ impl TraceSchema {
         match role {
             TraceRole::ActivityId => self.activity_id.as_deref(),
             TraceRole::ParentActivityId => self.parent_activity_id.as_deref(),
+            TraceRole::RootActivityId => self.root_activity_id.as_deref(),
             TraceRole::Marker => self.marker.as_deref(),
             TraceRole::Actor => self.actor.as_deref(),
             TraceRole::Timestamp => self.timestamp.as_deref(),
@@ -96,6 +102,7 @@ impl TraceSchema {
 pub struct TraceColumns {
     pub activity_id: Option<usize>,
     pub parent_activity_id: Option<usize>,
+    pub root_activity_id: Option<usize>,
     pub marker: Option<usize>,
     pub actor: Option<usize>,
     pub timestamp: Option<usize>,
@@ -150,6 +157,7 @@ impl TraceColumns {
         Self {
             activity_id: resolve_role(TraceRole::ActivityId),
             parent_activity_id: resolve_role(TraceRole::ParentActivityId),
+            root_activity_id: resolve_role(TraceRole::RootActivityId),
             marker: resolve_role(TraceRole::Marker),
             actor: resolve_role(TraceRole::Actor),
             timestamp: resolve_role(TraceRole::Timestamp),
@@ -162,6 +170,7 @@ impl TraceColumns {
         match role {
             TraceRole::ActivityId => self.activity_id,
             TraceRole::ParentActivityId => self.parent_activity_id,
+            TraceRole::RootActivityId => self.root_activity_id,
             TraceRole::Marker => self.marker,
             TraceRole::Actor => self.actor,
             TraceRole::Timestamp => self.timestamp,
@@ -270,6 +279,37 @@ mod tests {
         assert_eq!(columns.parent_activity_id, Some(3));
         assert_eq!(columns.severity, Some(4));
         assert_eq!(columns.actor, None);
+    }
+
+    #[test]
+    fn the_root_activity_id_is_optional_and_found_by_its_built_in_name_or_a_schema() {
+        let plain = TraceColumns::detect(&table(&["CurrentActivityId", "ParentActivityId"]));
+        assert_eq!(plain.root_activity_id, None);
+        assert!(plain.supports_activity(), "the activity view does not need it");
+
+        let columns = TraceColumns::detect(&table(&["CurrentActivityId", "ParentActivityId", "rootactivityid"]));
+        assert_eq!(columns.root_activity_id, Some(2));
+        assert_eq!(columns.column(TraceRole::RootActivityId), Some(2));
+
+        let schema = TraceSchema {
+            name: "other".into(),
+            root_activity_id: Some("TraceId".into()),
+            ..TraceSchema::default()
+        };
+        let columns = TraceColumns::resolve(
+            &table(&["CurrentActivityId", "ParentActivityId", "TraceId"]),
+            &[schema],
+            &RoleNames::new(),
+        );
+        assert_eq!(columns.root_activity_id, Some(2));
+
+        let listed = RoleNames::from([(TraceRole::RootActivityId, vec!["FlowId".to_string()])]);
+        let columns = TraceColumns::resolve(
+            &table(&["CurrentActivityId", "ParentActivityId", "RootActivityId", "FlowId"]),
+            &[],
+            &listed,
+        );
+        assert_eq!(columns.root_activity_id, Some(3), "a listed name comes before the built-in one");
     }
 
     #[test]
