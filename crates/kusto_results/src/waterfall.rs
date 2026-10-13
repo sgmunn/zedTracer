@@ -8,6 +8,10 @@
 //! long, so it is not short, while the many tiny activities in a sequential run are all "on" the
 //! path with no time of their own and are what folding is for.
 //!
+//! Folding and collapsing are separate. Opening a row's folds adds its short children to the ones
+//! it already shows; collapsing a row hides all of its children, the long ones and the failures
+//! too, whatever its folds say.
+//!
 //! This is the model. It says what each row is and where its bar lies; drawing it is up to a view.
 
 use std::collections::HashSet;
@@ -79,8 +83,53 @@ impl Span {
 pub struct Row {
     pub activity: usize,
     pub depth: usize,
-    /// How many shorter activities below this one are folded into it.
+    /// How many activities its short children hold, themselves and what is below them, whether
+    /// or not they are showing.
     pub folded: usize,
+    /// Whether it shows none of its children.
+    pub collapsed: bool,
+    /// Whether it has children to hide, which are showing or would be if it were not collapsed.
+    pub collapsible: bool,
+}
+
+/// What has been changed from the default view of the rows, by activity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folds {
+    /// Rows whose short children show along with the rest.
+    pub opened: HashSet<usize>,
+    /// Rows that show none of their children.
+    pub collapsed: HashSet<usize>,
+}
+
+impl Folds {
+    /// Every short activity showing and nothing collapsed.
+    pub fn all_open(activities: usize) -> Self {
+        Self {
+            opened: (0..activities).collect(),
+            collapsed: HashSet::new(),
+        }
+    }
+
+    /// Makes an activity show: its ancestors are no longer collapsed, and a row's folds are opened
+    /// only where the activity, or an ancestor it hangs from, is short. The other folds stay as
+    /// they were, so a jump to one activity does not also show its short siblings.
+    pub fn reveal(&mut self, waterfall: &Waterfall, projection: &ActivityProjection, activity: usize) {
+        let mut hidden_by_fold = waterfall
+            .span(activity)
+            .is_some_and(|span| !waterfall.is_kept(span));
+        let mut current = projection.activities.get(activity).and_then(|found| found.parent);
+        while let Some(ancestor) = current {
+            self.collapsed.remove(&ancestor);
+            // An ancestor with no bounds is not a row: what is under it hangs from the row above.
+            if let Some(span) = waterfall.span(ancestor) {
+                if hidden_by_fold {
+                    self.opened.insert(ancestor);
+                }
+                hidden_by_fold = !waterfall.is_kept(span);
+            }
+            current = projection.activities.get(ancestor).and_then(|found| found.parent);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,9 +252,10 @@ impl Waterfall {
     }
 
     /// The rows to draw, in tree order. A row's short children are folded into it unless the
-    /// row is in `opened`, and an activity is never folded when it is on the way from a failure
-    /// to the root. An activity with no bounds is skipped and its children take its place.
-    pub fn rows(&self, opened: &HashSet<usize>) -> Vec<Row> {
+    /// row is in `folds.opened`, and an activity is never folded when it is on the way from a
+    /// failure to the root. A row in `folds.collapsed` shows none of its children. An activity
+    /// with no bounds is skipped and its children take its place.
+    pub fn rows(&self, folds: &Folds) -> Vec<Row> {
         let mut rows = Vec::new();
         // (activity, depth, whether it is shown whatever its length)
         let mut pending: Vec<(usize, usize, bool)> =
@@ -221,25 +271,32 @@ impl Waterfall {
             if !shown {
                 continue;
             }
-            let open = opened.contains(&activity);
+            let open = folds.opened.contains(&activity);
+            let collapsed = folds.collapsed.contains(&activity);
             let mut folded = 0;
             let mut visible_children = Vec::new();
             for child in &self.children[activity] {
-                let keeps = match self.span(*child) {
-                    Some(child_span) => open || self.is_kept(child_span),
+                let kept = match self.span(*child) {
+                    Some(child_span) => self.is_kept(child_span),
                     None => true,
                 };
-                if keeps {
-                    visible_children.push(*child);
-                } else {
+                if !kept {
                     folded += self.branch_size[*child];
+                }
+                if kept || open {
+                    visible_children.push(*child);
                 }
             }
             rows.push(Row {
                 activity,
                 depth,
                 folded,
+                collapsed,
+                collapsible: !visible_children.is_empty(),
             });
+            if collapsed {
+                continue;
+            }
             for child in visible_children.into_iter().rev() {
                 pending.push((child, depth + 1, open));
             }
@@ -250,16 +307,6 @@ impl Waterfall {
     /// Whether an activity is long enough, or failed, so it is not folded.
     fn is_kept(&self, span: &Span) -> bool {
         span.duration() >= self.fold_ticks || span.on_failure_path
-    }
-
-    /// The activities folded into a row, to show what a click on it opens: its direct children
-    /// that are not shown without it.
-    pub fn folded_children(&self, activity: usize) -> Vec<usize> {
-        self.children[activity]
-            .iter()
-            .copied()
-            .filter(|child| self.span(*child).is_some_and(|span| !self.is_kept(span)))
-            .collect()
     }
 }
 
@@ -427,8 +474,12 @@ mod tests {
     }
 
     fn shown(waterfall: &Waterfall, projection: &ActivityProjection) -> Vec<String> {
+        shown_with(waterfall, projection, &Folds::default())
+    }
+
+    fn shown_with(waterfall: &Waterfall, projection: &ActivityProjection, folds: &Folds) -> Vec<String> {
         waterfall
-            .rows(&HashSet::new())
+            .rows(folds)
             .iter()
             .map(|row| projection.activities[row.activity].activity_id.clone())
             .collect()
@@ -442,7 +493,7 @@ mod tests {
         span_of(&mut events, "b", "r", "Second", 700, 1000);
         span_of(&mut events, "a1", "a", "Inner", 200, 400);
         let (projection, waterfall) = build(&trace(events));
-        let rows = waterfall.rows(&HashSet::new());
+        let rows = waterfall.rows(&Folds::default());
         let order: Vec<(&str, usize)> = rows
             .iter()
             .map(|row| (projection.activities[row.activity].activity_id.as_str(), row.depth))
@@ -464,19 +515,140 @@ mod tests {
         span_of(&mut events, "deep", "tiny2", "Deeper", 201, 203);
         let (projection, waterfall) = build(&trace(events));
         assert_eq!(shown(&waterfall, &projection), vec!["r", "big"]);
-        let rows = waterfall.rows(&HashSet::new());
+        let rows = waterfall.rows(&Folds::default());
         assert_eq!(rows[0].folded, 3, "tiny1, tiny2 and what is below it");
         assert_eq!(rows[1].folded, 0);
 
-        let opened: HashSet<usize> = [index(&projection, "r")].into_iter().collect();
-        let names: Vec<String> = waterfall
-            .rows(&opened)
-            .iter()
-            .map(|row| projection.activities[row.activity].activity_id.clone())
-            .collect();
-        assert_eq!(names, vec!["r", "big", "tiny1", "tiny2"], "deep is still folded into tiny2");
-        assert_eq!(waterfall.rows(&opened)[3].folded, 1);
-        assert_eq!(waterfall.folded_children(index(&projection, "r")).len(), 2);
+        let folds = Folds {
+            opened: [index(&projection, "r")].into_iter().collect(),
+            ..Folds::default()
+        };
+        assert_eq!(
+            shown_with(&waterfall, &projection, &folds),
+            vec!["r", "big", "tiny1", "tiny2"],
+            "deep is still folded into tiny2"
+        );
+        let rows = waterfall.rows(&folds);
+        assert_eq!(rows[0].folded, 3, "the count does not change when they show");
+        assert_eq!(rows[3].folded, 1);
+    }
+
+    #[test]
+    fn collapsing_a_row_hides_all_its_children_and_leaves_its_folds_as_they_were() {
+        let mut events = Vec::new();
+        span_of(&mut events, "r", "", "Run", 0, 1000);
+        span_of(&mut events, "big", "r", "Big", 100, 600);
+        span_of(&mut events, "inner", "big", "Inner", 150, 550);
+        span_of(&mut events, "tiny", "r", "Tiny", 700, 704);
+        let (projection, waterfall) = build(&trace(events));
+        let r = index(&projection, "r");
+        assert_eq!(shown(&waterfall, &projection), vec!["r", "big", "inner"]);
+
+        let mut folds = Folds::default();
+        folds.collapsed.insert(r);
+        assert_eq!(shown_with(&waterfall, &projection, &folds), vec!["r"]);
+        let rows = waterfall.rows(&folds);
+        assert!(rows[0].collapsed && rows[0].collapsible);
+        assert_eq!(rows[0].folded, 1, "tiny is still behind its fold");
+
+        folds.collapsed.clear();
+        let rows = waterfall.rows(&folds);
+        assert!(!rows[0].collapsed);
+        assert_eq!(rows.len(), 3);
+
+        folds.collapsed.insert(index(&projection, "big"));
+        assert_eq!(shown_with(&waterfall, &projection, &folds), vec!["r", "big"], "only below Big");
+    }
+
+    #[test]
+    fn opening_the_folds_of_a_collapsed_row_shows_nothing_until_it_is_expanded() {
+        let mut events = Vec::new();
+        span_of(&mut events, "r", "", "Run", 0, 1000);
+        span_of(&mut events, "big", "r", "Big", 100, 600);
+        span_of(&mut events, "tiny", "r", "Tiny", 700, 704);
+        let (projection, waterfall) = build(&trace(events));
+        let r = index(&projection, "r");
+        let mut folds = Folds {
+            opened: [r].into_iter().collect(),
+            collapsed: [r].into_iter().collect(),
+        };
+        assert_eq!(shown_with(&waterfall, &projection, &folds), vec!["r"]);
+        folds.collapsed.clear();
+        assert_eq!(shown_with(&waterfall, &projection, &folds), vec!["r", "big", "tiny"]);
+    }
+
+    #[test]
+    fn a_row_with_only_short_children_has_nothing_to_collapse_until_they_are_opened() {
+        let mut events = Vec::new();
+        span_of(&mut events, "r", "", "Run", 0, 1000);
+        span_of(&mut events, "tiny", "r", "Tiny", 700, 704);
+        let (projection, waterfall) = build(&trace(events));
+        let rows = waterfall.rows(&Folds::default());
+        assert_eq!((rows[0].folded, rows[0].collapsible), (1, false));
+        assert_eq!(rows.len(), 1);
+
+        let folds = Folds {
+            opened: [index(&projection, "r")].into_iter().collect(),
+            ..Folds::default()
+        };
+        let rows = waterfall.rows(&folds);
+        assert_eq!((rows[0].folded, rows[0].collapsible), (1, true));
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn revealing_expands_what_is_above_and_opens_only_the_folds_that_hide_the_activity() {
+        let mut events = Vec::new();
+        span_of(&mut events, "r", "", "Run", 0, 1000);
+        span_of(&mut events, "big", "r", "Big", 100, 600);
+        span_of(&mut events, "a", "big", "A", 110, 115);
+        span_of(&mut events, "b", "big", "B", 120, 125);
+        span_of(&mut events, "b1", "b", "B1", 121, 123);
+        span_of(&mut events, "tiny", "r", "Tiny", 700, 704);
+        let (projection, waterfall) = build(&trace(events));
+        let (r, big, b) = (index(&projection, "r"), index(&projection, "big"), index(&projection, "b"));
+
+        let mut folds = Folds {
+            collapsed: [r, big].into_iter().collect(),
+            ..Folds::default()
+        };
+        folds.reveal(&waterfall, &projection, index(&projection, "b1"));
+        assert!(folds.collapsed.is_empty());
+        assert_eq!(folds.opened, [big, b].into_iter().collect(), "B hangs from Big and B1 from B");
+        assert_eq!(
+            shown_with(&waterfall, &projection, &folds),
+            vec!["r", "big", "a", "b", "b1"],
+            "Tiny, which holds nothing Big does not, stays folded"
+        );
+
+        let mut folds = Folds {
+            collapsed: [r, big].into_iter().collect(),
+            ..Folds::default()
+        };
+        folds.reveal(&waterfall, &projection, big);
+        assert!(folds.opened.is_empty(), "Big is long, so nothing hides it but the collapse of Run");
+        assert_eq!(folds.collapsed, [big].into_iter().collect(), "Big itself is not above Big");
+    }
+
+    #[test]
+    fn revealing_through_an_activity_with_no_timestamp_opens_the_row_it_hangs_from() {
+        let mut events = Vec::new();
+        span_of(&mut events, "r", "", "Run", 0, 1000);
+        events.push(event("silent", "r", "Silent", 100));
+        span_of(&mut events, "kid", "silent", "Kid", 300, 303);
+        let mut table = trace(events);
+        for row in &mut table.rows {
+            if row[0] == Cell::Text("silent".into()) {
+                row[4] = Cell::Text("not a time".into());
+            }
+        }
+        let (projection, waterfall) = build(&table);
+        assert_eq!(shown(&waterfall, &projection), vec!["r"]);
+
+        let mut folds = Folds::default();
+        folds.reveal(&waterfall, &projection, index(&projection, "kid"));
+        assert_eq!(folds.opened, [index(&projection, "r")].into_iter().collect());
+        assert_eq!(shown_with(&waterfall, &projection, &folds), vec!["r", "kid"]);
     }
 
     #[test]
@@ -565,7 +737,7 @@ mod tests {
             ..WaterfallOptions::default()
         };
         let waterfall = Waterfall::build(&table, &projection, &columns, &options).expect("a waterfall");
-        assert_eq!(waterfall.rows(&HashSet::new()).len(), 2);
+        assert_eq!(waterfall.rows(&Folds::default()).len(), 2);
 
         let mut untimed = table;
         untimed.columns.remove(4);
@@ -591,7 +763,7 @@ mod tests {
         }
         let (projection, waterfall) = build(&table);
         assert_eq!(waterfall.without_bounds, 1);
-        let rows = waterfall.rows(&HashSet::new());
+        let rows = waterfall.rows(&Folds::default());
         let named: Vec<(String, usize)> = rows
             .iter()
             .map(|row| (projection.activities[row.activity].activity_id.clone(), row.depth))
@@ -610,7 +782,7 @@ mod tests {
             span_of(&mut events, id, parent, "Hop", number as i64, 100_000 - number as i64);
         }
         let (_, waterfall) = build(&trace(events));
-        assert_eq!(waterfall.rows(&HashSet::new()).len(), 20_000);
+        assert_eq!(waterfall.rows(&Folds::default()).len(), 20_000);
     }
 
     /// Needs the real traces in `fork-docs/samples`, which are not committed.
@@ -628,7 +800,7 @@ mod tests {
             let table = &result.tables[0];
             let started = std::time::Instant::now();
             let (projection, waterfall) = build(table);
-            let rows = waterfall.rows(&HashSet::new());
+            let rows = waterfall.rows(&Folds::default());
             eprintln!(
                 "{name}: {} activities, {} rows at 1% (built and folded in {:?}), extent {:.0} ms",
                 projection.activities.len(),
@@ -654,7 +826,7 @@ mod tests {
                 &WaterfallOptions { fold_share: 0.0, ..WaterfallOptions::default() },
             )
             .expect("a waterfall");
-            eprintln!("  with nothing folded: {} rows", all.rows(&HashSet::new()).len());
+            eprintln!("  with nothing folded: {} rows", all.rows(&Folds::default()).len());
         }
     }
 }

@@ -3114,6 +3114,35 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 3, "folded again");
 
+        // The chevron and the `+N` are separate. Big holds only a short child, so it has the `+1`
+        // and no chevron, and Run has the chevron and nothing folded.
+        let click = |selector: &'static str, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let center = cx
+                .debug_bounds(selector)
+                .map(|bounds| bounds.center())
+                .unwrap_or_else(|| panic!("{selector} shows"));
+            cx.simulate_click(center, gpui::Modifiers::default());
+            cx.run_until_parked();
+        };
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("waterfall-collapse-1").is_none(), "Big has nothing to collapse");
+        assert!(cx.debug_bounds("waterfall-folded-0").is_none(), "Run has nothing folded");
+        click("waterfall-folded-1", cx);
+        assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 4, "Tiny shows under Big");
+        assert!(cx.debug_bounds("waterfall-collapse-1").is_some(), "Big has a child to hide now");
+        click("waterfall-folded-1", cx);
+        assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 3, "the `+1` folds it again");
+
+        // Collapsing Run hides the failure too, which a fold never does, and expanding it brings
+        // back what was there.
+        click("waterfall-collapse-0", cx);
+        let rows = view.read_with(cx, |view, _| view.rows().to_vec());
+        assert_eq!(rows.len(), 1, "only Run is left");
+        assert!(rows[0].collapsed);
+        click("waterfall-collapse-0", cx);
+        assert_eq!(view.read_with(cx, |view, _| view.rows().len()), 3);
+
         let (_, full_span) = view.read_with(cx, |view, _| view.view());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let zoom_in = cx

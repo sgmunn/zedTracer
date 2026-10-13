@@ -3,7 +3,6 @@
 //! Bars are placed with fractions of the row's width, so nothing here needs to measure the
 //! window: zooming changes which part of the trace the fractions span.
 
-use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ use gpui_util::ResultExt as _;
 use kusto_results::ResultSet;
 use kusto_results::activity::ActivityProjection;
 use kusto_results::trace_text::{offset_from_start, short_duration, short_marker};
-use kusto_results::waterfall::{Row, Span, Waterfall};
+use kusto_results::waterfall::{Folds, Row, Span, Waterfall};
 use ui::{Button, ButtonSize, ContextMenu, IconButton, IconName, IconSize, Tooltip, prelude::*};
 
 use crate::row_details_panel::ActiveSelection;
@@ -50,9 +49,8 @@ pub(crate) struct WaterfallView {
     result: Arc<ResultSet>,
     projection: Arc<ActivityProjection>,
     waterfall: Arc<Waterfall>,
-    /// Rows whose folded children are open.
-    opened: HashSet<usize>,
-    /// Open every fold, so nothing is hidden.
+    folds: Folds,
+    /// Open every fold and ignore collapsed rows, so nothing is hidden.
     show_all: bool,
     rows: Vec<Row>,
     selected: Option<usize>,
@@ -76,7 +74,7 @@ impl WaterfallView {
             view_span: waterfall.extent.max(1),
             view_start: 0,
             waterfall,
-            opened: HashSet::new(),
+            folds: Folds::default(),
             show_all: false,
             rows: Vec::new(),
             selected: None,
@@ -105,10 +103,9 @@ impl WaterfallView {
 
     fn recompute_rows(&mut self) {
         self.rows = if self.show_all {
-            let everything: HashSet<usize> = (0..self.projection.activities.len()).collect();
-            self.waterfall.rows(&everything)
+            self.waterfall.rows(&Folds::all_open(self.projection.activities.len()))
         } else {
-            self.waterfall.rows(&self.opened)
+            self.waterfall.rows(&self.folds)
         };
     }
 
@@ -134,16 +131,12 @@ impl WaterfallView {
         cx.notify();
     }
 
-    /// Opens the folds above an activity so it shows, selects it and scrolls to it.
+    /// Expands and opens what hides an activity so it shows, selects it and scrolls to it.
     pub(crate) fn reveal(&mut self, activity: usize, cx: &mut Context<Self>) {
         if self.waterfall.span(activity).is_none() {
             return;
         }
-        let mut current = self.projection.activities.get(activity).and_then(|found| found.parent);
-        while let Some(parent) = current {
-            self.opened.insert(parent);
-            current = self.projection.activities.get(parent).and_then(|found| found.parent);
-        }
+        self.folds.reveal(&self.waterfall, &self.projection, activity);
         self.recompute_rows();
         self.select(activity, cx);
         if let Some(position) = self.rows.iter().position(|row| row.activity == activity) {
@@ -190,9 +183,17 @@ impl WaterfallView {
         cx.notify();
     }
 
+    fn toggle_collapse(&mut self, activity: usize, cx: &mut Context<Self>) {
+        if !self.folds.collapsed.remove(&activity) {
+            self.folds.collapsed.insert(activity);
+        }
+        self.recompute_rows();
+        cx.notify();
+    }
+
     fn toggle_fold(&mut self, activity: usize, cx: &mut Context<Self>) {
-        if !self.opened.remove(&activity) {
-            self.opened.insert(activity);
+        if !self.folds.opened.remove(&activity) {
+            self.folds.opened.insert(activity);
         }
         self.recompute_rows();
         cx.notify();
@@ -297,8 +298,7 @@ impl WaterfallView {
         let colors = cx.theme().colors();
         let colour = self.actor_colour(span, cx);
         let selected = self.selected == Some(activity);
-        let folds_open = self.opened.contains(&activity) || self.show_all;
-        let can_fold = row.folded > 0 || (folds_open && !self.waterfall.folded_children(activity).is_empty());
+        let folds_open = self.folds.opened.contains(&activity);
         let on_critical = span.critical > 0;
         let dimmed = self.highlight_critical && !on_critical;
 
@@ -309,15 +309,22 @@ impl WaterfallView {
             .unwrap_or_else(|| found.activity_id.clone())
             .into();
 
-        let fold = if can_fold && !self.show_all {
-            IconButton::new(("waterfall-fold", activity), if folds_open { IconName::ChevronDown } else { IconName::ChevronRight })
-                .icon_size(IconSize::XSmall)
-                .tooltip(Tooltip::text(if folds_open {
-                    "Fold the shorter activities again".to_string()
-                } else {
-                    format!("{} shorter activities are folded into this one. Click to show them", row.folded)
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(activity, cx)))
+        let collapse = if row.collapsible && !self.show_all {
+            div()
+                .debug_selector(move || format!("waterfall-collapse-{position}"))
+                .child(
+                    IconButton::new(
+                        ("waterfall-collapse", activity),
+                        if row.collapsed { IconName::ChevronRight } else { IconName::ChevronDown },
+                    )
+                    .icon_size(IconSize::XSmall)
+                    .tooltip(Tooltip::text(if row.collapsed {
+                        "Show what is below this activity"
+                    } else {
+                        "Hide everything below this activity"
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapse(activity, cx))),
+                )
                 .into_any_element()
         } else {
             div().w(px(20.)).into_any_element()
@@ -331,14 +338,26 @@ impl WaterfallView {
             .pr_2()
             .gap_1()
             .items_center()
-            .child(fold)
+            .child(collapse)
             .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(colour))
             .child(div().flex_1().min_w_0().overflow_hidden().child(Label::new(name).single_line().size(LabelSize::Small)))
-            .when(row.folded > 0 && !folds_open, |label| {
+            .when(row.folded > 0 && !row.collapsed && !self.show_all, |label| {
                 label.child(
-                    Label::new(format!("+{}", row.folded))
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                    div()
+                        .debug_selector(move || format!("waterfall-folded-{position}"))
+                        .child(
+                            Button::new(("waterfall-folded", activity), format!("+{}", row.folded))
+                                .size(ButtonSize::Compact)
+                                .label_size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .toggle_state(folds_open)
+                                .tooltip(Tooltip::text(if folds_open {
+                                    format!("Fold the {} shorter activities again", row.folded)
+                                } else {
+                                    format!("{} shorter activities are folded into this one. Click to show them", row.folded)
+                                }))
+                                .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(activity, cx))),
+                        ),
                 )
             })
             .child(
