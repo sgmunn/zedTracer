@@ -216,9 +216,13 @@ activity**, which the other tables do not offer.
 ## Trace columns
 
 The structured, sequence and timeline views, the severity tints and the code behind a row all read a trace by its
-parts: the activity id, the parent activity id, the marker, the actor (the process), the timestamp, the severity and the
-message. A part is looked for under a built-in column name, exactly and then ignoring case: `CurrentActivityId`,
-`ParentActivityId`, `MarkerName`, `ProcessName`, `TIMESTAMP`, `level` then `severity`, and `MessageText`.
+parts: the activity id, the parent activity id, the root activity id, the marker, the actor (the process), the
+timestamp, the severity and the message. A part is looked for under a built-in column name, exactly and then ignoring
+case: `CurrentActivityId`, `ParentActivityId`, `RootActivityId`, `MarkerName`, `ProcessName`, `TIMESTAMP`, `level` then
+`severity`, and `MessageText`. The root activity id is optional. When the table has one, an activity whose parent is not
+in the result is placed under the root that carries that parent's id as its root activity id (the first one, when
+several do), so a request that was handed on from another one shows as part of it. It stays marked as having no parent
+in the result, and its tooltip in the Structured tab says where it was placed.
 
 A trace that calls a column something else is covered by listing the names in `kusto_results.trace_columns`, most
 preferred first:
@@ -235,8 +239,8 @@ preferred first:
 
 The listed names are tried in order before the built-in ones, and the first that is a column of the table is the one
 used, so a single setting serves tables that name the same part differently (there is no need to list a built-in name
-unless it should come after another). The parts are `activity_id`, `parent_activity_id`, `marker`, `actor`, `timestamp`,
-`severity` and `message`. For a trace whose columns only make sense together, `kusto_results.trace_schemas` names one
+unless it should come after another). The parts are `activity_id`, `parent_activity_id`, `root_activity_id`, `marker`, `actor`,
+`timestamp`, `severity` and `message`. For a trace whose columns only make sense together, `kusto_results.trace_schemas` names one
 column per part and the columns that must be present; the first schema that applies decides the parts it names, and the
 other parts use the listed and the built-in names. A change applies to results opened, and rows selected, afterwards.
 
