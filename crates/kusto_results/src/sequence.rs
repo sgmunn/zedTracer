@@ -75,6 +75,10 @@ pub struct Actor {
     /// Activities of this actor that logged an error and then finished normally. They are not
     /// drawn as failures, but a count says they happened.
     pub handled_errors: usize,
+    /// Its place among the actors that have a name, in the order they are first seen; `None` for
+    /// the stand-in that activities with no actor are given. The timeline numbers its actors the
+    /// same way, so the two views can give one actor one colour.
+    pub named_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,17 +219,23 @@ pub fn build_sequence(
 
     let mut actor_ids: HashMap<String, usize> = HashMap::new();
     let mut actor_names: Vec<String> = Vec::new();
+    let mut named_indexes: Vec<Option<usize>> = Vec::new();
+    let mut named_count = 0;
     let mut actor_of = Vec::with_capacity(projection.activities.len());
     for activity in &projection.activities {
-        let name = activity
+        let given = activity
             .event_rows
             .first()
             .and_then(|row| table.cell(*row, actor_column))
             .map(|cell| cell.display_text().trim().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| UNKNOWN_ACTOR.to_string());
+            .filter(|name| !name.is_empty());
+        let name = given.clone().unwrap_or_else(|| UNKNOWN_ACTOR.to_string());
         let id = *actor_ids.entry(name.clone()).or_insert_with(|| {
             actor_names.push(name);
+            named_indexes.push(given.is_some().then(|| {
+                named_count += 1;
+                named_count - 1
+            }));
             actor_names.len() - 1
         });
         actor_of.push(id);
@@ -248,10 +258,12 @@ pub fn build_sequence(
         .into_iter()
         .zip(displays)
         .zip(handled_errors)
-        .map(|((name, display), handled_errors)| Actor {
+        .zip(named_indexes)
+        .map(|(((name, display), handled_errors), named_index)| Actor {
             name,
             display,
             handled_errors,
+            named_index,
         })
         .collect();
     Some(SequenceDiagram {
@@ -939,6 +951,16 @@ impl SequenceDiagram {
         count
     }
 
+    /// The actor of each participant that [`Self::to_mermaid`] declares, in the order they are
+    /// declared and so drawn, left to right. `None` is the caller that is not in the result.
+    pub fn participants(&self) -> Vec<Option<usize>> {
+        let caller = (!self.frames.is_empty()).then_some(None);
+        caller
+            .into_iter()
+            .chain(self.order.iter().map(|actor| Some(*actor)))
+            .collect()
+    }
+
     /// Mermaid `sequenceDiagram` text. Values are cleaned so the text always parses.
     pub fn to_mermaid(&self) -> String {
         let mut lines = vec!["sequenceDiagram".to_string(), "    autonumber".to_string()];
@@ -1251,6 +1273,72 @@ mod tests {
     a0-->>-caller: 100 ms
 "
         );
+    }
+
+    #[test]
+    fn the_participants_are_the_caller_and_then_the_actors_in_the_order_they_are_declared() {
+        let table = trace(vec![
+            event("r", "", "Svc.A.Service", "Job.Run", 0),
+            event("c", "r", "Svc.A.Service", "Client.GetToken", 10),
+            event("k", "c", "Svc.B.Service", "WebApi-IncomingRequest", 12),
+            event("k", "c", "Svc.B.Service", "WebApi-IncomingRequest", 14),
+            event("r", "", "Svc.A.Service", "Job.Run", 100),
+        ]);
+        let sequence = diagram(&table);
+        assert_eq!(sequence.participants(), vec![None, Some(0), Some(1)]);
+        let declared: Vec<String> = sequence
+            .to_mermaid()
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("participant "))
+            .map(|rest| rest.split(' ').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(declared, ["caller", "a0", "a1"], "the same order as the text");
+
+        let empty = SequenceDiagram {
+            actors: Vec::new(),
+            order: Vec::new(),
+            frames: Vec::new(),
+            omitted_roots: 0,
+            omitted_activities: 0,
+            omitted_calls: 0,
+        };
+        assert!(empty.participants().is_empty(), "no caller is declared without a frame");
+    }
+
+    #[test]
+    fn an_actor_with_no_name_has_no_place_among_the_named_ones_and_the_timeline_counts_them_alike() {
+        let table = trace(vec![
+            event("r", "", "Svc.A.Service", "Run", 0),
+            event("u", "r", "", "Nameless", 5),
+            event("b", "u", "Svc.B.Service", "Work", 10),
+            event("c", "b", "Svc.C.Service", "More", 15),
+            event("r", "", "Svc.A.Service", "Run", 100),
+        ]);
+        let columns = TraceColumns::detect(&table);
+        let projection = build_projection_with(&table, &columns).expect("a projection");
+        let sequence = build_sequence(&table, &projection, &columns, &SequenceOptions::default())
+            .expect("a sequence");
+        let places: Vec<(&str, Option<usize>)> = sequence
+            .actors
+            .iter()
+            .map(|actor| (actor.display.as_str(), actor.named_index))
+            .collect();
+        assert_eq!(
+            places,
+            [("A", Some(0)), ("(unknown)", None), ("B", Some(1)), ("C", Some(2))]
+        );
+
+        let waterfall = crate::waterfall::Waterfall::build(
+            &table,
+            &projection,
+            &columns,
+            &crate::waterfall::WaterfallOptions::default(),
+        )
+        .expect("a waterfall");
+        for actor in sequence.actors.iter().filter(|actor| actor.named_index.is_some()) {
+            let place = actor.named_index.expect("filtered to named actors");
+            assert_eq!(waterfall.actors[place], actor.display, "the same actor in both views");
+        }
     }
 
     #[test]
