@@ -202,6 +202,17 @@ understood and repeated, so it needs nothing from the history:
 Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
 database. Files written before parameters were kept in them simply run without values.
 
+## Results with several tables
+
+A query that ends in more than one statement that returns rows, or a command that answers with more than one table,
+gives a result with several tables. The first is the primary result and is shown in the **Data** tab; each of the
+others has a tab of its own right after it, **Data 2**, **Data 3** and so on, which shows its name and row count
+when you hover it. These grids sort, filter, search and keep their column widths like the first one, and Row Details
+follows a selection in any of them.
+
+The structured, sequence and timeline views are built from the primary result only, and so is **Focus on this row's
+activity**, which the other tables do not offer.
+
 ## Trace columns
 
 The structured, sequence and timeline views, the severity tints and the code behind a row all read a trace by its
