@@ -12,8 +12,8 @@ use gpui::{
     Anchor, AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, DragMoveEvent, Empty,
     Entity, EventEmitter, Focusable, Hsla, IntoElement,
     MouseButton, MouseDownEvent, Point, Render, ScrollStrategy, ScrollWheelEvent, SharedString,
-    Subscription, UniformListScrollHandle, Window, anchored, canvas, deferred, div, hsla,
-    pattern_slash, px, relative, uniform_list,
+    Subscription, UniformListScrollHandle, Window, anchored, canvas, deferred, div, pattern_slash,
+    px, relative, uniform_list,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::ResultSet;
@@ -22,6 +22,7 @@ use kusto_results::trace_text::{offset_from_start, short_duration, short_marker}
 use kusto_results::waterfall::{Folds, Row, Waterfall};
 use ui::{Button, ButtonSize, ContextMenu, IconButton, IconName, IconSize, Tooltip, prelude::*};
 
+use crate::actor_colours::theme_actor_palette;
 use crate::row_details_panel::ActiveSelection;
 
 const ROW_HEIGHT: Pixels = px(24.);
@@ -41,9 +42,6 @@ const HATCH_INTERVAL: f32 = 4.0;
 const SMALLEST_VIEW_SHARE: i64 = 4000;
 const ZOOM_STEP: f32 = 1.25;
 const AXIS_TICKS: i64 = 8;
-/// The hues, in degrees, that actors take in turn, no two closer than 24 degrees and in an order
-/// that keeps the first ones far apart.
-const ACTOR_HUES: [f32; 10] = [210., 28., 285., 135., 350., 175., 52., 320., 240., 85.];
 
 pub(crate) enum WaterfallEvent {
     /// A row was double-clicked: show this activity's events.
@@ -530,44 +528,6 @@ impl WaterfallView {
     }
 }
 
-/// One colour for each of `count` actors, all different, at one saturation and lightness. Past
-/// the last hue they come round again, lighter and then darker, so that a trace with more actors
-/// than hues still tells neighbours apart.
-fn actor_palette(count: usize, saturation: f32, lightness: f32) -> Vec<Hsla> {
-    (0..count)
-        .map(|actor| {
-            let shift = [0.0, 0.12, -0.12][(actor / ACTOR_HUES.len()) % 3];
-            hsla(
-                ACTOR_HUES[actor % ACTOR_HUES.len()] / 360.,
-                saturation,
-                (lightness + shift).clamp(0.25, 0.8),
-                1.,
-            )
-        })
-        .collect()
-}
-
-/// The actor colours for the current theme. The saturation and lightness are the average of the
-/// theme's player colours, so they sit well on it, but the hues are not the players': a theme can
-/// hold two of nearly the same colour (One Light has two purples), and the actors must not.
-fn theme_actor_palette(count: usize, cx: &App) -> Vec<Hsla> {
-    let mut saturation = 0.;
-    let mut lightness = 0.;
-    let mut players = 0.;
-    // The first player is the local one, which a trace has no part for.
-    for player in cx.theme().players().0.iter().skip(1) {
-        saturation += player.cursor.s;
-        lightness += player.cursor.l;
-        players += 1.;
-    }
-    let (saturation, lightness) = if players > 0. {
-        (saturation / players, lightness / players)
-    } else {
-        (0.5, 0.5)
-    };
-    actor_palette(count, saturation.clamp(0.35, 0.75), lightness.clamp(0.35, 0.7))
-}
-
 /// A round step in ticks for an axis over `span`, giving about `AXIS_TICKS` marks: 1, 2 or 5 times
 /// a power of ten milliseconds.
 fn nice_step(span: i64) -> i64 {
@@ -916,43 +876,6 @@ mod tests {
 
         double_click(cx, Point { x: row.right() - px(20.), y: row.center().y });
         assert_eq!(opened.borrow().len(), 1, "a double-click on the row itself still opens it");
-    }
-
-    #[test]
-    fn no_two_actor_hues_are_closer_than_24_degrees() {
-        let mut hues = ACTOR_HUES.to_vec();
-        hues.sort_by(f32::total_cmp);
-        let around = hues.windows(2).map(|pair| pair[1] - pair[0]).chain([hues[0] + 360. - hues[hues.len() - 1]]);
-        let closest = around.fold(f32::MAX, f32::min);
-        assert!(closest >= 24., "the closest hues are {closest} degrees apart");
-    }
-
-    #[test]
-    fn every_actor_gets_a_colour_of_its_own_until_the_hues_run_out_and_then_a_lighter_or_darker_one() {
-        for (saturation, lightness) in [(0.46, 0.46), (0.47, 0.64)] {
-            let palette = actor_palette(ACTOR_HUES.len() * 3, saturation, lightness);
-            assert_eq!(palette.len(), 30);
-            for (first, a) in palette.iter().enumerate() {
-                for b in &palette[first + 1..] {
-                    assert!((a.h, a.s, a.l) != (b.h, b.s, b.l), "{a:?} appears twice");
-                }
-            }
-            let (first_round, second_round) = (palette[0], palette[ACTOR_HUES.len()]);
-            assert_eq!(first_round.h, second_round.h, "the same hue comes round again");
-            assert!(second_round.l > first_round.l, "lighter the second time");
-            assert!(palette[ACTOR_HUES.len() * 2].l < first_round.l, "darker the third time");
-        }
-        assert!(actor_palette(0, 0.5, 0.5).is_empty());
-    }
-
-    #[gpui::test]
-    async fn the_actors_of_a_trace_are_drawn_in_different_colours(cx: &mut TestAppContext) {
-        let (view, cx) = open(cx);
-        cx.update(|_, cx| {
-            let palette = theme_actor_palette(view.read(cx).waterfall.actors.len().max(2), cx);
-            assert_ne!(palette[0], palette[1]);
-            assert!(palette.iter().all(|colour| colour.s >= 0.35 && colour.s <= 0.75));
-        });
     }
 
     #[test]

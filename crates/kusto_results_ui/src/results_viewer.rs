@@ -1249,19 +1249,27 @@ impl ResultsViewer {
                         let table = result.tables.first()?;
                         let columns = columns?;
                         let projection = build_projection_in(table, &columns, focus.as_deref())?;
-                        build_sequence(table, &projection, &columns, &options)
-                            .map(|diagram| (diagram.to_mermaid(), diagram.step_count()))
+                        build_sequence(table, &projection, &columns, &options).map(|diagram| {
+                            let places = diagram
+                                .participants()
+                                .into_iter()
+                                .map(|participant| {
+                                    diagram.actors.get(participant?)?.named_index
+                                })
+                                .collect();
+                            (diagram.to_mermaid(), diagram.step_count(), places)
+                        })
                     })
                     .await;
                 this.update_in(cx, |this, _, cx| {
-                    let Some((mermaid, steps)) = mermaid else {
+                    let Some((mermaid, steps, places)) = mermaid else {
                         this.sequence = None;
                         this.can_show_sequence = false;
                         this.mode = ViewMode::Data;
                         cx.notify();
                         return;
                     };
-                    let view = cx.new(|cx| SequenceView::new(mermaid, steps, cx));
+                    let view = cx.new(|cx| SequenceView::new(mermaid, steps, places, cx));
                     this.sequence = Some(Sequence::Ready(view));
                     cx.notify();
                 })

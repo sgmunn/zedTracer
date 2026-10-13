@@ -9,6 +9,8 @@ use markdown::{
 };
 use ui::prelude::*;
 
+use crate::actor_colours::sequence_accents;
+
 pub(crate) struct SequenceView {
     markdown: Entity<Markdown>,
     /// How many steps the diagram draws, so the tab can say when there are none.
@@ -16,10 +18,17 @@ pub(crate) struct SequenceView {
 }
 
 impl SequenceView {
-    pub(crate) fn new(mermaid: String, steps: usize, cx: &mut Context<Self>) -> Self {
+    /// `places` has an entry for each participant the diagram declares, in order: the place of its
+    /// actor among the named ones, or `None` for one that is no actor of the trace.
+    pub(crate) fn new(
+        mermaid: String,
+        steps: usize,
+        places: Vec<Option<usize>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let source = fenced(&mermaid);
         let markdown = cx.new(|cx| {
-            Markdown::new_with_options(
+            let mut markdown = Markdown::new_with_options(
                 source.into(),
                 None,
                 None,
@@ -28,7 +37,9 @@ impl SequenceView {
                     ..Default::default()
                 },
                 cx,
-            )
+            );
+            markdown.set_mermaid_accent_colors(Some(sequence_accents(places)), cx);
+            markdown
         });
         Self { markdown, steps }
     }
