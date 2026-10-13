@@ -11,6 +11,7 @@ use gpui::UnderlineStyle;
 use language::LanguageName;
 
 use log::Level;
+pub use mermaid::MermaidAccentColors;
 use mermaid::{
     MermaidState, ParsedMarkdownMermaidDiagram, extract_mermaid_diagrams, render_mermaid_diagram,
 };
@@ -752,6 +753,18 @@ impl Markdown {
     fn retain_code_block_scroll_handles(&mut self, ids: &HashSet<usize>) {
         self.code_block_scroll_handles
             .retain(|id, _| ids.contains(id));
+    }
+
+    /// Colours the accented parts of mermaid diagrams with these in place of the theme's player
+    /// colours, or with the player colours again for `None`. Diagrams already drawn are drawn
+    /// again.
+    pub fn set_mermaid_accent_colors(
+        &mut self,
+        accent_colors: Option<MermaidAccentColors>,
+        cx: &mut Context<Self>,
+    ) {
+        self.mermaid_state.set_accent_colors(accent_colors);
+        self.invalidate_mermaid_cache(cx);
     }
 
     pub fn invalidate_mermaid_cache(&mut self, cx: &mut Context<Self>) {

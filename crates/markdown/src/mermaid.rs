@@ -1,6 +1,6 @@
 use collections::HashMap;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, ImageSource,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Hsla, ImageSource,
     ParsedSvg, RenderImage, SMOOTH_SVG_SCALE_FACTOR, ScrollDelta, ScrollHandle, ScrollWheelEvent,
     Size, Stateful, StyledText, Task, Window, img, pulsating_between, size,
 };
@@ -37,10 +37,17 @@ pub(crate) struct ParsedMarkdownMermaidDiagramContents {
     pub(crate) scale: u32,
 }
 
+/// The colours a diagram gives the parts it accents, a foreground and a background for each, in
+/// the order it uses them: a sequence diagram's participants take them left to right. It is asked
+/// each time a diagram is drawn, so it can follow the theme.
+pub type MermaidAccentColors = Arc<dyn Fn(&App) -> Vec<(Hsla, Hsla)>>;
+
 #[derive(Default, Clone)]
 pub(crate) struct MermaidState {
     cache: MermaidDiagramCache,
     order: Vec<ParsedMarkdownMermaidDiagramContents>,
+    /// Used in place of the theme's player colours when set.
+    accent_colors: Option<MermaidAccentColors>,
 }
 
 struct CachedMermaidDiagram {
@@ -57,6 +64,10 @@ struct CachedMermaidDiagram {
 }
 
 impl MermaidState {
+    pub(crate) fn set_accent_colors(&mut self, accent_colors: Option<MermaidAccentColors>) {
+        self.accent_colors = accent_colors;
+    }
+
     pub(crate) fn clear(&mut self, cx: &mut App) {
         for cached in self.cache.values() {
             cached.drop_images(cx);
@@ -117,6 +128,7 @@ impl MermaidState {
                         new_content.clone(),
                         zoom,
                         fallback,
+                        self.accent_colors.as_ref(),
                         cx,
                     )),
                 );
@@ -204,12 +216,13 @@ impl CachedMermaidDiagram {
         contents: ParsedMarkdownMermaidDiagramContents,
         zoom: f32,
         fallback_image: Option<(Arc<RenderImage>, f32)>,
+        accent_colors: Option<&MermaidAccentColors>,
         cx: &mut Context<Markdown>,
     ) -> Self {
         let render_image = Arc::new(OnceLock::<anyhow::Result<Arc<RenderImage>>>::new());
         let parsed_svg = Arc::new(OnceLock::<Arc<ParsedSvg>>::new());
         let svg_renderer = cx.svg_renderer();
-        let mermaid_theme = build_mermaid_theme(cx);
+        let mermaid_theme = build_mermaid_theme(cx, accent_colors);
 
         let task = cx.spawn({
             let render_image = render_image.clone();
@@ -359,7 +372,10 @@ fn mermaid_font_family(font_family: &str) -> String {
     }
 }
 
-fn build_mermaid_theme(cx: &Context<Markdown>) -> mermaid_render::MermaidTheme {
+fn build_mermaid_theme(
+    cx: &Context<Markdown>,
+    accent_colors: Option<&MermaidAccentColors>,
+) -> mermaid_render::MermaidTheme {
     let colors = cx.theme().colors();
     let theme_settings = ThemeSettings::get_global(cx);
     let is_dark = !cx.theme().appearance.is_light();
@@ -394,14 +410,23 @@ fn build_mermaid_theme(cx: &Context<Markdown>) -> mermaid_render::MermaidTheme {
         er_attr_bg_even: colors.element_background,
         error_color: cx.theme().status().error,
         warning_color: cx.theme().status().warning,
-        accent_colors: players
-            .0
-            .iter()
-            .map(|player| mermaid_render::AccentColor {
-                foreground: player.cursor,
-                background: player.background,
-            })
-            .collect(),
+        accent_colors: match accent_colors {
+            Some(accent_colors) => accent_colors(cx)
+                .into_iter()
+                .map(|(foreground, background)| mermaid_render::AccentColor {
+                    foreground,
+                    background,
+                })
+                .collect(),
+            None => players
+                .0
+                .iter()
+                .map(|player| mermaid_render::AccentColor {
+                    foreground: player.cursor,
+                    background: player.background,
+                })
+                .collect(),
+        },
     }
 }
 
@@ -1855,6 +1880,43 @@ mod tests {
                 .is_some()
         );
     }
+
+    #[gpui::test]
+    fn diagrams_use_the_accent_colors_a_markdown_is_given_in_place_of_the_players(
+        cx: &mut TestAppContext,
+    ) {
+        ensure_theme_initialized(cx);
+        let markdown = cx.new(|cx| {
+            Markdown::new_with_options(
+                "".into(),
+                None,
+                None,
+                MarkdownOptions {
+                    render_mermaid_diagrams: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let (red, blue) = (gpui::hsla(0., 1., 0.5, 1.), gpui::hsla(0.6, 1., 0.5, 1.));
+        markdown.update(cx, |markdown, cx| {
+            let players = super::build_mermaid_theme(cx, None).accent_colors;
+            assert!(players.len() > 1, "the theme's player colors by default");
+
+            let given: super::MermaidAccentColors = Arc::new(move |_| vec![(red, blue)]);
+            markdown.set_mermaid_accent_colors(Some(given), cx);
+            let theme = super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
+            let [accent] = theme.accent_colors.as_slice() else {
+                panic!("one accent color, not {}", theme.accent_colors.len());
+            };
+            assert_eq!((accent.foreground, accent.background), (red, blue));
+
+            markdown.set_mermaid_accent_colors(None, cx);
+            let theme = super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
+            assert_eq!(theme.accent_colors.len(), players.len(), "the player colors again");
+        });
+    }
+
     #[test]
     fn a_wheel_that_moves_only_sideways_is_a_horizontal_scroll() {
         use super::is_horizontal_scroll;
