@@ -42,6 +42,12 @@ const HATCH_INTERVAL: f32 = 4.0;
 const SMALLEST_VIEW_SHARE: i64 = 4000;
 const ZOOM_STEP: f32 = 1.25;
 const AXIS_TICKS: i64 = 8;
+const MARK_WIDTH: Pixels = px(2.);
+/// A failure that began in an activity is marked boldly...
+const ORIGIN_MARK_WIDTH: Pixels = px(3.);
+/// ...and the same failure logged again by each caller it passes through, which lines up as a
+/// stripe down the chain, faintly.
+const RELOGGED_MARK_OPACITY: f32 = 0.35;
 
 pub(crate) enum WaterfallEvent {
     /// A row was double-clicked: show this activity's events.
@@ -446,18 +452,20 @@ impl WaterfallView {
                     .bg(pattern_slash(colors.editor_background, HATCH_WIDTH, HATCH_INTERVAL)),
             );
         }
-        for (at, colour) in [
-            (span.error_at, cx.theme().status().error),
-            (span.handled_at, cx.theme().status().warning),
+        let (error_width, error_opacity) = error_mark_style(span.origin);
+        for (kind, at, colour, width) in [
+            ("error", span.error_at, cx.theme().status().error.opacity(error_opacity), error_width),
+            ("handled", span.handled_at, cx.theme().status().warning, MARK_WIDTH),
         ] {
             if let Some(at) = at {
                 bars = bars.child(
                     div()
+                        .debug_selector(move || format!("waterfall-{kind}-mark-{position}"))
                         .absolute()
                         .top_0()
                         .h_full()
                         .left(relative(self.fraction(at)))
-                        .w(px(2.))
+                        .w(width)
                         .bg(colour),
                 );
             }
@@ -525,6 +533,17 @@ impl WaterfallView {
             .border_color(colors.border)
             .child(div().w(self.shown_label_width()).flex_shrink_0())
             .child(axis)
+    }
+}
+
+/// The width and opacity of the mark of an activity's own error. Where a failure began it is
+/// bold; where it was only logged again on the way up it is faint, so the failures themselves
+/// stand out from the stripes they leave.
+fn error_mark_style(origin: bool) -> (Pixels, f32) {
+    if origin {
+        (ORIGIN_MARK_WIDTH, 1.0)
+    } else {
+        (MARK_WIDTH, RELOGGED_MARK_OPACITY)
     }
 }
 
@@ -716,17 +735,27 @@ mod tests {
 
     /// Run lasts 10 s and Big runs inside it from 1 s to 9 s.
     fn open(cx: &mut TestAppContext) -> (Entity<WaterfallView>, &mut VisualTestContext) {
+        open_trace(
+            cx,
+            &[
+                ("r", "", "Run", 0, 4),
+                ("r", "", "Run", 10, 4),
+                ("big", "r", "Big", 1, 4),
+                ("big", "r", "Big", 9, 4),
+            ],
+        )
+    }
+
+    /// Each event is (activity, parent, marker, second, level).
+    fn open_trace<'a>(
+        cx: &'a mut TestAppContext,
+        events: &[(&str, &str, &str, i64, i64)],
+    ) -> (Entity<WaterfallView>, &'a mut VisualTestContext) {
         cx.update(|cx| {
             let settings_store = settings::SettingsStore::test(cx);
             cx.set_global(settings_store);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
         });
-        let events: &[(&str, &str, &str, i64)] = &[
-            ("r", "", "Run", 0),
-            ("r", "", "Run", 10),
-            ("big", "r", "Big", 1),
-            ("big", "r", "Big", 9),
-        ];
         let text = |value: &str| {
             if value.is_empty() {
                 Cell::Null
@@ -748,14 +777,14 @@ mod tests {
                 ],
                 rows: events
                     .iter()
-                    .map(|(activity, parent, marker, seconds)| {
+                    .map(|(activity, parent, marker, seconds, level)| {
                         vec![
                             text(activity),
                             text(parent),
                             text("A"),
                             text(marker),
                             Cell::Text(format!("2026-01-01T00:00:{seconds:02}.0000000Z")),
-                            Cell::Int(4),
+                            Cell::Int(*level),
                             text("message"),
                         ]
                     })
@@ -876,6 +905,39 @@ mod tests {
 
         double_click(cx, Point { x: row.right() - px(20.), y: row.center().y });
         assert_eq!(opened.borrow().len(), 1, "a double-click on the row itself still opens it");
+    }
+
+    #[test]
+    fn a_failure_is_marked_boldly_where_it_began_and_faintly_where_it_was_logged_again() {
+        let (origin_width, origin_opacity) = error_mark_style(true);
+        let (relogged_width, relogged_opacity) = error_mark_style(false);
+        assert_eq!(origin_opacity, 1.0);
+        assert!(origin_width > relogged_width, "bolder");
+        assert!(relogged_opacity < 0.5, "and the other is faint: {relogged_opacity}");
+        assert!(relogged_opacity > 0.0, "but still there");
+    }
+
+    #[gpui::test]
+    async fn only_the_activity_where_a_failure_began_has_the_bold_mark(cx: &mut TestAppContext) {
+        // Big fails, and Run logs the same failure again as it passes up through it.
+        let (_view, cx) = open_trace(
+            cx,
+            &[
+                ("r", "", "Run", 0, 4),
+                ("big", "r", "Big", 1, 4),
+                ("big", "r", "Big", 5, 2),
+                ("r", "", "Run", 6, 2),
+            ],
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let width = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector).map(|bounds| bounds.size.width)
+        };
+        let relogged = width("waterfall-error-mark-0", cx).expect("Run's own error is marked");
+        let origin = width("waterfall-error-mark-1", cx).expect("so is Big's");
+        assert_eq!(origin, ORIGIN_MARK_WIDTH);
+        assert_eq!(relogged, MARK_WIDTH);
+        assert!(width("waterfall-handled-mark-1", cx).is_none(), "an error is not a handled one");
     }
 
     #[test]
