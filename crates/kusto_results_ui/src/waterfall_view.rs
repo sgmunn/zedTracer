@@ -3,15 +3,17 @@
 //! Bars are placed with fractions of the row's width, so nothing here needs to measure the
 //! window: zooming changes which part of the trace the fractions span.
 
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, AnyElement, App, ClickEvent, Context, DismissEvent, Entity, EventEmitter, Focusable,
-    Hsla, IntoElement,
+    Anchor, AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, DragMoveEvent, Empty,
+    Entity, EventEmitter, Focusable, Hsla, IntoElement,
     MouseButton, MouseDownEvent, Point, Render, ScrollStrategy, ScrollWheelEvent, SharedString,
-    Subscription, UniformListScrollHandle, Window, anchored, deferred, div, pattern_slash, px,
-    relative, uniform_list,
+    Subscription, UniformListScrollHandle, Window, anchored, canvas, deferred, div, pattern_slash,
+    px, relative, uniform_list,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::ResultSet;
@@ -23,7 +25,11 @@ use ui::{Button, ButtonSize, ContextMenu, IconButton, IconName, IconSize, Toolti
 use crate::row_details_panel::ActiveSelection;
 
 const ROW_HEIGHT: Pixels = px(24.);
-const LABEL_WIDTH: Pixels = px(360.);
+const DEFAULT_LABEL_WIDTH: Pixels = px(360.);
+const MINIMUM_LABEL_WIDTH: Pixels = px(140.);
+/// The bars keep at least this much room, so the splitter cannot push them out of view.
+const MINIMUM_BARS_WIDTH: Pixels = px(200.);
+const SPLITTER_WIDTH: Pixels = px(6.);
 const INDENT: Pixels = px(14.);
 const BAR_HEIGHT: Pixels = px(14.);
 /// A bar is never thinner than this, so an instant can still be seen and clicked.
@@ -45,6 +51,17 @@ pub(crate) enum WaterfallEvent {
 
 impl EventEmitter<WaterfallEvent> for WaterfallView {}
 
+/// The splitter between the labels and the bars being dragged. It is a type of its own so that a
+/// drag here does not move the splitter of a Structured view in the same window.
+#[derive(Clone)]
+struct LabelSplitterDrag;
+
+impl Render for LabelSplitterDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 pub(crate) struct WaterfallView {
     result: Arc<ResultSet>,
     projection: Arc<ActivityProjection>,
@@ -58,6 +75,9 @@ pub(crate) struct WaterfallView {
     view_start: i64,
     view_span: i64,
     highlight_critical: bool,
+    label_width: Pixels,
+    /// Where the rows and the axis were last laid out, to keep the splitter inside them.
+    bounds: Rc<Cell<Bounds<Pixels>>>,
     scroll_handle: UniformListScrollHandle,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
 }
@@ -79,11 +99,39 @@ impl WaterfallView {
             rows: Vec::new(),
             selected: None,
             highlight_critical: false,
+            label_width: DEFAULT_LABEL_WIDTH,
+            bounds: Rc::new(Cell::new(Bounds::default())),
             scroll_handle: UniformListScrollHandle::new(),
             context_menu: None,
         };
         view.recompute_rows();
         view
+    }
+
+    #[cfg(test)]
+    pub(crate) fn label_width(&self) -> Pixels {
+        self.shown_label_width()
+    }
+
+    /// The widest the labels may be: the bars keep their minimum. Before the first layout there
+    /// is nothing to limit it by.
+    fn maximum_label_width(&self) -> Pixels {
+        let width = self.bounds.get().size.width;
+        if width <= px(0.) {
+            return px(10_000.);
+        }
+        (width - MINIMUM_BARS_WIDTH).max(MINIMUM_LABEL_WIDTH)
+    }
+
+    /// What was asked for, held inside the room there is now, so a window that has become
+    /// narrower does not squeeze the bars away and growing it again gives the width back.
+    fn shown_label_width(&self) -> Pixels {
+        self.label_width.clamp(MINIMUM_LABEL_WIDTH, self.maximum_label_width())
+    }
+
+    fn set_label_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.label_width = width.clamp(MINIMUM_LABEL_WIDTH, self.maximum_label_width());
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -331,7 +379,7 @@ impl WaterfallView {
         };
 
         let label = h_flex()
-            .w(LABEL_WIDTH)
+            .w(self.shown_label_width())
             .flex_shrink_0()
             .h_full()
             .pl(INDENT * row.depth as f32)
@@ -478,7 +526,7 @@ impl WaterfallView {
             .h(px(22.))
             .border_b_1()
             .border_color(colors.border)
-            .child(div().w(LABEL_WIDTH).flex_shrink_0())
+            .child(div().w(self.shown_label_width()).flex_shrink_0())
             .child(axis)
     }
 }
@@ -576,29 +624,71 @@ impl Render for WaterfallView {
                         ),
                     ),
             )
-            .child(self.render_axis(cx))
             .child(
-                div()
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                        if this.on_wheel(event, cx) {
-                            cx.stop_propagation();
-                        }
-                    }))
+                    .relative()
+                    .on_drag_move(
+                        cx.listener(|this, event: &DragMoveEvent<LabelSplitterDrag>, _, cx| {
+                            this.set_label_width(event.event.position.x - event.bounds.left(), cx)
+                        }),
+                    )
+                    .child(self.render_axis(cx))
                     .child(
-                        uniform_list(
-                            "waterfall-rows",
-                            self.rows.len(),
-                            cx.processor(|this, range: Range<usize>, _window, cx| {
-                                range
-                                    .filter_map(|position| this.render_row(position, cx))
-                                    .collect::<Vec<_>>()
-                            }),
-                        )
-                        .track_scroll(&self.scroll_handle)
-                        .size_full(),
-                    ),
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                                if this.on_wheel(event, cx) {
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .child(
+                                uniform_list(
+                                    "waterfall-rows",
+                                    self.rows.len(),
+                                    cx.processor(|this, range: Range<usize>, _window, cx| {
+                                        range
+                                            .filter_map(|position| this.render_row(position, cx))
+                                            .collect::<Vec<_>>()
+                                    }),
+                                )
+                                .track_scroll(&self.scroll_handle)
+                                .size_full(),
+                            ),
+                    )
+                    // Over the rows, so it must not let a click through to the one beneath it,
+                    // which a double-click would open; the wheel still reaches the rows.
+                    .child(
+                        h_flex()
+                            .id("waterfall-splitter")
+                            .debug_selector(|| "waterfall-splitter".to_string())
+                            .absolute()
+                            .top_0()
+                            .h_full()
+                            .left(self.shown_label_width() - SPLITTER_WIDTH / 2.)
+                            .w(SPLITTER_WIDTH)
+                            .justify_center()
+                            .cursor_col_resize()
+                            .block_mouse_except_scroll()
+                            .hover(|style| style.bg(colors.border_focused.opacity(0.4)))
+                            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                                if event.click_count() == 2 {
+                                    this.set_label_width(DEFAULT_LABEL_WIDTH, cx);
+                                }
+                            }))
+                            .on_drag(LabelSplitterDrag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            .child(div().w(px(1.)).h_full().bg(colors.border_variant)),
+                    )
+                    .child({
+                        let bounds = self.bounds.clone();
+                        canvas(move |measured, _, _| bounds.set(measured), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                    }),
             )
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
@@ -614,7 +704,181 @@ impl Render for WaterfallView {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    use gpui::{
+        Modifiers, MouseUpEvent, TestAppContext, VisualTestContext, size,
+    };
+    use kusto_results::activity::build_projection_with;
+    use kusto_results::trace_schema::TraceColumns;
+    use kusto_results::waterfall::WaterfallOptions;
+    use kusto_results::{Cell, Column, Table};
+
     use super::*;
+
+    /// Run lasts 10 s and Big runs inside it from 1 s to 9 s.
+    fn open(cx: &mut TestAppContext) -> (Entity<WaterfallView>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let events: &[(&str, &str, &str, i64)] = &[
+            ("r", "", "Run", 0),
+            ("r", "", "Run", 10),
+            ("big", "r", "Big", 1),
+            ("big", "r", "Big", 9),
+        ];
+        let text = |value: &str| {
+            if value.is_empty() {
+                Cell::Null
+            } else {
+                Cell::Text(value.into())
+            }
+        };
+        let result = Arc::new(ResultSet {
+            tables: vec![Table {
+                name: "t".into(),
+                columns: vec![
+                    Column::new("CurrentActivityId", "string"),
+                    Column::new("ParentActivityId", "string"),
+                    Column::new("ProcessName", "string"),
+                    Column::new("MarkerName", "string"),
+                    Column::new("TIMESTAMP", "datetime"),
+                    Column::new("Level", "long"),
+                    Column::new("MessageText", "string"),
+                ],
+                rows: events
+                    .iter()
+                    .map(|(activity, parent, marker, seconds)| {
+                        vec![
+                            text(activity),
+                            text(parent),
+                            text("A"),
+                            text(marker),
+                            Cell::Text(format!("2026-01-01T00:00:{seconds:02}.0000000Z")),
+                            Cell::Int(4),
+                            text("message"),
+                        ]
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        });
+        let table = &result.tables[0];
+        let columns = TraceColumns::detect(table);
+        let projection = Arc::new(build_projection_with(table, &columns).expect("a projection"));
+        let waterfall = Arc::new(
+            Waterfall::build(table, &projection, &columns, &WaterfallOptions::default())
+                .expect("a waterfall"),
+        );
+        let (view, cx) = cx.add_window_view(|_, _| WaterfallView::new(result.clone(), projection, waterfall));
+        cx.simulate_resize(size(px(1000.), px(600.)));
+        draw(cx);
+        (view, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn splitter(cx: &mut VisualTestContext) -> Point<Pixels> {
+        draw(cx);
+        cx.debug_bounds("waterfall-splitter")
+            .map(|bounds| bounds.center())
+            .expect("the splitter shows")
+    }
+
+    fn drag_splitter(cx: &mut VisualTestContext, by: Pixels) {
+        let handle = splitter(cx);
+        cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+        for step in 1..=6 {
+            cx.simulate_mouse_move(
+                Point { x: handle.x + by * (step as f32 / 6.), y: handle.y },
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+        }
+        cx.simulate_mouse_up(
+            Point { x: handle.x + by, y: handle.y },
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+    }
+
+    fn double_click(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        for click_count in 1..=2 {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+    }
+
+    /// Where the bars of the first row start, from the left of the row.
+    fn bars_start(cx: &mut VisualTestContext) -> f32 {
+        draw(cx);
+        let row = cx.debug_bounds("waterfall-row-0").expect("the first row shows");
+        let bars = cx.debug_bounds("waterfall-bars-0").expect("its bars show");
+        f32::from(bars.origin.x - row.origin.x)
+    }
+
+    #[gpui::test]
+    async fn the_splitter_resizes_the_labels_within_its_limits(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let width = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.label_width());
+        assert_eq!(width(cx), px(360.));
+        assert!((bars_start(cx) - 360.0).abs() < 1.0, "the bars start where the labels end");
+
+        drag_splitter(cx, px(100.));
+        assert!(width(cx) > px(440.) && width(cx) < px(480.), "the drag widened it: {:?}", width(cx));
+        assert!(
+            (bars_start(cx) - f32::from(width(cx))).abs() < 1.0,
+            "the bars follow the labels: {} against {:?}",
+            bars_start(cx),
+            width(cx)
+        );
+
+        drag_splitter(cx, px(-2000.));
+        assert_eq!(width(cx), MINIMUM_LABEL_WIDTH, "the labels keep their minimum");
+
+        drag_splitter(cx, px(5000.));
+        assert_eq!(width(cx), px(1000.) - MINIMUM_BARS_WIDTH, "the bars keep their minimum");
+
+        let handle = splitter(cx);
+        double_click(cx, handle);
+        assert_eq!(width(cx), DEFAULT_LABEL_WIDTH, "double-click resets it");
+    }
+
+    #[gpui::test]
+    async fn a_double_click_on_the_splitter_does_not_open_the_row_under_it(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.subscribe(&view, move |_, event: &WaterfallEvent, _| {
+                if let WaterfallEvent::OpenActivity(activity) = event {
+                    opened.borrow_mut().push(*activity);
+                }
+            })
+        });
+        let handle = splitter(cx);
+        let row = cx.debug_bounds("waterfall-row-0").expect("the first row shows");
+        double_click(cx, Point { x: handle.x, y: row.center().y });
+        assert!(opened.borrow().is_empty(), "nothing was opened: {:?}", opened.borrow());
+
+        double_click(cx, Point { x: row.right() - px(20.), y: row.center().y });
+        assert_eq!(opened.borrow().len(), 1, "a double-click on the row itself still opens it");
+    }
 
     #[test]
     fn the_axis_steps_are_round_and_give_about_eight_marks() {
