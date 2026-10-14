@@ -6,6 +6,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, Pixels, StyledText, Task,
     Window, px,
 };
+use language::language_settings::LanguageSettings;
 use language::{Bias, Buffer, HighlightedText, HighlightedTextBuilder, ToPoint};
 use picker::{MatchLocation, PreviewBackend, PreviewLayout, PreviewSource, PreviewUpdate};
 use project::{Project, Symbol};
@@ -69,7 +70,13 @@ impl EditorPreview {
         let preview_editor = cx.new(|cx: &mut Context<Editor>| {
             let capability = language::Capability::ReadWrite; // Later narrowed per buffer
             let multi_buffer = cx.new(|_| MultiBuffer::without_headers(capability));
-            let mut editor = Editor::for_multibuffer(multi_buffer, None, window, cx);
+            // The project lets the editor ask a language server for semantic tokens, which are all
+            // the colour a language without a syntax tree (Kusto) has. It stays off until a buffer
+            // whose language wants them is shown, see `update_from_buffer`.
+            let mut editor =
+                Editor::for_multibuffer(multi_buffer, Some(project.clone()), window, cx);
+            editor.set_lsp_data_enabled(false);
+            editor.disable_code_lens(cx);
             let editor_settings = EditorSettings::get_global(cx).clone();
 
             // We want editing to happen in the multibuffer not in the modal. The editor acts
@@ -209,7 +216,12 @@ impl EditorPreview {
         let max_visible_rows =
             (window.viewport_size().height / MIN_LINE_HEIGHT_PX).ceil() as u32 + MARGIN;
 
+        let wants_semantic_tokens = LanguageSettings::for_buffer(buffer.read(cx), cx)
+            .semantic_tokens
+            .enabled();
+
         self.preview_editor.update(cx, |editor, cx| {
+            editor.set_lsp_data_enabled(wants_semantic_tokens);
             let focus_row = highlight
                 .as_ref()
                 .map(|hl| {
