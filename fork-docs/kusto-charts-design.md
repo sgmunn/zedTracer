@@ -1,6 +1,6 @@
 # Kusto charts for Zed: investigation and draft specification
 
-Status: draft for review. Nothing here is built. Companion to [kusto-results-workbench-feature-spec.md](kusto-results-workbench-feature-spec.md), which lists charts as "Out, to be specified later" (section 1). This document is that later specification: what we found, what we recommend, the requirements, and the decisions we need from the user before building.
+Status: built; the decisions in section 8 were taken as recommended, and section 10 says what is and is not built. Companion to [kusto-results-workbench-feature-spec.md](kusto-results-workbench-feature-spec.md), which lists charts as "Out, to be specified later" (section 1). This document is that later specification: what we found, what we recommend, the requirements, and the decisions we need from the user before building.
 
 ## 1. Goal
 
@@ -37,7 +37,7 @@ Read from `Kusto-Explorer-VsCode` (`dev/gregm`), mainly `src/Client/features/{ch
 
 **The file format already carries charts.** `crates/kusto_results/src/result.rs` reads top-level properties it does not know (including `charts` and `chartViews`) as raw JSON and writes them back unchanged; a test pins this. Only `tableViews` is interpreted. A chart feature must interpret `charts`/`chartViews` without losing option keys it does not know.
 
-**`render` is dropped.** `kusto_client::response::parse_query_response` keeps only `PrimaryResult` tables, so the `@ExtendedProperties` table is discarded. The SDK source (decompiled `Kusto.Data` 13.0.2, `QueryResultSetV2.ParseChartVisualizations`) shows its real shape: three columns `(TableId:int, Key:string, Value:string)`; each row with `Key == "Visualization"` carries, in `Value`, a JSON object `{Visualization, Title, XColumn, Series[], YColumns[], AnomalyColumns[], XTitle, YTitle, Kind, YSplit, Legend, XAxis, YAxis, Ymin, Ymax, Xmin, Xmax, Accumulate, IsQuerySorted}`; `TableId` is the result table it applies to. `Visualization` is the lower-case operator name (`timechart`, `linechart`, `barchart`, `columnchart`, `areachart`, `stackedareachart`, `piechart`, `scatterchart`, ...). The unit-test fixture in `response.rs` has a one-column `@ExtendedProperties` table, which is not the real shape.
+**`render` is dropped.** `kusto_client::response::parse_query_response` keeps only `PrimaryResult` tables, so the `@ExtendedProperties` table is discarded. The SDK source (decompiled `Kusto.Data` 13.0.2, `QueryResultSetV2.ParseChartVisualizations`) shows its real shape: three columns `(TableId:int, Key:string, Value:string)`; each row with `Key == "Visualization"` carries, in `Value`, a JSON object `{Visualization, Title, XColumn, Series[], YColumns[], AnomalyColumns[], XTitle, YTitle, Kind, YSplit, Legend, XAxis, YAxis, Ymin, Ymax, Xmin, Xmax, Accumulate, IsQuerySorted}`; `TableId` is the id of the **frame** of the table it applies to (the properties are frame 0 and the first result is usually frame 1), not its place among the results. The shape was checked against the help cluster. `Visualization` is the lower-case operator name (`timechart`, `linechart`, `barchart`, `columnchart`, `areachart`, `stackedareachart`, `piechart`, `scatterchart`, ...). The unit-test fixture in `response.rs` had a one-column `@ExtendedProperties` table, which was not the real shape, and now has the real one. The service also ignores the legacy `render columnchart kind=stacked` when a `with (...)` follows it, so `kind` belongs inside the `with`.
 
 **Drawing.** There is no webview, so Plotly is not an option. GPUI offers what a 2D chart needs: the `canvas` element, `PathBuilder` (stroked and filled paths, dash arrays, arcs, curves; used by `editor/src/element.rs` and `git_ui/src/git_graph.rs`), `paint_quad`, text shaping, and mouse events. The Timeline tab (`waterfall_view.rs`) is drawn with positioned elements; the Sequence tab is Mermaid rendered by the Markdown view.
 
@@ -180,12 +180,15 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 8. A read-only file: the edit shows, no write happens, the user is told once.
 9. A 100,000-row table with 20 series: opens, hovers and toggles a legend entry without a visible stall.
 
-## 7. Where Zed would differ from VS Code
+## 7. Where Zed differs from VS Code
 
 - The panel's chart edits are saved to the run's history file (VS Code keeps them in memory). They are lost when history pruning deletes the run (D3).
 - Thinning keeps peaks (CDM-7); VS Code takes every Nth point.
 - Times default to UTC (CVW-4), consistent with the grid; VS Code hands the text to Plotly.
 - `render` is read from the response, not inferred from the query text.
+- Text is never rotated, because GPUI cannot paint it: the title of the vertical axis sits above the axis, and a crowded axis shows fewer labels. `xTickAngle` and `yTickAngle` are kept in the file but not applied.
+- The options that name an axis (`xAxis`, `yTitle`, `xShowGrid`, ...) mean the axis on the screen, as in VS Code, so for a horizontal bar chart `x` is the axis of the values.
+- The tooltip of a line chart snaps to the nearest X anywhere in the plot, not only near a point.
 
 ## 8. Decisions needed
 
@@ -198,6 +201,8 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | D5 | Does `render` open the chart tab first? | Yes, as VS Code does for the document view; a setting turns it off. |
 | D6 | Is a hover that selects the grid row wanted (CIN-4)? | Optional; skip until asked. |
 | D7 | The VS Code `binSize`/`aggregation`/`maxSeries`/`maxPointsPerSeries` extras. | Keep them in the file; draw `maxSeries` (CDM-6); leave binning to `bin()` in the query. |
+
+**Taken:** all of D1 to D7 as recommended. D2 became a collapsible pane beside the chart; D3 is still open in practice (a re-run writes a new history file that has only the charts its own `render` asks for).
 
 ## 9. Delivery plan
 
@@ -217,3 +222,11 @@ Then, in order, each a separate commit with tests:
 6. Editor, Add and Remove Chart, saving (CED, CSR-3, CSR-4, CPL).
 7. Copy Chart (CXP-1) and settings (CST-1).
 8. Update the workbench spec section 1 table and the status doc.
+
+## 10. Status
+
+Built, with tests (`cargo test -p kusto_client -p kusto_results -p kusto_results_ui --lib`): CFM-1 to CFM-5; CSR-1 to CSR-5; CDM-1 to CDM-7 and CDM-9; CVW-1 to CVW-7, CVW-9 and CVW-10, and the stacked forms of bars and columns (CVW-2 except the area types); CIN-1 and CIN-2; CED-1 to CED-4; CPL-1 and CPL-2, and CPL-3 (Add chart binds to the table of the tab you are on); CXP-1; CST-1 except the choice of a time zone.
+
+Not built: CIN-3 (zoom), CIN-4 (hover selects the grid row), CVW-8 (`DualAxis`, `SeparatePanels`, `SeparateCharts`; the option is read and saved), CDM-8 (binning), CED-5 (reset to defaults), CXP-2 (save a picture), area, pie and scatter, a local-time axis, CSR-6 (keeping a chart across runs), and CNF-1 was not measured: the paths of each series are built again on every paint, including one caused by moving the pointer.
+
+The spikes: S1 was run (the real `render` response is in `crates/kusto_client`'s tests and the live test). S2 became the scene: layout and ticks are tested without a window, written as SVG and looked at for a set of sample charts, and drawn by a GPUI canvas whose paint code has run only in GPUI's test platform, so the tab has not been looked at in a real window.

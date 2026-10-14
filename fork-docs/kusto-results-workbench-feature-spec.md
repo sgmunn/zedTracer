@@ -27,7 +27,8 @@ The KustoTraceTools VS Code extension (fork `dev/gregm` of `Kusto-Explorer-VsCod
 | Waterfall (Timeline tab) | Deferred (section 5.7) | Where the time went, drawn natively. |
 | Message templates and structural rows | Deferred (section 5.8) | Grouping repeated messages and setting aside rows that carry no content. |
 | Focus on an activity | Deferred (section 5.9) | Rebuild every view from one activity and what is below it. |
-| Charts, `render`, graph and pivot views | Out | To be specified later. |
+| Line, time, bar and column charts, and the `render` operator | Yes, see [kusto-charts-design.md](kusto-charts-design.md) | Specified there (CFM, CSR, CDM, CVW, CIN, CED, CPL, CXP, CST). Built; see its section 10. |
+| Other charts (area, pie, scatter), graph and pivot views | Out | Kept in a result file as they are, shown as "cannot be drawn here". |
 | Connections explorer, scratch pads, formatting settings, Copilot schema tools | Out | Not part of this effort. |
 | Query editing (highlighting, completion, diagnostics) | Out | Covered by the Kusto extension spike in `extensions/kusto`. |
 

@@ -291,6 +291,53 @@ follows a selection in any of them.
 The structured, sequence and timeline views are built from the primary result only, and so is **Focus on this row's
 activity**, which the other tables do not offer.
 
+## Charts
+
+A result can hold charts. Each one is a tab after the data tabs, in the Results panel and in a `.ktt` tab alike, and a
+result that has a chart opens on it (set `kusto_results.chart.open_on_chart` to `false` to open on the data).
+
+**Where a chart comes from.** A query that ends in `render` gives its result a chart of that kind, saved with the result:
+`timechart`, `linechart`, `barchart` and `columnchart`, with `kind=stacked` or `stacked100` for the stacked forms, and
+the `with (title=…, xtitle=…, ytitle=…, xcolumn=…, ycolumns=…, series=…, xmin=…, xmax=…, ymin=…, ymax=…, legend=hidden, xaxis=log, yaxis=log, accumulate=true)`
+options (`ysplit` is read and saved, but not drawn yet). Put `kind=` inside the `with (…)`: the service ignores the older `render columnchart kind=stacked` when a
+`with (…)` follows it. A result with no `render` gets a chart from **Add chart** in the tab bar (a plus once there is one),
+or the `kusto: add chart` command. It starts from the type the columns suggest, a time chart for a datetime and a number
+and columns for a name and a number, and adds the chart for the table of the tab you are on.
+
+**Types.** Line, Time line, Bar (horizontal), Column, and the stacked and 100% stacked forms of bars and columns. A chart
+of another type that a result file holds (area, pie, scatter, graph, …) is kept exactly as it is, and its tab says it cannot
+be drawn here.
+
+**Reading a chart.** The X column is the first datetime column for a time chart, otherwise the first column; the values
+are the numeric columns; and the rows are split into series by the first text column. The options of a chart can name any of
+them, and the pane below changes them. Times are in UTC. Move the pointer over a line chart and a tooltip with a crosshair
+lists every series at the nearest X; over a bar it names the bar. Click an entry of the legend to switch that series off and
+on; the axes fit what is left. A series with more points than the chart has pixels keeps the extremes of each pixel column,
+so a spike is not lost.
+
+**Editing.** **Edit chart** opens a pane beside the chart: the type, the table, the X column, the value and series columns,
+the titles, the scale (linear or log) and limits of each axis, the legend, the sort, running totals, values on bars,
+gridlines, aspect ratio and text size, and a name for the tab. A change draws the chart at once. Only the options shown there
+can be changed; any other option a chart has is kept as it is. **Remove chart** is at the bottom of the pane.
+
+**Saving.** Every change is written to the result's file a moment after you stop, as a column layout is, and only the
+`charts` of the file change. In the Results panel that file is the run's history file, so a chart you edit there is kept
+until the history prunes the run; **Save a copy…** keeps it longer. A file that cannot be written keeps your changes
+while it is open. Charts do not carry over to a run of the query again: the new result gets the charts its own `render`
+asks for.
+
+**Copy as a picture.** The copy button of the chart (or `kusto: copy chart`) puts a PNG at twice the size on screen on
+the clipboard, in the colours of the theme, or light or dark if the chart's `mode` says so.
+
+**Settings.** `kusto_results.chart` sets how a chart looks where it does not say itself: `legend`, `show_values`,
+`show_gridlines`, `text_size`, `aspect_ratio` and `open_on_chart`. What a chart saves wins, and a default is never written
+into a file.
+
+**Not built yet.** Zooming into a range, panels or a second axis for several value columns (`ysplit`), binning in the
+chart (use `bin()` in the query), a local-time axis, saving a picture to a file, and tilted axis labels (a label that does
+not fit is dropped instead). Area, pie, scatter and the other types are not drawn. The design and the requirement list
+are in `fork-docs/kusto-charts-design.md`.
+
 ## Trace columns
 
 The structured, sequence and timeline views, the severity tints and the code behind a row all read a trace by its
