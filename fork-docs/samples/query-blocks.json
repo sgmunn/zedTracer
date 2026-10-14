@@ -1,0 +1,97 @@
+[
+  {
+    "name": "a blank line ends a query",
+    "text": "T1\n| take 1\n\nT2",
+    "queries": [[0, 1], [3, 3]]
+  },
+  {
+    "name": "a gap in the body of a function belongs to the function",
+    "text": ".create-or-alter function F() {\n    let a = 1;\n\n    T | take a\n}\n\nT2",
+    "queries": [[0, 4], [6, 6]]
+  },
+  {
+    "name": "a gap inside parentheses belongs to the call",
+    "text": "T\n| where x in (\n  1,\n\n  2\n)\n| take 1\n\nU",
+    "queries": [[0, 6], [8, 8]]
+  },
+  {
+    "name": "several blank lines and a line of spaces inside braces belong to them",
+    "text": "let f = () {\n\n   \n\n  1\n};\nf()\n\nT",
+    "queries": [[0, 6], [8, 8]]
+  },
+  {
+    "name": "the block goes on after the bracket closes, up to the next blank line",
+    "text": "let f = () {\n  1\n\n};\nf()\n\nT",
+    "queries": [[0, 4], [6, 6]]
+  },
+  {
+    "name": "a gap in a function in a functions block does not make the block a query",
+    "text": "// :functions\nlet f = (x:long) {\n  x\n\n  + 1\n};\n\nprint f(1)",
+    "queries": [[7, 7]]
+  },
+  {
+    "name": "brackets that are never closed do not join the queries below",
+    "text": "T | where x in (\n\nU | take 1\n\nV",
+    "queries": [[0, 0], [2, 2], [4, 4]]
+  },
+  {
+    "name": "an unclosed brace does not join the queries below when a later function balances itself",
+    "text": "let f = () {\n\nlet g = () { 1 };\nprint g()\n\nprint 2",
+    "queries": [[0, 0], [2, 3], [5, 5]]
+  },
+  {
+    "name": "a bracket in a comment is not one",
+    "text": "T // (\n\nU // {\n\nV",
+    "queries": [[0, 0], [2, 2], [4, 4]]
+  },
+  {
+    "name": "a bracket in a note above a query is not one",
+    "text": "// note (\n\nT",
+    "queries": [[2, 2]]
+  },
+  {
+    "name": "a bracket in a string is not one",
+    "text": "print '('\n\nprint \"{\"\n\nprint 2",
+    "queries": [[0, 0], [2, 2], [4, 4]]
+  },
+  {
+    "name": "a quote with a backslash before it does not end the string",
+    "text": "print 'it\\'s ('\n\nprint 2",
+    "queries": [[0, 0], [2, 2]]
+  },
+  {
+    "name": "a backslash escapes nothing in a verbatim string",
+    "text": "print @'c:\\', (1\n\n2)\n\nprint 3",
+    "queries": [[0, 2], [4, 4]]
+  },
+  {
+    "name": "a string that is not closed ends with its line",
+    "text": "print 'abc (\n\nprint 2",
+    "queries": [[0, 0], [2, 2]]
+  },
+  {
+    "name": "a gap in a multi-line string belongs to it",
+    "text": "print ```a\n\nb```\n\nprint 2",
+    "queries": [[0, 2], [4, 4]]
+  },
+  {
+    "name": "a bracket in a multi-line string is not one",
+    "text": "print ~~~(\n\n~~~\n\nprint 2",
+    "queries": [[0, 2], [4, 4]]
+  },
+  {
+    "name": "a multi-line string that is never closed does not join the queries below",
+    "text": "print ```a\n\nprint 2",
+    "queries": [[0, 0], [2, 2]]
+  },
+  {
+    "name": "a closing bracket with nothing open is ignored",
+    "text": ")\n\nT",
+    "queries": [[0, 0], [2, 2]]
+  },
+  {
+    "name": "lines end with carriage returns",
+    "text": "f() {\r\n\r\n1\r\n}\r\n\r\nT",
+    "queries": [[0, 3], [5, 5]]
+  }
+]

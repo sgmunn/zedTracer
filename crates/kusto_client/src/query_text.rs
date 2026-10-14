@@ -27,7 +27,7 @@ pub fn is_control_command(query: &str) -> bool {
         .is_some_and(|line| line.starts_with('.'))
 }
 
-/// A run of non-blank lines.
+/// A run of non-blank lines, or more where a bracket is still open at a blank line.
 struct Block {
     range: Range<usize>,
     /// Whether anything in it is more than comments. A block of only comments, such as a
@@ -37,42 +37,148 @@ struct Block {
     is_functions: bool,
 }
 
-fn blocks(text: &str) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    // Where the block started, whether it has code, and whether it has the functions marker.
-    let mut current: Option<(usize, bool, bool)> = None;
-    let mut line_start = 0;
-    let mut previous_end = 0;
-    for line in text.split_inclusive('\n') {
-        let line_end = line_start + line.len();
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if let Some((start, has_code, is_functions)) = current.take() {
-                blocks.push(Block {
-                    range: start..previous_end,
-                    is_query: has_code && !is_functions,
-                    is_functions,
-                });
-            }
-        } else {
-            let content = !trimmed.starts_with("//");
-            let marker = is_functions_marker(line);
-            current = Some(match current {
-                Some((start, has_code, is_functions)) => {
-                    (start, has_code || content, is_functions || marker)
-                }
-                None => (line_start, content, marker),
-            });
-            previous_end = line_start + line.trim_end_matches(['\r', '\n']).len();
-        }
-        line_start = line_end;
+struct Line<'a> {
+    start: usize,
+    text: &'a str,
+}
+
+impl Line<'_> {
+    fn is_blank(&self) -> bool {
+        self.text.trim().is_empty()
     }
-    if let Some((start, has_code, is_functions)) = current {
+
+    fn end(&self) -> usize {
+        self.start + self.text.trim_end_matches(['\r', '\n']).len()
+    }
+}
+
+/// Follows the brackets of the lines it is given, to tell whether a blank line comes inside
+/// parentheses or braces (a function body with a gap in it) or between two queries. Brackets in
+/// comments and strings do not count. A string of one quote ends with its line, so a quote left
+/// open while typing does not hold the rest of the file.
+#[derive(Default)]
+struct Brackets {
+    depth: usize,
+    /// The delimiter that ends the multi-line string the lines are in.
+    multiline_string: Option<[u8; 3]>,
+}
+
+impl Brackets {
+    fn is_open(&self) -> bool {
+        self.depth > 0 || self.multiline_string.is_some()
+    }
+
+    fn follow(&mut self, line: &str) {
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if let Some(delimiter) = self.multiline_string {
+                match bytes[index..]
+                    .windows(3)
+                    .position(|window| window == delimiter)
+                {
+                    Some(offset) => {
+                        index += offset + delimiter.len();
+                        self.multiline_string = None;
+                        continue;
+                    }
+                    None => return,
+                }
+            }
+            match bytes[index] {
+                b'/' if bytes.get(index + 1) == Some(&b'/') => return,
+                byte @ (b'`' | b'~') if bytes[index..].starts_with(&[byte; 3]) => {
+                    self.multiline_string = Some([byte; 3]);
+                    index += 3;
+                }
+                quote @ (b'\'' | b'"') => {
+                    index = end_of_string(bytes, index, quote);
+                }
+                b'(' | b'{' => {
+                    self.depth += 1;
+                    index += 1;
+                }
+                b')' | b'}' => {
+                    self.depth = self.depth.saturating_sub(1);
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+    }
+}
+
+/// Where the string of one quote that starts at `start` ends, or the end of the line. A verbatim
+/// string (`@'…'`) has no escapes and doubles its quote; any other takes a backslash as an escape.
+fn end_of_string(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let verbatim = start > 0 && bytes[start - 1] == b'@';
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            byte if byte == quote => {
+                if verbatim && bytes.get(index + 1) == Some(&quote) {
+                    index += 2;
+                } else {
+                    return index + 1;
+                }
+            }
+            b'\\' if !verbatim => index += 2,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// The last line of the block that starts at `first`. A blank line ends a block unless a bracket
+/// the block opened is still open, which is a gap inside a function body or a call. Brackets
+/// that are never closed are no gap: they would join every query below to this one, so a block
+/// whose brackets are open at the end of the text ends at its first blank line instead.
+fn last_line_of_block(lines: &[Line], first: usize) -> usize {
+    let mut brackets = Brackets::default();
+    let mut last = first;
+    for (index, line) in lines.iter().enumerate().skip(first) {
+        if !line.is_blank() {
+            brackets.follow(line.text);
+            last = index;
+        } else if !brackets.is_open() {
+            return last;
+        }
+    }
+    if brackets.is_open() {
+        lines[first..]
+            .iter()
+            .position(Line::is_blank)
+            .map_or(lines.len() - 1, |blank| first + blank - 1)
+    } else {
+        last
+    }
+}
+
+fn blocks(text: &str) -> Vec<Block> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        lines.push(Line { start, text: line });
+        start += line.len();
+    }
+
+    let mut blocks = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].is_blank() {
+            index += 1;
+            continue;
+        }
+        let last = last_line_of_block(&lines, index);
+        let in_block = || lines[index..=last].iter().filter(|line| !line.is_blank());
+        let has_code = in_block().any(|line| !line.text.trim().starts_with("//"));
+        let is_functions = in_block().any(|line| is_functions_marker(line.text));
         blocks.push(Block {
-            range: start..previous_end,
+            range: lines[index].start..lines[last].end(),
             is_query: has_code && !is_functions,
             is_functions,
         });
+        index = last + 1;
     }
     blocks
 }
@@ -163,6 +269,55 @@ mod tests {
     fn carriage_returns_do_not_end_up_in_the_query() {
         let text = "T1\r\n| take 1\r\n\r\nT2";
         assert_eq!(query_at(text, "take"), Some("T1\r\n| take 1"));
+    }
+
+    #[test]
+    fn a_blank_line_inside_brackets_does_not_end_the_query() {
+        let text = "print (1\n\n+ 2)\n\nprint 3";
+        assert_eq!(query_at(text, "+ 2"), Some("print (1\n\n+ 2)"));
+        assert_eq!(query_at(text, "print 3"), Some("print 3"));
+        assert_eq!(
+            query_at(text, "\n\n+"),
+            Some("print (1\n\n+ 2)"),
+            "a cursor on the gap is in the query that holds it"
+        );
+    }
+
+    #[test]
+    fn a_cursor_on_a_blank_line_after_a_closed_bracket_belongs_to_the_query_above() {
+        let text = "f(1)\n\n\ng(2)";
+        assert_eq!(
+            query_range_at(text, 6).map(|range| &text[range]),
+            Some("f(1)")
+        );
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BlockCase {
+        name: String,
+        text: String,
+        queries: Vec<[usize; 2]>,
+    }
+
+    /// The same cases the language server is tested with, through the line each lens is above.
+    #[test]
+    fn the_shared_block_cases_find_the_queries_the_server_finds() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fork-docs/samples/query-blocks.json"
+        );
+        let cases: Vec<BlockCase> =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("the cases file reads"))
+                .expect("the cases file parses");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let line_of = |offset: usize| case.text[..offset].matches('\n').count();
+            let found: Vec<[usize; 2]> = query_blocks(&case.text)
+                .into_iter()
+                .map(|range| [line_of(range.start), line_of(range.end)])
+                .collect();
+            assert_eq!(found, case.queries, "{}", case.name);
+        }
     }
 
     #[test]
