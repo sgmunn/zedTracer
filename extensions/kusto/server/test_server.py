@@ -83,6 +83,25 @@ class LanguageServerTest(unittest.TestCase):
         )
         return self.receive()["result"]
 
+    def test_declare_is_offered_where_a_statement_can_start(self):
+        self.open_document("")
+        declare = next(item for item in self.complete(0, 0) if item["label"] == "declare")
+        self.assertEqual(declare["kind"], 14, "a keyword")
+        self.assertEqual(declare["textEdit"]["newText"], "declare")
+
+        self.open_document("let a = 1;\nd")
+        self.assertIn("declare", [item["label"] for item in self.complete(1, 1)])
+        self.assertIn("let", [item["label"] for item in self.complete(1, 1)])
+
+        self.open_document("declare query_parameters(a:string);\nd")
+        self.assertIn("declare", [item["label"] for item in self.complete(1, 1)])
+
+    def test_declare_is_not_offered_in_the_middle_of_a_query(self):
+        self.open_document("StormEvents\n| where State == ")
+        self.assertNotIn("declare", [item["label"] for item in self.complete(1, 17)])
+        self.open_document("StormEvents\n| ")
+        self.assertNotIn("declare", [item["label"] for item in self.complete(1, 2)])
+
     def test_local_name_and_function_completion_replace_prefix(self):
         diagnostics = self.open_document("let threshold = 5;\nStormEvents | where th")
         self.assertIsInstance(diagnostics, list)
@@ -1285,6 +1304,85 @@ class ParameterLensTest(unittest.TestCase):
             if (lens["command"].get("arguments") or [None])[0] == "kusto::SelectParameterProfile"
         ]
         self.assertEqual(titles, ["Params: A + file: raid", "Params: A"])
+
+    NAMES = (
+        "active: A\nprofiles:\n  A:\n    raid: x\n    count: 5\n  B:\n    raid: y\n    since: 2024-01-01\n"
+    )
+
+    def complete(self, line, character):
+        self.next_request += 1
+        request_id = self.next_request
+        self.send(
+            request_id,
+            "textDocument/completion",
+            {"textDocument": {"uri": self.uri}, "position": {"line": line, "character": character}},
+        )
+        return self.receive_where(
+            lambda message: message.get("id") == request_id and "result" in message
+        )["result"]
+
+    def names_offered(self, text, line, character):
+        self.open_document(text)
+        items = self.complete(line, character)
+        return sorted(items, key=lambda item: item["sortText"]), items
+
+    def test_declaring_offers_the_parameters_the_file_and_the_profiles_have(self):
+        self.write(self.shared, self.NAMES)
+        text = '//:setParam("extra", "x")\n\ndeclare query_parameters('
+        ordered, _ = self.names_offered(text, 2, 25)
+        self.assertEqual(
+            [(item["label"], item["detail"]) for item in ordered],
+            [
+                ("extra", "Given a value in this file with // :setParam"),
+                ("count", "A value in the profile A"),
+                ("raid", "A value in the profile A"),
+                ("since", "A value in the profile B"),
+            ],
+            "the file's first, then the active profile's, then the other profiles'",
+        )
+        self.assertEqual(ordered[0]["textEdit"]["newText"], "extra")
+        self.assertEqual(ordered[0]["kind"], 6)
+
+    def test_a_parameter_the_declaration_has_is_not_offered_again(self):
+        self.write(self.shared, self.NAMES)
+        ordered, _ = self.names_offered("declare query_parameters(raid:string, co", 0, 40)
+        self.assertEqual([item["label"] for item in ordered], ["count", "since"])
+        self.assertEqual(
+            ordered[0]["textEdit"]["range"],
+            {"start": {"line": 0, "character": 38}, "end": {"line": 0, "character": 40}},
+            "it replaces what was typed",
+        )
+
+    def test_a_name_that_is_being_edited_is_replaced_whole(self):
+        self.write(self.shared, self.NAMES)
+        ordered, _ = self.names_offered("declare query_parameters(raid:string,\n    count: long)", 1, 6)
+        self.assertEqual([item["label"] for item in ordered], ["count", "since"])
+        self.assertEqual(
+            ordered[0]["textEdit"]["range"],
+            {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 9}},
+        )
+
+    def test_the_parameters_are_not_offered_where_no_name_is_written(self):
+        self.write(self.shared, self.NAMES)
+        for text, line, character in [
+            ("declare query_parameters(raid:", 0, 30),
+            ("declare query_parameters(raid:string = foo(1, ", 0, 46),
+            ("declare query_parameters(raid:string = 'a, ", 0, 44),
+            ("declare query_parameters(raid:string);\nco", 1, 2),
+            ("// declare query_parameters(\nT", 0, 28),
+            ('print "declare query_parameters("\n| extend a = ', 1, 13),
+            ("let a = (x:long) { x };\nprint a(", 1, 8),
+        ]:
+            _, items = self.names_offered(text, line, character)
+            self.assertNotIn("count", [item["label"] for item in items], text)
+
+    def test_without_anything_to_offer_the_library_answers(self):
+        _, items = self.names_offered("declare query_parameters(", 0, 25)
+        self.assertEqual([item["label"] for item in items], [":", "["])
+
+        self.write(self.shared, self.NAMES)
+        _, items = self.names_offered("declare query_parameters(raid:string, count:long, since:datetime, ", 0, 66)
+        self.assertEqual([item["label"] for item in items], [":", "["], "everything is already declared")
 
     def test_the_shared_directive_cases_give_the_parameters_the_editor_computes(self):
         cases = json.loads(PARAMETER_DIRECTIVE_CASES.read_text())

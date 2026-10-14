@@ -16,6 +16,9 @@ internal sealed record ParameterProfiles(string? Active, IReadOnlyList<Parameter
 
 internal sealed record DeclaredParameter(string Name, bool HasDefault);
 
+/// <summary>A parameter a profile or the file has a value for, that a declaration may name. `Order` sorts the nearer sources first.</summary>
+internal sealed record KnownParameter(string Name, string Detail, string Order);
+
 /// <summary>
 /// The query parameter profiles that apply to a query file, which the editor reads the same way
 /// when it runs the query: the `.parameters.yaml` beside the file when there is one, and otherwise
@@ -270,6 +273,117 @@ internal static partial class QueryParameters
             }
         }
         return declared;
+    }
+
+    /// <summary>
+    /// Where a new parameter name is being written in a `declare query_parameters(...)` at `offset`:
+    /// the start and end of the name typed so far, or null when the cursor is elsewhere (after a
+    /// colon, in a default value, outside the parentheses).
+    /// </summary>
+    public static (int Start, int End)? NameAt(string query, int offset)
+    {
+        var text = WithoutCommentsAndStrings(query);
+        var limit = Math.Clamp(offset, 0, text.Length);
+        var afterOpeningParenthesis = Declaration().Matches(text).Select(found => found.Index + found.Length).ToHashSet();
+        var depth = 0;
+        var segmentStart = 0;
+        for (var at = 0; at < limit; at++)
+        {
+            if (depth == 0)
+            {
+                if (afterOpeningParenthesis.Contains(at + 1))
+                {
+                    depth = 1;
+                    segmentStart = at + 1;
+                }
+                continue;
+            }
+            switch (text[at])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth--;
+                    break;
+                case ',' when depth == 1:
+                    segmentStart = at + 1;
+                    break;
+            }
+        }
+        if (depth != 1 || PartialName().Match(text[segmentStart..limit]) is not { Success: true } typed)
+            return null;
+        var end = limit;
+        while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '_'))
+            end++;
+        return (limit - typed.Groups[1].Length, end);
+    }
+
+    [GeneratedRegex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)?$")]
+    private static partial Regex PartialName();
+
+    /// <summary>The text with the inside of comments and string literals blanked, so that positions stay the same.</summary>
+    private static string WithoutCommentsAndStrings(string query)
+    {
+        var blanked = new System.Text.StringBuilder(query);
+        char? quote = null;
+        for (var at = 0; at < query.Length; at++)
+        {
+            var character = query[at];
+            if (quote is { } open)
+            {
+                if (character == '\\' && at + 1 < query.Length)
+                {
+                    blanked[at] = ' ';
+                    blanked[++at] = ' ';
+                }
+                else if (character == open)
+                    quote = null;
+                else if (character is not ('\n' or '\r'))
+                    blanked[at] = ' ';
+            }
+            else if (character == '/' && at + 1 < query.Length && query[at + 1] == '/')
+            {
+                for (; at < query.Length && query[at] != '\n'; at++)
+                {
+                    if (query[at] != '\r')
+                        blanked[at] = ' ';
+                }
+                at--;
+            }
+            else if (character is '\'' or '"')
+            {
+                quote = character;
+            }
+        }
+        return blanked.ToString();
+    }
+
+    /// <summary>
+    /// The parameters worth offering when one is declared: the ones the file gives a value to with
+    /// `// :setParam`, then those the active profile has, then those only another profile has.
+    /// </summary>
+    public static List<KnownParameter> Known(ParameterProfiles profiles, IReadOnlyDictionary<string, string> givenByFile)
+    {
+        var known = new List<KnownParameter>();
+        void Add(string name, string detail, string order)
+        {
+            if (known.All(existing => existing.Name != name))
+                known.Add(new KnownParameter(name, detail, order));
+        }
+        foreach (var name in givenByFile.Keys)
+            Add(name, "Given a value in this file with // :setParam", "0");
+        if (profiles.ActiveProfile is { } active)
+        {
+            foreach (var name in active.Values.Keys)
+                Add(name, $"A value in the profile {active.Name}", "1");
+        }
+        foreach (var profile in profiles.Profiles)
+        {
+            foreach (var name in profile.Values.Keys)
+                Add(name, $"A value in the profile {profile.Name}", "2");
+        }
+        return known;
     }
 
     private static bool HasDefault(string segment)

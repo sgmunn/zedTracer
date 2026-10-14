@@ -204,6 +204,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
 
         if (CompleteDirective(document, offset) is { } directives)
             return directives;
+        var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
+        if (uri is not null && CompleteParameterName(uri, document, offset) is { } names)
+            return names;
 
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
         var completions = new KustoCodeService(queryText, GlobalsAt(document, offset))
@@ -211,6 +214,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         var start = Math.Clamp(queryStart + completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
         var range = new { start = document.PositionAt(start), end = document.PositionAt(end) };
+
+        // The library has no `declare` among the words a statement may start with, only what follows it.
+        var statementStart = completions.Items.FirstOrDefault(item => item.Kind.ToString() == "QueryPrefix" && item.DisplayText == "let");
 
         return completions.Items
             .Select(item =>
@@ -230,6 +236,58 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                     insertTextFormat = hasAfterText ? 2 : 1,
                     textEdit = new { range, newText = insertedText }
                 };
+            })
+            .Concat(statementStart is null
+                ? []
+                : [(object)new
+                {
+                    label = "declare",
+                    kind = 14,
+                    sortText = statementStart.OrderText,
+                    filterText = "declare",
+                    insertTextFormat = 1,
+                    textEdit = new { range, newText = "declare" }
+                }])
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Inside `declare query_parameters(...)`, where a name is written: the parameters the file or
+    /// a parameter profile has a value for, except those the declaration already has. Null
+    /// elsewhere, and when there is nothing to offer, so the library's own items are used.
+    /// </summary>
+    private object[]? CompleteParameterName(string uri, DocumentSnapshot document, int offset)
+    {
+        var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
+        if (QueryParameters.NameAt(queryText, offset - queryStart) is not var (nameStart, nameEnd))
+            return null;
+        var block = QueryBlocks.At(QueryBlocks.Find(document.Text), offset);
+        var givenByFile = ConnectionDirectives.StateBefore(document.Text, block?.End ?? offset, schema.Defaults).Parameters;
+        var profiles = QueryParameters.Load(QueryParameters.FilesFor(uri, workspaceFolders)).Profiles;
+        var declared = QueryParameters.Declared(queryText[..nameStart] + queryText[nameEnd..])
+            .Select(parameter => parameter.Name)
+            .ToHashSet();
+        var offered = QueryParameters.Known(profiles, givenByFile)
+            .Where(parameter => !declared.Contains(parameter.Name))
+            .ToList();
+        if (offered.Count == 0)
+            return null;
+
+        var range = new
+        {
+            start = document.PositionAt(queryStart + nameStart),
+            end = document.PositionAt(queryStart + nameEnd)
+        };
+        return offered
+            .Select(parameter => (object)new
+            {
+                label = parameter.Name,
+                kind = 6,
+                detail = parameter.Detail,
+                sortText = parameter.Order + parameter.Name,
+                filterText = parameter.Name,
+                insertTextFormat = 1,
+                textEdit = new { range, newText = parameter.Name }
             })
             .ToArray();
     }
