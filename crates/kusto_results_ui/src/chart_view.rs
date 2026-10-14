@@ -22,13 +22,15 @@ use kusto_results::chart_scene::{
     Anchor, ChartScene, EstimatedText, Hover, Item, Rect, Role, SvgStyle, TextMeasure,
     VerticalAnchor, ViewState,
 };
-use kusto_results::{Chart, ChartOptions, ResultSet};
+use kusto_results::{Chart, ChartDefaults, ChartOptions, ResultSet};
+use settings::{Settings as _, SettingsStore};
 use ui::{Button, IconButton, IconName, IconSize, Tooltip, prelude::*};
 use workspace::notifications::DetachAndPromptErr as _;
 
 use crate::actor_colours::theme_actor_palette;
 use crate::chart_editor::{ChartEditor, ChartEditorEvent, ColumnInfo, Effective};
 use crate::chart_export;
+use crate::results_settings::ResultsSettings;
 
 const TOOLTIP_OFFSET: Pixels = px(12.);
 const TOOLTIP_MAXIMUM_NAME_WIDTH: Pixels = px(240.);
@@ -440,6 +442,9 @@ pub(crate) struct ChartView {
     data: DataState,
     _data_task: Option<Task<()>>,
     painted: Rc<RefCell<Painted>>,
+    /// What the user's settings say for the options the chart leaves open.
+    defaults: ChartDefaults,
+    _settings_subscription: Subscription,
     editing: bool,
     editor: Option<Entity<ChartEditor>>,
     _editor_subscription: Option<Subscription>,
@@ -454,9 +459,10 @@ impl ChartView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let defaults = ResultsSettings::get_global(cx).chart.clone();
         let painted = Rc::new(RefCell::new(Painted {
             data: None,
-            options: chart.options.clone(),
+            options: chart.options.with_defaults(&defaults),
             view: ViewState::default(),
             generation: 0,
             series_colors: 0,
@@ -472,12 +478,29 @@ impl ChartView {
             data: DataState::Building,
             _data_task: None,
             painted,
+            defaults,
+            _settings_subscription: cx
+                .observe_global::<SettingsStore>(|this, cx| this.settings_changed(cx)),
             editing: false,
             editor: None,
             _editor_subscription: None,
         };
         view.build_data(window, cx);
         view
+    }
+
+    /// Draws the chart again when the defaults of the settings it leaves open have changed.
+    fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let defaults = ResultsSettings::get_global(cx).chart.clone();
+        if defaults == self.defaults {
+            return;
+        }
+        self.defaults = defaults;
+        let mut painted = self.painted.borrow_mut();
+        painted.options = self.chart.options.with_defaults(&self.defaults);
+        painted.generation += 1;
+        drop(painted);
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -530,19 +553,19 @@ impl ChartView {
     /// the theme when the mode is automatic. The picture is laid out at the size of the chart on
     /// the screen and drawn away from the window.
     pub(crate) fn copy_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (data, view, area, series_colors) = {
+        let (data, view, area, series_colors, options) = {
             let painted = self.painted.borrow();
             (
                 painted.data.clone(),
                 painted.view.clone(),
                 painted.area.size,
                 painted.series_colors,
+                painted.options.clone(),
             )
         };
         let Some(data) = data else {
             return;
         };
-        let options = self.chart.options.clone();
         let (width, height) = (f32::from(area.width), f32::from(area.height));
         let (width, height) = if width < 100.0 || height < 100.0 {
             (800.0, 450.0)
@@ -628,7 +651,7 @@ impl ChartView {
             table_changed || DataInputs::of(&before.options) != DataInputs::of(&chart.options);
         {
             let mut painted = self.painted.borrow_mut();
-            painted.options = chart.options.clone();
+            painted.options = chart.options.with_defaults(&self.defaults);
             painted.generation += 1;
             painted.hover = None;
         }

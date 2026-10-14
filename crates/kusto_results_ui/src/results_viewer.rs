@@ -602,7 +602,8 @@ impl ResultsViewer {
             _structured_events_subscription: None,
             _reload_subscription: reload,
         };
-        if !item.read(cx).result.charts.is_empty() {
+        if !item.read(cx).result.charts.is_empty() && ResultsSettings::get_global(cx).open_on_chart
+        {
             viewer.mode = ViewMode::Chart(0);
         }
         viewer.show(&item, window, cx);
@@ -2518,8 +2519,24 @@ mod tests {
         Arc<FakeFs>,
         &'a mut gpui::VisualTestContext,
     ) {
+        open_one_with_settings(cx, name, text, "{}").await
+    }
+
+    async fn open_one_with_settings<'a>(
+        cx: &'a mut TestAppContext,
+        name: &'static str,
+        text: String,
+        user_settings: &str,
+    ) -> (
+        Entity<ResultsViewer>,
+        Arc<FakeFs>,
+        &'a mut gpui::VisualTestContext,
+    ) {
         cx.update(|cx| {
-            let settings_store = settings::SettingsStore::test(cx);
+            let mut settings_store = settings::SettingsStore::test(cx);
+            settings_store
+                .set_user_settings(user_settings, cx)
+                .expect("the user settings parse");
             cx.set_global(settings_store);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             AppState::test(cx);
@@ -2737,6 +2754,73 @@ mod tests {
             colours.len() > 10,
             "lines, text and a legend were drawn: {} colours",
             colours.len()
+        );
+    }
+
+    #[gpui::test]
+    async fn settings_fill_what_a_chart_leaves_open_and_are_not_saved_into_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, fs, cx) = open_one_with_settings(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+            r#"{ "kusto_results": { "chart": { "legend": "none" } } }"#,
+        )
+        .await;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = chart_view(&viewer, cx);
+        let scene = view.read_with(cx, |view, _| view.scene()).expect("drawn");
+        assert!(scene.legend.is_empty(), "the setting hides the legend");
+
+        // The setting changes while the chart is open: the legend comes back.
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "chart": { "legend": "right" } } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let scene = view.read_with(cx, |view, _| view.scene()).expect("drawn");
+        assert_eq!(scene.legend.len(), 2);
+
+        // Editing something else saves that, and not the default.
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        editor.update(cx, |editor, cx| {
+            editor.edit(|chart| chart.options.title = Some("T".into()), cx)
+        });
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert_eq!(reread.charts[0].options.legend_position, None);
+        assert_eq!(reread.charts[0].options.title.as_deref(), Some("T"));
+    }
+
+    #[gpui::test]
+    async fn a_result_opens_on_its_data_when_the_settings_say_so(cx: &mut TestAppContext) {
+        let (viewer, _fs, cx) = open_one_with_settings(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+            r#"{ "kusto_results": { "chart": { "open_on_chart": false } } }"#,
+        )
+        .await;
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data
+        );
+        assert!(
+            cx.debug_bounds("chart-tab-0").is_some(),
+            "the chart is one tab away"
         );
     }
 

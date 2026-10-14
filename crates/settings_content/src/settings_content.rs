@@ -1463,6 +1463,125 @@ pub struct KustoResultsSettingsContent {
 
     /// Where the code behind a row of a trace is looked for.
     pub code: Option<KustoCodeSettingsContent>,
+
+    /// How the charts of a result look when a chart does not say.
+    pub chart: Option<KustoChartSettingsContent>,
+}
+
+/// How the charts of a result look when a chart does not say itself. What a chart saves in its
+/// result file wins over these.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct KustoChartSettingsContent {
+    /// Whether a result that has a chart opens on it rather than on its data.
+    ///
+    /// Default: true
+    pub open_on_chart: Option<bool>,
+
+    /// Where the legend goes: "auto" picks the side or the bottom by the room there is.
+    ///
+    /// Default: "auto"
+    pub legend: Option<KustoChartLegend>,
+
+    /// Whether the value of each bar is written on it.
+    ///
+    /// Default: false
+    pub show_values: Option<bool>,
+
+    /// Whether the gridlines are drawn.
+    ///
+    /// Default: true
+    pub show_gridlines: Option<bool>,
+
+    /// The size of the text of a chart: "auto" follows the size of the chart.
+    ///
+    /// Default: "auto"
+    pub text_size: Option<KustoChartTextSize>,
+
+    /// The shape of a chart: "fill" takes the room it is given, the others keep a ratio of width
+    /// to height.
+    ///
+    /// Default: "fill"
+    pub aspect_ratio: Option<KustoChartAspectRatio>,
+}
+
+/// Where the legend of a chart goes.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KustoChartLegend {
+    Auto,
+    Right,
+    Bottom,
+    None,
+}
+
+/// The size of the text of a chart.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KustoChartTextSize {
+    Auto,
+    ExtraSmall,
+    Small,
+    Medium,
+    Large,
+    ExtraLarge,
+}
+
+/// The ratio of width to height of a chart.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+pub enum KustoChartAspectRatio {
+    #[serde(rename = "fill")]
+    Fill,
+    #[serde(rename = "16:9")]
+    Wide,
+    #[serde(rename = "3:2")]
+    ThreeByTwo,
+    #[serde(rename = "4:3")]
+    FourByThree,
+    #[serde(rename = "1:1")]
+    Square,
+    #[serde(rename = "3:4")]
+    ThreeByFour,
+    #[serde(rename = "2:3")]
+    TwoByThree,
+    #[serde(rename = "9:16")]
+    Tall,
 }
 
 /// Where the code behind a row of a trace is looked for.

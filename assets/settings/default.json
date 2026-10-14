@@ -190,6 +190,22 @@
       // Arrows drawn before the rest are left out. A loop counts as one.
       "max_arrows": 300,
     },
+    // How the charts of a result look when a chart does not say itself. What a chart saves in its
+    // result file wins over these.
+    "chart": {
+      // Open a result that has a chart on the chart rather than on its data.
+      "open_on_chart": true,
+      // Where the legend goes: "auto", "right", "bottom" or "none".
+      "legend": "auto",
+      // Write the value of each bar on it.
+      "show_values": false,
+      // Draw gridlines.
+      "show_gridlines": true,
+      // The size of the text: "auto", "extra_small", "small", "medium", "large" or "extra_large".
+      "text_size": "auto",
+      // The shape of the chart: "fill", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3" or "9:16".
+      "aspect_ratio": "fill",
+    },
   },
   // Markdown preview settings
   "markdown_preview": {

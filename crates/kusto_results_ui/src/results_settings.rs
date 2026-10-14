@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::{Hsla, Rgba};
-use kusto_results::Table;
+use kusto_results::chart::{AspectRatio, LegendPosition, TextSize};
+use kusto_results::{ChartDefaults, Table};
 use kusto_results::sequence::SequenceOptions;
 use kusto_results::timeline::TimelineOptions;
 use kusto_results::waterfall::WaterfallOptions;
@@ -28,6 +29,10 @@ pub struct ResultsSettings {
     pub waterfall: WaterfallOptions,
     /// The folders that hold the checkouts the code behind a row is looked for in.
     pub code_roots: Vec<PathBuf>,
+    /// How a chart looks when it does not say.
+    pub chart: ChartDefaults,
+    /// Whether a result that has a chart opens on it rather than on its data.
+    pub open_on_chart: bool,
 }
 
 impl ResultsSettings {
@@ -91,6 +96,45 @@ fn waterfall_options(content: &settings::SettingsContent) -> WaterfallOptions {
             .and_then(|results| results.sequence.as_ref())
             .and_then(|sequence| sequence.generic_actor_suffixes.clone())
             .unwrap_or(defaults.generic_actor_suffixes),
+    }
+}
+
+fn chart_defaults(content: &settings::SettingsContent) -> ChartDefaults {
+    let Some(chart) = content
+        .kusto_results
+        .as_ref()
+        .and_then(|results| results.chart.as_ref())
+    else {
+        return ChartDefaults::default();
+    };
+    ChartDefaults {
+        legend_position: chart.legend.map(|legend| match legend {
+            settings::KustoChartLegend::Auto => LegendPosition::Auto,
+            settings::KustoChartLegend::Right => LegendPosition::Right,
+            settings::KustoChartLegend::Bottom => LegendPosition::Bottom,
+            settings::KustoChartLegend::None => LegendPosition::None,
+        }),
+        show_values: chart.show_values,
+        x_show_grid: chart.show_gridlines,
+        y_show_grid: chart.show_gridlines,
+        text_size: chart.text_size.map(|size| match size {
+            settings::KustoChartTextSize::Auto => TextSize::Auto,
+            settings::KustoChartTextSize::ExtraSmall => TextSize::ExtraSmall,
+            settings::KustoChartTextSize::Small => TextSize::Small,
+            settings::KustoChartTextSize::Medium => TextSize::Medium,
+            settings::KustoChartTextSize::Large => TextSize::Large,
+            settings::KustoChartTextSize::ExtraLarge => TextSize::ExtraLarge,
+        }),
+        aspect_ratio: chart.aspect_ratio.map(|ratio| match ratio {
+            settings::KustoChartAspectRatio::Fill => AspectRatio::Fill,
+            settings::KustoChartAspectRatio::Wide => AspectRatio::Wide,
+            settings::KustoChartAspectRatio::ThreeByTwo => AspectRatio::ThreeByTwo,
+            settings::KustoChartAspectRatio::FourByThree => AspectRatio::FourByThree,
+            settings::KustoChartAspectRatio::Square => AspectRatio::Square,
+            settings::KustoChartAspectRatio::ThreeByFour => AspectRatio::ThreeByFour,
+            settings::KustoChartAspectRatio::TwoByThree => AspectRatio::TwoByThree,
+            settings::KustoChartAspectRatio::Tall => AspectRatio::Tall,
+        }),
     }
 }
 
@@ -213,6 +257,13 @@ impl Settings for ResultsSettings {
                 .unwrap_or_else(|| TimelineOptions::default().structural_messages),
             waterfall: waterfall_options(content),
             code_roots: code_roots(content),
+            chart: chart_defaults(content),
+            open_on_chart: content
+                .kusto_results
+                .as_ref()
+                .and_then(|results| results.chart.as_ref())
+                .and_then(|chart| chart.open_on_chart)
+                .unwrap_or(true),
             sequence: sequence_options(
                 content
                     .kusto_results
@@ -269,6 +320,7 @@ mod tests {
             structural_messages: None,
             waterfall: None,
             code: None,
+            chart: None,
         });
         let settings = ResultsSettings::from_settings(&content);
         assert!(settings.severity_tint(1).is_some());
@@ -338,6 +390,39 @@ mod tests {
             assert_eq!(changed.wrapper_markers, vec!["*Entry".to_string()]);
             assert_eq!(changed.collapse_repeats, defaults.collapse_repeats);
             assert_eq!(changed.routine_warnings, defaults.routine_warnings);
+        });
+    }
+
+    #[gpui::test]
+    fn chart_settings_start_from_the_defaults_and_can_be_changed(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            let defaults = ResultsSettings::get_global(cx);
+            assert!(defaults.open_on_chart, "a chart is what the user came for");
+            assert_eq!(defaults.chart.legend_position, Some(LegendPosition::Auto));
+            assert_eq!(defaults.chart.show_values, Some(false));
+            assert_eq!(defaults.chart.x_show_grid, Some(true));
+
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{ "kusto_results": { "chart": {
+                            "open_on_chart": false, "legend": "bottom", "show_values": true,
+                            "show_gridlines": false, "text_size": "extra_large", "aspect_ratio": "16:9"
+                        } } }"#,
+                        cx,
+                    )
+                    .expect("the user settings parse");
+            });
+            let changed = ResultsSettings::get_global(cx);
+            assert!(!changed.open_on_chart);
+            assert_eq!(changed.chart.legend_position, Some(LegendPosition::Bottom));
+            assert_eq!(changed.chart.show_values, Some(true));
+            assert_eq!(changed.chart.x_show_grid, Some(false));
+            assert_eq!(changed.chart.y_show_grid, Some(false));
+            assert_eq!(changed.chart.text_size, Some(TextSize::ExtraLarge));
+            assert_eq!(changed.chart.aspect_ratio, Some(AspectRatio::Wide));
         });
     }
 

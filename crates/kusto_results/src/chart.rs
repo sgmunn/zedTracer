@@ -590,6 +590,33 @@ fn put<T: Serialize>(map: &mut Map<String, Value>, key: &str, value: &Option<T>)
     }
 }
 
+/// What a chart looks like when its own options say nothing, from the user's settings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartDefaults {
+    pub legend_position: Option<LegendPosition>,
+    pub show_values: Option<bool>,
+    pub x_show_grid: Option<bool>,
+    pub y_show_grid: Option<bool>,
+    pub text_size: Option<TextSize>,
+    pub aspect_ratio: Option<AspectRatio>,
+}
+
+impl ChartOptions {
+    /// The options with the defaults filled in where this chart has none of its own. What the
+    /// chart saves is not changed: a default is not written to the file.
+    pub fn with_defaults(&self, defaults: &ChartDefaults) -> ChartOptions {
+        ChartOptions {
+            legend_position: self.legend_position.or(defaults.legend_position),
+            show_values: self.show_values.or(defaults.show_values),
+            x_show_grid: self.x_show_grid.or(defaults.x_show_grid),
+            y_show_grid: self.y_show_grid.or(defaults.y_show_grid),
+            text_size: self.text_size.or(defaults.text_size),
+            aspect_ratio: self.aspect_ratio.or(defaults.aspect_ratio),
+            ..self.clone()
+        }
+    }
+}
+
 /// One chart of a result: which table it shows, what it is called, and how it looks.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Chart {
@@ -736,6 +763,34 @@ mod tests {
         let list = json!([{"options": {"type": "Line"}}, {"name": "no options"}]);
         assert_eq!(Chart::list_from_value(list), None);
         assert_eq!(Chart::list_from_value(json!({"options": {}})), None);
+    }
+
+    #[test]
+    fn a_default_fills_what_the_chart_leaves_open_and_never_overrides_it() {
+        let defaults = ChartDefaults {
+            legend_position: Some(LegendPosition::Bottom),
+            show_values: Some(true),
+            x_show_grid: Some(false),
+            text_size: Some(TextSize::Large),
+            ..ChartDefaults::default()
+        };
+        let mut options = ChartOptions::new(ChartType::Column);
+        options.legend_position = Some(LegendPosition::None);
+        let effective = options.with_defaults(&defaults);
+        assert_eq!(
+            effective.legend_position,
+            Some(LegendPosition::None),
+            "the chart's own wins"
+        );
+        assert_eq!(effective.show_values, Some(true));
+        assert_eq!(effective.x_show_grid, Some(false));
+        assert_eq!(effective.y_show_grid, None);
+        assert_eq!(effective.text_size, Some(TextSize::Large));
+        assert_eq!(
+            options.show_values, None,
+            "the original is untouched, so nothing is saved"
+        );
+        assert_eq!(effective.chart_type, "Column");
     }
 
     #[test]
