@@ -15,6 +15,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
+use crate::chart::Chart;
+
 /// The Kusto type of a column, reduced to the distinctions sorting and filtering need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColumnKind {
@@ -248,6 +250,7 @@ pub struct ResultSet {
     pub client_request_id: Option<String>,
     pub tables: Vec<Table>,
     pub table_views: Vec<TableView>,
+    pub charts: Vec<Chart>,
     /// Properties this crate does not interpret, in file order, written back verbatim.
     pub extra: Vec<ExtraProperty>,
 }
@@ -281,6 +284,13 @@ impl ResultSet {
                     saw_tables = true;
                     result.tables = parse_tables(raw)?;
                 }
+                "charts" => match parse_charts(raw) {
+                    Some(charts) => result.charts = charts,
+                    None => result.extra.push(ExtraProperty {
+                        name,
+                        value: raw.to_owned(),
+                    }),
+                },
                 _ => result.extra.push(ExtraProperty {
                     name,
                     value: raw.to_owned(),
@@ -304,6 +314,13 @@ impl ResultSet {
 
     pub fn table_view(&self, name: &str) -> Option<&TableView> {
         self.table_views.iter().find(|view| view.name == name)
+    }
+
+    /// Replaces the charts. A `charts` property that could not be read as charts is dropped,
+    /// because it would otherwise be written next to the new ones.
+    pub fn set_charts(&mut self, charts: Vec<Chart>) {
+        self.charts = charts;
+        self.extra.retain(|property| property.name != "charts");
     }
 
     /// Stores a view, replacing the saved one with the same name.
@@ -346,6 +363,9 @@ impl Serialize for ResultSet {
         }
         if !self.table_views.is_empty() {
             map.serialize_entry("tableViews", &self.table_views)?;
+        }
+        if !self.charts.is_empty() {
+            map.serialize_entry("charts", &self.charts)?;
         }
         for property in &self.extra {
             map.serialize_entry(&property.name, &property.value)?;
@@ -414,6 +434,11 @@ impl<'de> Deserialize<'de> for FieldList<'de> {
 
         deserializer.deserialize_map(FieldVisitor)
     }
+}
+
+fn parse_charts(raw: &RawValue) -> Option<Vec<Chart>> {
+    let value: Value = serde_json::from_str(raw.get()).ok()?;
+    Chart::list_from_value(value)
 }
 
 fn parse_field<'a, T: Deserialize<'a>>(raw: &'a RawValue, name: &str) -> Result<Option<T>> {
@@ -572,6 +597,55 @@ mod tests {
         result.set_table_view(view(120));
         assert_eq!(result.table_views.len(), 1);
         assert_eq!(result.table_view("PrimaryResult"), Some(&view(120)));
+    }
+
+    #[test]
+    fn charts_are_read_and_written_between_the_known_properties_and_the_extras() {
+        let text = r#"{"tables":[{"name":"t","columns":[{"name":"a","type":"long"}],"rows":[[1]]}],
+            "later":1,
+            "charts":[{"options":{"type":"Column","title":"T"}},
+                      {"name":"n","tableName":"t","options":{"type":"Line","unknown":[1]}}]}"#;
+        let result = ResultSet::from_json(text).unwrap();
+        assert_eq!(result.charts.len(), 2);
+        assert_eq!(result.charts[0].options.title.as_deref(), Some("T"));
+        assert!(
+            result
+                .extra
+                .iter()
+                .all(|property| property.name != "charts")
+        );
+
+        let written = result.to_json().unwrap();
+        let reread = ResultSet::from_json(&written).unwrap();
+        assert_eq!(reread, result);
+        assert!(written.find(r#""charts""#) < written.find(r#""later""#));
+    }
+
+    #[test]
+    fn charts_that_cannot_be_read_are_written_back_untouched() {
+        let text = r#"{"tables":[{"name":"t","columns":[{"name":"a","type":"long"}],"rows":[[1]]}],
+            "charts":[{"name":"no options"}]}"#;
+        let result = ResultSet::from_json(text).unwrap();
+        assert!(result.charts.is_empty());
+        let written = result.to_json().unwrap();
+        assert!(written.contains(r#""no options""#));
+        assert_eq!(ResultSet::from_json(&written).unwrap(), result);
+    }
+
+    #[test]
+    fn setting_charts_replaces_charts_that_could_not_be_read() {
+        let text = r#"{"tables":[{"name":"t","columns":[{"name":"a","type":"long"}],"rows":[[1]]}],
+            "charts":"junk"}"#;
+        let mut result = ResultSet::from_json(text).unwrap();
+        result.set_charts(vec![Chart::new(crate::chart::ChartOptions::new(
+            crate::chart::ChartType::Bar,
+        ))]);
+        let written = result.to_json().unwrap();
+        assert_eq!(written.matches(r#""charts""#).count(), 1);
+        assert!(!written.contains("junk"));
+
+        result.set_charts(Vec::new());
+        assert!(!result.to_json().unwrap().contains(r#""charts""#));
     }
 
     #[test]

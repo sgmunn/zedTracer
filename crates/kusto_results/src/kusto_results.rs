@@ -6,6 +6,7 @@
 
 pub mod activity;
 pub mod activity_tree;
+pub mod chart;
 pub mod export;
 pub mod failures;
 pub mod filter;
@@ -20,6 +21,7 @@ pub mod typed;
 pub mod view;
 pub mod waterfall;
 
+pub use chart::{Chart, ChartOptions, ChartType};
 pub use result::{
     Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, NoResultData, ResultSet, Table,
     TableView,
