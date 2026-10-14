@@ -9,7 +9,7 @@ use std::fmt;
 
 use chrono::DateTime;
 
-use crate::chart::{ChartOptions, ChartType, SortOrder};
+use crate::chart::{Aggregation, ChartOptions, ChartType, SortOrder};
 use crate::chart_scale;
 use crate::result::{Cell, ColumnKind, Table};
 
@@ -231,8 +231,21 @@ impl ChartData {
                 .map(|old| std::mem::take(&mut categories_in_order.labels[*old]))
                 .collect();
         }
+        let mut rows_sharing_x = 0;
         for series in &mut series {
             series.points.sort_by(|a, b| a.x.total_cmp(&b.x));
+            match options.aggregation {
+                Some(aggregation) => {
+                    series.points = combine_same_x(std::mem::take(&mut series.points), aggregation)
+                }
+                None => {
+                    rows_sharing_x += series
+                        .points
+                        .windows(2)
+                        .filter(|pair| pair[0].x == pair[1].x)
+                        .count()
+                }
+            }
             if options.accumulate == Some(true) {
                 let mut total = 0.0;
                 for point in &mut series.points {
@@ -240,6 +253,13 @@ impl ChartData {
                     point.y = total;
                 }
             }
+        }
+
+        if rows_sharing_x > 0 {
+            notes.push(format!(
+                "{rows_sharing_x} {} the same X as another row of their series, so a line goes up and down there. Choose how to combine them with Edit chart.",
+                if rows_sharing_x == 1 { "row has" } else { "rows have" }
+            ));
         }
 
         let total_series = series.len();
@@ -306,6 +326,36 @@ impl ChartData {
                 .flat_map(|series| series.points.iter().map(|point| point.y)),
         )
     }
+}
+
+/// One point for each X of a series, from the points that share it. `points` are in order of X.
+/// The point keeps the row of the first of them.
+fn combine_same_x(points: Vec<Point>, aggregation: Aggregation) -> Vec<Point> {
+    let mut combined = Vec::with_capacity(points.len());
+    let mut start = 0;
+    while start < points.len() {
+        let x = points[start].x;
+        let mut end = start + 1;
+        while end < points.len() && points[end].x == x {
+            end += 1;
+        }
+        let group = &points[start..end];
+        let values = group.iter().map(|point| point.y);
+        let y = match aggregation {
+            Aggregation::Sum => values.sum(),
+            Aggregation::Average => values.sum::<f64>() / group.len() as f64,
+            Aggregation::Min => values.fold(f64::INFINITY, f64::min),
+            Aggregation::Max => values.fold(f64::NEG_INFINITY, f64::max),
+            Aggregation::Count => group.len() as f64,
+        };
+        combined.push(Point {
+            x,
+            y,
+            row: group[0].row,
+        });
+        start = end;
+    }
+    combined
 }
 
 fn extent(values: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
@@ -836,6 +886,92 @@ mod tests {
             ChartData::build(&events(), &only_text),
             Err(ChartProblem::NoValueColumn)
         );
+    }
+
+    /// The shape of a real result: several rows for one process at one time.
+    fn repeated_rows() -> Table {
+        table(
+            &[
+                ("Process", "string"),
+                ("When", "datetime"),
+                ("Roots", "long"),
+            ],
+            vec![
+                vec![text("backend"), day(1), Cell::Int(3)],
+                vec![text("backend"), day(1), Cell::Int(113)],
+                vec![text("backend"), day(1), Cell::Int(2)],
+                vec![text("backend"), day(2), Cell::Int(5)],
+                vec![text("frontend"), day(1), Cell::Int(9)],
+                vec![text("frontend"), day(2), Cell::Int(1)],
+            ],
+        )
+    }
+
+    #[test]
+    fn rows_that_share_an_x_are_each_a_point_and_the_chart_says_so() {
+        let data = ChartData::build(
+            &repeated_rows(),
+            &options(json!({"type": "TimeLine", "xColumn": "When", "yColumns": ["Roots"], "seriesColumns": ["Process"]})),
+        )
+        .unwrap();
+        assert_eq!(
+            ys(&data.series[0]),
+            [3.0, 113.0, 2.0, 5.0],
+            "as many points as rows"
+        );
+        assert_eq!(data.notes.len(), 1);
+        assert!(
+            data.notes[0].starts_with("2 rows have the same X"),
+            "{}",
+            data.notes[0]
+        );
+        assert!(data.notes[0].contains("Edit chart"));
+    }
+
+    #[test]
+    fn an_aggregation_makes_one_point_for_each_x() {
+        let build = |aggregation: &str| {
+            ChartData::build(
+                &repeated_rows(),
+                &options(json!({
+                    "type": "TimeLine", "xColumn": "When", "yColumns": ["Roots"],
+                    "seriesColumns": ["Process"], "aggregation": aggregation
+                })),
+            )
+            .unwrap()
+        };
+        assert_eq!(ys(&build("Sum").series[0]), [118.0, 5.0]);
+        assert_eq!(ys(&build("Max").series[0]), [113.0, 5.0]);
+        assert_eq!(ys(&build("Min").series[0]), [2.0, 5.0]);
+        assert_eq!(ys(&build("Count").series[0]), [3.0, 1.0]);
+        let average = build("Average");
+        assert_eq!(ys(&average.series[0]), [118.0 / 3.0, 5.0]);
+        assert_eq!(
+            ys(&average.series[1]),
+            [9.0, 1.0],
+            "other series are untouched"
+        );
+        assert!(
+            average.notes.is_empty(),
+            "nothing to warn about once they are combined"
+        );
+        assert_eq!(
+            average.series[0].points[0].row, 0,
+            "a point keeps the first row it came from"
+        );
+    }
+
+    #[test]
+    fn combining_happens_before_a_running_total() {
+        let data = ChartData::build(
+            &repeated_rows(),
+            &options(json!({
+                "type": "Line", "xColumn": "When", "yColumns": ["Roots"],
+                "seriesColumns": ["Process"], "aggregation": "Sum", "accumulate": true
+            })),
+        )
+        .unwrap();
+        assert_eq!(ys(&data.series[0]), [118.0, 123.0]);
     }
 
     #[test]

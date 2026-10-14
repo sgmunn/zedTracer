@@ -301,6 +301,36 @@ pub enum YLayout {
     SeparateCharts,
 }
 
+/// How rows that have the same X in one series are combined into one point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Aggregation {
+    Sum,
+    Count,
+    Average,
+    Min,
+    Max,
+}
+
+impl Aggregation {
+    pub const ALL: [Aggregation; 5] = [
+        Aggregation::Sum,
+        Aggregation::Average,
+        Aggregation::Min,
+        Aggregation::Max,
+        Aggregation::Count,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Aggregation::Sum => "Sum",
+            Aggregation::Count => "Count of rows",
+            Aggregation::Average => "Average",
+            Aggregation::Min => "Smallest",
+            Aggregation::Max => "Largest",
+        }
+    }
+}
+
 /// The options of one chart. Anything not listed here is in `extra`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChartOptions {
@@ -337,6 +367,9 @@ pub struct ChartOptions {
     pub y_tick_angle: Option<f64>,
     pub max_series: Option<u32>,
     pub show_markers: Option<bool>,
+    /// Combines the rows of a series that have the same X. Without it each row is a point, and
+    /// a line goes up and down where several rows share an X.
+    pub aggregation: Option<Aggregation>,
     pub extra: Map<String, Value>,
 }
 
@@ -398,6 +431,7 @@ impl ChartOptions {
             y_tick_angle: take(&mut map, "yTickAngle"),
             max_series: take(&mut map, "maxSeries"),
             show_markers: take(&mut map, "showMarkers"),
+            aggregation: take(&mut map, "aggregation"),
             extra: map,
         }
     }
@@ -512,6 +546,7 @@ impl ChartOptions {
         put(&mut map, "yTickAngle", &self.y_tick_angle);
         put(&mut map, "maxSeries", &self.max_series);
         put(&mut map, "showMarkers", &self.show_markers);
+        put(&mut map, "aggregation", &self.aggregation);
         for (key, value) in &self.extra {
             // A typed field wins over a stale unreadable value left under the same key.
             map.entry(key.clone()).or_insert_with(|| value.clone());

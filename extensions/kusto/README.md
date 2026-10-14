@@ -312,11 +312,11 @@ be drawn here.
 are the numeric columns; and the rows are split into series by the first text column. The options of a chart can name any of
 them, and the pane below changes them. Times are in UTC. Move the pointer over a line chart and a tooltip with a crosshair
 lists every series at the nearest X; over a bar it names the bar. Click an entry of the legend to switch that series off and
-on; the axes fit what is left. A series with more points than the chart has pixels keeps the extremes of each pixel column,
+on; the axes fit what is left. When several rows of a series have the same X (a trace with a row for each of several sub-activities at one time, say) each is a point, so a line goes up and down at that X, and a note under the chart says how many rows do. **Rows at the same X** in the pane combines them into one point: the sum, average, smallest or largest value, or the number of rows. A series with more points than the chart has pixels keeps the extremes of each pixel column,
 so a spike is not lost.
 
 **Editing.** **Edit chart** opens a pane beside the chart: the type, the table, the X column, the value and series columns,
-the titles, the scale (linear or log) and limits of each axis, the legend, the sort, running totals, values on bars,
+the sort, running totals, how rows at the same X are combined, the titles, the scale (linear or log) and limits of each axis, the legend, values on bars,
 gridlines, aspect ratio and text size, and a name for the tab. A change draws the chart at once. Only the options shown there
 can be changed; any other option a chart has is kept as it is. **Remove chart** is at the bottom of the pane.
 
@@ -334,7 +334,7 @@ the clipboard, in the colours of the theme, or light or dark if the chart's `mod
 into a file.
 
 **Not built yet.** Zooming into a range, panels or a second axis for several value columns (`ysplit`), binning in the
-chart (use `bin()` in the query), a local-time axis, saving a picture to a file, and tilted axis labels (a label that does
+chart (use `bin()` in the query; combining rows at the same X is built), a local-time axis, saving a picture to a file, and tilted axis labels (a label that does
 not fit is dropped instead). Area, pie, scatter and the other types are not drawn. The design and the requirement list
 are in `fork-docs/kusto-charts-design.md`.
 

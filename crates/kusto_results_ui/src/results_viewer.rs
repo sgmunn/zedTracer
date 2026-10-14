@@ -2824,6 +2824,74 @@ mod tests {
         );
     }
 
+    /// A table like the one in a real trace: several rows for one process at one time.
+    fn repeated_rows() -> String {
+        json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "ProcessName", "type": "string" },
+                    { "name": "TIMESTAMP", "type": "datetime" },
+                    { "name": "Roots", "type": "long" },
+                ],
+                "rows": [
+                    ["backend", "2026-10-06T00:00:00Z", 3],
+                    ["backend", "2026-10-06T00:00:00Z", 113],
+                    ["backend", "2026-10-06T00:00:00Z", 2],
+                    ["backend", "2026-10-06T12:00:00Z", 5],
+                    ["frontend", "2026-10-06T00:00:00Z", 9],
+                    ["frontend", "2026-10-06T12:00:00Z", 1],
+                ],
+            }],
+            "charts": [{ "options": { "type": "TimeLine" } }],
+        })
+        .to_string()
+    }
+
+    #[gpui::test]
+    async fn rows_at_the_same_x_are_flagged_and_can_be_combined_in_the_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, fs, cx) = open_one(cx, "trace.ktt", repeated_rows()).await;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = chart_view(&viewer, cx);
+        let data = view.read_with(cx, |view, _| view.data()).expect("drawn");
+        assert_eq!(data.series[0].points.len(), 4, "a point for every row");
+        assert!(
+            data.notes.iter().any(|note| note.contains("same X")),
+            "the chart says why a line goes up and down: {:?}",
+            data.notes
+        );
+
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        editor.update(cx, |editor, cx| {
+            editor.edit(
+                |chart| chart.options.aggregation = Some(kusto_results::chart::Aggregation::Sum),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let data = view
+            .read_with(cx, |view, _| view.data())
+            .expect("drawn again");
+        let sums: Vec<f64> = data.series[0].points.iter().map(|point| point.y).collect();
+        assert_eq!(sums, [118.0, 5.0]);
+        assert!(data.notes.is_empty());
+
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "trace.ktt").await;
+        assert_eq!(
+            reread.charts[0].options.aggregation,
+            Some(kusto_results::chart::Aggregation::Sum)
+        );
+    }
+
     #[gpui::test]
     async fn an_edit_leaves_the_other_charts_exactly_as_they_were(cx: &mut TestAppContext) {
         let sankey = json!({

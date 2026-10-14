@@ -10,7 +10,9 @@ use gpui::{
     Subscription, WeakEntity, Window, div, px,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::chart::{AspectRatio, AxisScale, LegendPosition, SortOrder, TextSize};
+use kusto_results::chart::{
+    Aggregation, AspectRatio, AxisScale, LegendPosition, SortOrder, TextSize,
+};
 use kusto_results::{Chart, ChartType};
 use serde_json::{Number, Value};
 use ui::{Button, Checkbox, ContextMenu, DropdownMenu, PopoverMenuHandle, ToggleState, prelude::*};
@@ -58,6 +60,7 @@ pub(crate) struct ChartEditor {
     y_scale: Dropdown,
     legend: Dropdown,
     sort: Dropdown,
+    aggregation: Dropdown,
     aspect_ratio: Dropdown,
     text_size: Dropdown,
     name: Input,
@@ -200,6 +203,16 @@ impl ChartEditor {
             window,
             cx,
         );
+        let aggregation = Self::dropdown(
+            std::iter::once((SharedString::from("Not combined"), None))
+                .chain(Aggregation::ALL.iter().map(|aggregation| {
+                    (SharedString::from(aggregation.label()), Some(*aggregation))
+                }))
+                .collect(),
+            |chart, aggregation: Option<Aggregation>| chart.options.aggregation = aggregation,
+            window,
+            cx,
+        );
         let sort = Self::dropdown(
             vec![
                 ("Auto".into(), None),
@@ -320,6 +333,7 @@ impl ChartEditor {
             y_scale,
             legend,
             sort,
+            aggregation,
             aspect_ratio,
             text_size,
             name,
@@ -681,6 +695,16 @@ impl Render for ChartEditor {
             .child(Self::row(
                 "Sort",
                 Self::dropdown_button("chart-sort", sort_label(options.sort), &self.sort),
+            ))
+            .child(Self::row(
+                "Rows at the same X",
+                Self::dropdown_button(
+                    "chart-aggregation",
+                    options
+                        .aggregation
+                        .map_or("Not combined", Aggregation::label),
+                    &self.aggregation,
+                ),
             ))
             .child(Self::section("Titles"))
             .child(Self::row("Title", Self::input_box(&self.title, border)))

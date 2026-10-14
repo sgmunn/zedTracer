@@ -102,7 +102,7 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | CDM-5 | P0 | `accumulate` draws running totals per series. |
 | CDM-6 | P1 | `maxSeries` keeps the top N series by total absolute value; the legend says how many were hidden. |
 | CDM-7 | P0 | Large series are thinned for drawing without losing peaks (min and max per pixel column), not by taking every Nth point; hover still reports real values. (VS Code today: every Nth point.) |
-| CDM-8 | P2 | `binSize` with `aggregation`. Defer: `bin()` in the query does this better. |
+| CDM-8 | P2 | `binSize` with `aggregation`. Defer: `bin()` in the query does this better. Added after the first look at a real result, which had several rows for one series at one X and drew a vertical zigzag there: the `aggregation` option alone (sum, average, min, max, count) combines the rows that share an X, and without it the chart notes how many do. Binning is still not built. |
 | CDM-9 | P0 | The chart is built off the UI thread and rebuilt only when the data or the data-affecting options change. |
 
 ### 5.4 Drawing (CVW)
@@ -227,6 +227,6 @@ Then, in order, each a separate commit with tests:
 
 Built, with tests (`cargo test -p kusto_client -p kusto_results -p kusto_results_ui --lib`): CFM-1 to CFM-5; CSR-1 to CSR-5; CDM-1 to CDM-7 and CDM-9; CVW-1 to CVW-7, CVW-9 and CVW-10, and the stacked forms of bars and columns (CVW-2 except the area types); CIN-1 and CIN-2; CED-1 to CED-4; CPL-1 and CPL-2, and CPL-3 (Add chart binds to the table of the tab you are on); CXP-1; CST-1 except the choice of a time zone.
 
-Not built: CIN-3 (zoom), CIN-4 (hover selects the grid row), CVW-8 (`DualAxis`, `SeparatePanels`, `SeparateCharts`; the option is read and saved), CDM-8 (binning), CED-5 (reset to defaults), CXP-2 (save a picture), area, pie and scatter, a local-time axis, CSR-6 (keeping a chart across runs), and CNF-1 was not measured: the paths of each series are built again on every paint, including one caused by moving the pointer.
+Not built: CIN-3 (zoom), CIN-4 (hover selects the grid row), CVW-8 (`DualAxis`, `SeparatePanels`, `SeparateCharts`; the option is read and saved), CDM-8 (binning; combining rows at the same X is built), CED-5 (reset to defaults), CXP-2 (save a picture), area, pie and scatter, a local-time axis, CSR-6 (keeping a chart across runs), and CNF-1 was not measured: the paths of each series are built again on every paint, including one caused by moving the pointer.
 
 The spikes: S1 was run (the real `render` response is in `crates/kusto_client`'s tests and the live test). S2 became the scene: layout and ticks are tested without a window, written as SVG and looked at for a set of sample charts, and drawn by a GPUI canvas whose paint code has run only in GPUI's test platform, so the tab has not been looked at in a real window.

@@ -16,7 +16,7 @@ use gpui::{
     Task, TextAlign, TextRun, Window, canvas, div, fill, outline, point, px, size,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::chart::{ColorMode, SortOrder};
+use kusto_results::chart::{Aggregation, ColorMode, SortOrder};
 use kusto_results::chart_data::ChartData;
 use kusto_results::chart_scene::{
     Anchor, ChartScene, EstimatedText, Hover, Item, Rect, Role, SvgStyle, TextMeasure,
@@ -61,6 +61,7 @@ struct DataInputs {
     accumulate: Option<bool>,
     sort: Option<SortOrder>,
     max_series: Option<u32>,
+    aggregation: Option<Aggregation>,
 }
 
 impl DataInputs {
@@ -74,6 +75,7 @@ impl DataInputs {
             accumulate: options.accumulate,
             sort: options.sort,
             max_series: options.max_series,
+            aggregation: options.aggregation,
         }
     }
 }
