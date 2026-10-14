@@ -42,6 +42,19 @@ impl Snippet {
     }
 }
 
+/// Escapes text so that parsing it as a snippet gives back exactly that text, with no tabstops.
+/// A `}` needs no escape outside a placeholder.
+pub fn escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(character, '$' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
 fn parse_snippet<'a>(
     mut source: &'a str,
     nested: bool,
@@ -199,6 +212,26 @@ fn parse_choices<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_escaped_text_parses_back_to_itself() {
+        for text in [
+            "StormEvents\n| take 10",
+            "T | join kind=inner (U) on $left.Id == $right.Id",
+            "T | where Path matches regex @\"C:\\\\temp\\$\"",
+            "let f = () { print \"${1:not a placeholder}\" };",
+            r"\$ \\ \} } $",
+            "",
+        ] {
+            let snippet = Snippet::parse(&escape(text)).unwrap();
+            assert_eq!(snippet.text, text);
+            assert_eq!(
+                tabstops(&snippet),
+                &[vec![text.len() as isize..text.len() as isize]],
+                "the only tabstop is the end of {text:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_snippet_without_tabstops() {
