@@ -189,38 +189,43 @@ through `fork-docs/samples/parameter-directives.json`.
 
 ## Functions in the file
 
-A block (lines with no blank line between them) that has the line `// :functions` defines functions for the queries
-below it:
+A block (lines with no blank line between them) that has the line `// :functions` defines functions and values for the
+queries below it:
 
 ```kql
 // :functions
+let Window = 7d;
 let Normalize = (value:string) { tolower(trim(" ", value)) };
-let Recent = (count:long) { Events | top count by At desc };
+let Recent = (count:long) { Events | where At > ago(Window) | top count by At desc };
 
 Events
+| where At > ago(Window)
 | extend Key = Normalize(Name)
 ```
 
 The block is not a query: it has no lenses and F5 does not run it. It is Kusto code all the same, so it is coloured, completes,
-and a mistake in a function is reported where it is written. Only `let name = (parameters) { body };` statements are
-functions (`view` before the parameters is fine); anything else in the block is ignored. A function can use the functions
-defined above it, tables and functions of the database, and the parameters the query declares.
+and a mistake in a definition is reported where it is written. Every `let name = …;` statement is a definition: a function
+(`(parameters) { body }`, and `view` before the parameters is fine), a scalar such as `5` or `ago(7d)`, or a table such as
+`Events | take 3`. Anything else in the block is ignored. A definition can use the ones defined above it, tables and
+functions of the database, and the parameters the query declares. A value is used by its name, without parentheses, as
+`let` does: completion offers it that way, and `Window()` is reported as an error, because the service would reject it.
 
 A definition applies to every query below its block, until a later definition of the same name replaces it,
-`// :clearFunction("name")` takes that one away, or `// :clearFunctions()` takes away every function the file defined.
+`// :clearFunction("name")` takes that one away, or `// :clearFunctions()` takes away every definition the file made.
 Several blocks add up, and the clearing directives work like `// :clearParam` and `// :clearParams`.
 
 While you edit, the functions a query can use are known to completion, hover, signature help, the colours and the check of
 names, as if they were stored in the query's database, and a call is not reported as an unknown function. Nothing is added
 to the text you see.
 
-When a query is run or copied, the editor adds a `let` for each function the query uses, and each function those use, and
-no others, because a function written for another database could otherwise fail a query that never calls it. A function
-is used when its name appears as a word outside comments and strings, so a column with the same name only costs an unused
-`let`. They go after the query's `declare query_parameters` and `set` statements, so a function can use a parameter, and a
-function that the query defines itself with `let` is the query's own and is not added. A control command gets none.
+When a query is run or copied, the editor adds a `let` for each definition the query uses, and each definition those use, and
+no others, because a definition written for another database could otherwise fail a query that never uses it. A name is
+used when it appears as a word outside comments and strings, so a column with the same name costs an unused `let`, which
+only matters when its body needs something this query's database lacks. They go after the query's `declare query_parameters`
+and `set` statements, so a definition can use a parameter, and a name that the query defines itself with `let` is the
+query's own and is not added. A control command gets none.
 
-The service is sent the query with the functions, and the run log, the history list and the lenses keep the query as you wrote
+The service is sent the query with the definitions, and the run log, the history list and the lenses keep the query as you wrote
 it. **Copy** and the **Query** tab of a result show the added `let`s (after the parameter values, and with the names
 qualified as for any query), so the copy runs anywhere. A history Rerun sends the same functions the run had, also when the file has
 changed since: the run log keeps them.

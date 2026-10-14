@@ -1,4 +1,4 @@
-# Inline functions in a query file (built)
+# Inline functions and values in a query file (built)
 
 Asked for by the user: define functions in the file itself, and have them included automatically in the query that is run or edited, the way `// :setParam` values (see "Values in the file" in `extensions/kusto/README.md`) persist for the rest of the document.
 
@@ -51,6 +51,10 @@ Rough order, each step useful alone:
 1. Rust: recognise definition blocks, collect them, add the `let`s on run and in the copy; request with written and sent text. About the size of the parameter directives plus the request change.
 2. Server: recognise the block, build the symbols, analyse the definition block, keep inline functions out of `Qualify`; completion offers `// :functions`.
 3. `clearFunction`, `clearFunctions`, a lens or hover that says where a function comes from.
+
+## Values, added afterwards
+
+The user asked for scalars next. A scalar (or a table) is a `let` without parameters, so every `let` of a functions block is a definition. On the server a value is a function symbol with no parameters whose body is the expression, which the library accepts by its bare name and types as the expression is (probed); because it also accepts the name with parentheses, which the service does not for a `let`, completion offers the bare name and a call with parentheses is an error. See the status note for the details.
 
 ## Decisions (taken by the user, and built as proposed)
 
