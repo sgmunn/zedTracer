@@ -338,11 +338,25 @@ The server signs in with `az account get-access-token`, so run `az login`
 first. It fetches the schema in the background the first time a cluster or
 database is used by a query, so the first completion after opening a file may not
 list tables yet; ask again a moment later. Tables, external tables,
-materialized views and functions are loaded, including each function's
+materialized views, functions and entity groups are loaded, including each function's
 parameters and doc string. A query that names another cluster, such as
 `cluster('other').database('Logs').Requests`, loads that cluster and database
 the same way. A short name such as `help` means `help.kusto.windows.net`; other
 clouds need the full host name.
+
+### Entity groups and `macro-expand`
+
+The entity groups stored in a database are offered after `macro-expand`, and
+`macro-expand AllRegions as Region (Region.Requests | where Dur…)` completes and is checked like a query on
+one database: `Region.` offers the tables of the databases in the group, and the columns after it are theirs.
+The clusters and databases a group names are loaded like ones a query names, as soon as the group's own
+database has arrived, and a query over a group is checked once they have all arrived, so a name is not called
+wrong while they are still on their way. A group written in the query itself, as `macro-expand entity_group [...] as X (...)` or
+`let G = entity_group [...]`, needs nothing stored.
+
+The listing of a database's entities gives the definition of a stored group. If it does not, the server asks
+for `.show entity_groups`, which needs more than the permission to read the schema. When the cluster refuses
+that, the group's name is known but its tables are not, and nothing under it is called wrong.
 
 ### Schema cache
 
@@ -384,7 +398,8 @@ the cluster), **names that are not in it are errors too**: an unknown table, col
 Kusto's own analysis finds, such as a wrong argument type. Some rules keep this honest:
 
 - A query is checked only when the schema of everything it refers to has loaded: the database it runs on, and
-  any other cluster or database it names with `cluster(...)` or `database(...)`. While a schema is still arriving,
+  any other cluster or database it names with `cluster(...)` or `database(...)`, or through an entity group it runs
+  `macro-expand` over. While a schema is still arriving,
   or when the cluster cannot be reached and nothing is cached, a query gets syntax errors only, so a name is never
   called wrong just because its schema is late. A cached schema counts, so a stale one can flag a table that
   is new: click the `↻ Schema` lens to fetch it again, and the file is checked again when it arrives.
