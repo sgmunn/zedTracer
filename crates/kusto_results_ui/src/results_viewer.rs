@@ -47,6 +47,8 @@ pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
     crate::run_query::share_defaults_with_language_server(cx);
     crate::history::prune_at_startup(cx);
+    cx.observe_new(|editor: &mut Editor, _, _| crate::query_snippet::register(editor))
+        .detach();
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         crate::run_query::register(workspace, cx);
         crate::results_panel::register(workspace);

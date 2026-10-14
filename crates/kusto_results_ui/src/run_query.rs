@@ -463,6 +463,14 @@ fn default_connection(cx: &App) -> Connection {
     }
 }
 
+/// The selected text, or else the query around the cursor, as the text a run would send.
+pub(crate) fn query_text_at_cursor(
+    editor: &mut Editor,
+    cx: &mut Context<Editor>,
+) -> Option<String> {
+    query_to_run(editor, cx).map(|query| query.text)
+}
+
 fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<QueryToRun> {
     let snapshot = editor.buffer().read(cx).snapshot(cx);
     let display_snapshot = editor.display_snapshot(cx);
@@ -2434,7 +2442,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn kusto_language() -> Arc<language::Language> {
+    pub(crate) fn kusto_language() -> Arc<language::Language> {
         Arc::new(language::Language::new(
             language::LanguageConfig {
                 name: "Kusto".into(),

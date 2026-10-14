@@ -10,6 +10,7 @@ mod history;
 mod inspector_text;
 mod qualify_query;
 mod query_parameters;
+mod query_snippet;
 mod query_thread;
 mod query_view;
 mod results_panel;

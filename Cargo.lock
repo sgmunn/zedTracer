@@ -9504,6 +9504,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "snippet_provider",
  "tempfile",
  "text",
  "theme",
@@ -9513,6 +9514,7 @@ dependencies = [
  "uuid",
  "workspace",
  "worktree",
+ "zed_actions",
 ]
 
 [[package]]
