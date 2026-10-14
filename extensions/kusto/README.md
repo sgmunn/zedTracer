@@ -19,8 +19,8 @@ installed in Zed's Kusto extension work directory. To use a different binary,
 set `lsp.kusto-lsp.binary.path` in Zed settings. Restart the language server
 after rebuilding it.
 
-Completion includes Kusto keywords, built-in functions, and names declared in
-the current query. Hover shows Kusto's quick information for supported symbols.
+Completion includes Kusto keywords (including `declare`, which the library leaves out of the words a
+statement may start with), built-in functions, and names declared in the current query. Hover shows Kusto's quick information for supported symbols.
 Without a cluster's schema, diagnostics cover syntax only (see Diagnostics below).
 
 ## Where a query runs
@@ -174,6 +174,13 @@ to a query that declares the name, and read as the declared type, so `"5"` is a 
 quotes, written as it is, with no escapes: a value with a quote in it uses the other kind of quote around it. A directive with
 a name that cannot be a parameter, the wrong number of arguments or an unquoted value gets the same warning as any other directive
 that does not parse. Typing `// :` offers all five directives.
+
+Inside `declare query_parameters(`, where a name is written, completion offers the parameters you have values for: first
+those the file gives with `// :setParam` above the query, then those in the active profile, then those only another
+profile has (each says which in its detail). A name the declaration already has is not offered again, and a typed
+start (`co`) is replaced whole, also when the cursor is inside a name. Only the name is inserted; the type is yours to
+write. Nothing is offered after a colon, in a default value or outside the parentheses, and when there is nothing to
+offer the usual `:` and `[` appear.
 
 The lens says where each declared parameter's value comes from: `Params: Incident A + file: raid` when the file gives `raid` and the
 active profile gives the rest, `Params: file: raid` with no active profile, and as before `(no value for count)` for a declared
