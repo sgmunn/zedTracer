@@ -42,7 +42,8 @@ move between clusters and databases. A directive in the same block as a query (t
 between them) applies to that query too. **Setting the cluster clears the database**, so a query after
 `setDefaultCluster` needs a `setDefaultDb` of its own. A short cluster name such as `help` means
 `help.kusto.windows.net`. A block of only comments, such as a directive on its own, is not a query: it gets no
-lenses and F5 does not run it. A directive that does not parse gets a warning. Typing `// :` offers both, as soon as the colon is typed.
+lenses and F5 does not run it. A directive that does not parse gets a warning. Typing `// :` offers them, as soon as the colon is typed.
+The same kind of line also gives values to query parameters, see [Values in the file](#values-in-the-file).
 
 A query with no directive above it uses the defaults from Zed settings, which can be your global default or a
 project's `.zed/settings.json`:
@@ -151,6 +152,33 @@ unaffected.
 
 The editor and the language server read the declarations and the files with the same rules, and agree on the declared names
 through `fork-docs/samples/query-parameters.json`.
+
+### Values in the file
+
+A file can give values to parameters itself, with directives like the ones that say where a query runs:
+
+```kql
+// :setParam("raid", "abc-123")
+
+declare query_parameters(raid:string);
+ASEdog().ASTrace
+| where RootActivityId == raid
+```
+
+`// :setParam("name", "value")` gives the parameter a value for every query below it, until a later `setParam` of the same
+name gives another, `// :clearParam("name")` takes it away, or `// :clearParams()` takes away every value the file gave. A
+directive in the same block as a query (no blank line between them) applies to that query too, and a selection takes the values of the
+query it starts in. These values come before the active profile's, and only for the names they give: the profile still supplies
+the other parameters, and clearing a name hands it back to the profile. Like the profile's they are sent as native query parameters, only
+to a query that declares the name, and read as the declared type, so `"5"` is a `long`. An argument is a string in double or single
+quotes, written as it is, with no escapes: a value with a quote in it uses the other kind of quote around it. A directive with
+a name that cannot be a parameter, the wrong number of arguments or an unquoted value gets the same warning as any other directive
+that does not parse. Typing `// :` offers all five directives.
+
+The lens says where each declared parameter's value comes from: `Params: Incident A + file: raid` when the file gives `raid` and the
+active profile gives the rest, `Params: file: raid` with no active profile, and as before `(no value for count)` for a declared
+parameter with neither a value nor a default. The language server and the editor read the directives with the same rule, and agree
+through `fork-docs/samples/parameter-directives.json`.
 
 ## History
 
@@ -446,7 +474,7 @@ The second line starts with **Copy**, which copies the query (see below), then s
 - When the server is not running, has no schema for the database yet, or does not answer within five seconds, the query is not
   changed except for two lines above it, `// :setDefaultCluster("…")` and `// :setDefaultDb("…")`, the directives a Kusto editor here
   reads, so the cluster and database are known.
-- A `declare query_parameters(...)` statement becomes a `let` for each parameter, with the value the run would use: the active profile's, else the declared default
+- A `declare query_parameters(...)` statement becomes a `let` for each parameter, with the value the run would use: the one the file gives with `// :setParam`, else the active profile's, else the declared default
   (`let raid = 'abc-123';`, `let count = long(5);`). A parameter with neither stays declared. Values are written as literals of the
   declared type, and a string is quoted, so a value cannot change what the query does.
 - A control command (`.show tables`) is copied as it is.
