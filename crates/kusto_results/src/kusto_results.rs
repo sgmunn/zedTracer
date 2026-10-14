@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod activity_tree;
 pub mod chart;
+pub mod chart_scale;
 pub mod export;
 pub mod failures;
 pub mod filter;
