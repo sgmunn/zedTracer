@@ -1,4 +1,4 @@
-# Inline functions in a query file (exploration, not built)
+# Inline functions in a query file (built)
 
 Asked for by the user: define functions in the file itself, and have them included automatically in the query that is run or edited, the way `// :setParam` values (see "Values in the file" in `extensions/kusto/README.md`) persist for the rest of the document.
 
@@ -52,8 +52,8 @@ Rough order, each step useful alone:
 2. Server: recognise the block, build the symbols, analyse the definition block, keep inline functions out of `Qualify`; completion offers `// :functions`.
 3. `clearFunction`, `clearFunctions`, a lens or hover that says where a function comes from.
 
-## Decisions for the user
+## Decisions (taken by the user, and built as proposed)
 
-1. The marker: `// :functions` on the block, or another name (`// :define`, `// :let`).
-2. Whether only the functions a query uses are added (recommended), or every function in scope.
-3. Whether Copy and the stored query should show the added `let`s (recommended: yes, as for parameter values), or only the written query.
+1. The marker: `// :functions` on the block.
+2. Only the functions a query uses are added, and those they use.
+3. Copy and the stored query show the added `let`s, as they do for parameter values.

@@ -173,7 +173,7 @@ the other parameters, and clearing a name hands it back to the profile. Like the
 to a query that declares the name, and read as the declared type, so `"5"` is a `long`. An argument is a string in double or single
 quotes, written as it is, with no escapes: a value with a quote in it uses the other kind of quote around it. A directive with
 a name that cannot be a parameter, the wrong number of arguments or an unquoted value gets the same warning as any other directive
-that does not parse. Typing `// :` offers all five directives.
+that does not parse. Typing `// :` offers every directive.
 
 Inside `declare query_parameters(`, where a name is written, completion offers the parameters you have values for: first
 those the file gives with `// :setParam` above the query, then those in the active profile, then those only another
@@ -186,6 +186,44 @@ The lens says where each declared parameter's value comes from: `Params: Inciden
 active profile gives the rest, `Params: file: raid` with no active profile, and as before `(no value for count)` for a declared
 parameter with neither a value nor a default. The language server and the editor read the directives with the same rule, and agree
 through `fork-docs/samples/parameter-directives.json`.
+
+## Functions in the file
+
+A block (lines with no blank line between them) that has the line `// :functions` defines functions for the queries
+below it:
+
+```kql
+// :functions
+let Normalize = (value:string) { tolower(trim(" ", value)) };
+let Recent = (count:long) { Events | top count by At desc };
+
+Events
+| extend Key = Normalize(Name)
+```
+
+The block is not a query: it has no lenses and F5 does not run it. It is Kusto code all the same, so it is coloured, completes,
+and a mistake in a function is reported where it is written. Only `let name = (parameters) { body };` statements are
+functions (`view` before the parameters is fine); anything else in the block is ignored. A function can use the functions
+defined above it, tables and functions of the database, and the parameters the query declares.
+
+A definition applies to every query below its block, until a later definition of the same name replaces it,
+`// :clearFunction("name")` takes that one away, or `// :clearFunctions()` takes away every function the file defined.
+Several blocks add up, and the clearing directives work like `// :clearParam` and `// :clearParams`.
+
+While you edit, the functions a query can use are known to completion, hover, signature help, the colours and the check of
+names, as if they were stored in the query's database, and a call is not reported as an unknown function. Nothing is added
+to the text you see.
+
+When a query is run or copied, the editor adds a `let` for each function the query uses, and each function those use, and
+no others, because a function written for another database could otherwise fail a query that never calls it. A function
+is used when its name appears as a word outside comments and strings, so a column with the same name only costs an unused
+`let`. They go after the query's `declare query_parameters` and `set` statements, so a function can use a parameter, and a
+function that the query defines itself with `let` is the query's own and is not added. A control command gets none.
+
+The service is sent the query with the functions, and the run log, the history list and the lenses keep the query as you wrote
+it. **Copy** and the **Query** tab of a result show the added `let`s (after the parameter values, and with the names
+qualified as for any query), so the copy runs anywhere. A history Rerun sends the same functions the run had, also when the file has
+changed since: the run log keeps them.
 
 ## History
 
@@ -484,6 +522,7 @@ The second line starts with **Copy**, which copies the query (see below), then s
 - A `declare query_parameters(...)` statement becomes a `let` for each parameter, with the value the run would use: the one the file gives with `// :setParam`, else the active profile's, else the declared default
   (`let raid = 'abc-123';`, `let count = long(5);`). A parameter with neither stays declared. Values are written as literals of the
   declared type, and a string is quoted, so a value cannot change what the query does.
+- The functions the query uses that the file defines with `// :functions` are written as `let` statements, after the parameters' (see [Functions in the file](#functions-in-the-file)).
 - A control command (`.show tables`) is copied as it is.
 
 The clipboard holds plain text, without colours, because Zed's clipboard has no rich text.
