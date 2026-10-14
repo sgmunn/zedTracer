@@ -20,7 +20,7 @@ cargo test -p kusto_results_ui --profile release-fast --lib -- --ignored --nocap
 | S3 | Rectangular cell selection | **Yes**: click, shift+click, drag, gutter row select, clear on sort, publishes source rows. Auto-scroll during a drag and keyboard navigation are not yet spiked. |
 | S4 | Long, wrapped, selectable, coloured text | **Yes, with a read-only `Editor`.** Selection, copy, wrap on and off, token colours and find highlights all work; 1.3 MB of text is set in 30 ms. One small upstream question: the editor's highlight keys are a closed list. |
 | S5 | Clipboard and popover | **Yes.** Text copy works. A `PopoverMenu` with our own view filters as you type, closes on Escape, on an outside click and on Clear, and stays on screen. **Rich HTML copy is not possible** with today's clipboard type. |
-| S6 | Right dock coexistence | **Yes.** Row Details docks beside the Investigation panel, each shows in turn, and it follows the selection a grid publishes. |
+| S6 | Right dock coexistence | **Yes.** Row Details docked beside the Investigation panel (a prototype, since removed), each showed in turn, and it follows the selection a grid publishes. |
 
 ## S1. Reuse or build
 
@@ -161,7 +161,7 @@ Not yet spiked: choosing a different operator from the dropdown, the second cond
 
 ## S6. Right dock coexistence
 
-A `RowDetailsPanel` (a `Panel` positioned on the right, with a toggle action) was added to a test workspace together with the existing `InvestigationPanel`.
+A `RowDetailsPanel` (a `Panel` positioned on the right, with a toggle action) was added to a test workspace together with the existing `InvestigationPanel`. That prototype has been removed since, and the test now checks the panel alone: that it docks on the right, can be shown there and follows the selection.
 
 Tests that pass:
 

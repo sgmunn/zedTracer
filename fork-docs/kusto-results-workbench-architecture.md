@@ -34,7 +34,7 @@ Status: draft. The spikes in section 6 have run; their results are in [part 2](k
 | Results UI | Planned (one crate to start, split later only if it grows) | The grid element, results panel, result tab, structured view, Row Details panel, settings, actions and key bindings | `kusto_results`, `gpui`, `ui`, `workspace`, `project`, settings |
 | Execution | Later; out of scope here | Running a query and delivering a `ResultSet` | `kusto_results` |
 
-The results UI reuses the existing registration pattern from `crates/investigation` (a `Panel` for the docks and a project item for files). Whether it also reuses `tabular_data_preview` or the `ui` table is spike S1.
+The results UI reuses the registration pattern of the prototype `crates/investigation`, since removed (a `Panel` for the docks and a project item for files). Whether it also reuses `tabular_data_preview` or the `ui` table is spike S1.
 
 ## 3. The core crate
 
@@ -153,7 +153,7 @@ Each spike is a small experiment with a yes or no answer, run against the fixtur
 | S3 | Rectangular cell selection with drag, auto-scroll and shift-extend | Selection over the prototype grid | Matches spec SEL-1 to SEL-5a; `CellSelection` maps to the right source rows after a sort | Row-only selection first, cell ranges later |
 | S4 | Long, wrapped, selectable text with coloured runs and find highlights | Row Details body for the multipart and call stack fixtures | Wrap on and off; select and copy; `highlight_json` spans coloured; find highlights drawn across coloured runs; 25 KB value scrolls smoothly | Plain text colour segments; find over the raw text |
 | S5 | Clipboard and popover | Copy of a selection as text; an anchored filter popover with a select and a text input | Text copies correctly on macOS; popover stays on screen and closes on Escape and outside click | Rich HTML copy deferred (CPY-11); popover replaced by a header menu |
-| S6 | Right dock coexistence | A Row Details panel beside the Investigation panel prototype | Both dock and persist; the panel follows the selection from a panel grid and an editor-tab grid | Place Row Details inside the results surface |
+| S6 | Right dock coexistence | A Row Details panel beside the Investigation panel prototype (since removed) | Both dock and persist; the panel follows the selection from a panel grid and an editor-tab grid | Place Row Details inside the results surface |
 
 Output of the spikes: the second architecture note, recording which option won and why.
 
