@@ -20,8 +20,8 @@ use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, HistoryLimits, KustoClient,
     Qualified, QueryRequest, RUN_LOG_FILE, RunRecord, TokenProvider, append_record,
-    connection_for_selection, declared_parameters, parameters_for_query, portable_query,
-    resolve_query_at,
+    declared_parameters, parameters_for_query, portable_query, resolve_query_at,
+    state_for_selection,
 };
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
@@ -246,7 +246,8 @@ fn copy_query(
     let fs = workspace.app_state().fs.clone();
     cx.spawn_in(window, async move |workspace, cx| {
         let text = async {
-            let values = parameters_of_query(fs.as_ref(), &files, &query.text).await?;
+            let values =
+                parameters_of_query(fs.as_ref(), &files, &query.text, &query.parameters).await?;
             let qualified = qualify_query::qualify(server, &query.text, &query.connection).await;
             Ok::<_, anyhow::Error>(portable_query(
                 &query.text,
@@ -442,6 +443,8 @@ impl QueryRuns {
 struct QueryToRun {
     text: String,
     connection: Connection,
+    /// The values the file gives to parameters with directives, which come before a profile's.
+    parameters: BTreeMap<String, String>,
 }
 
 /// The cluster and database that apply where no directive in the file says otherwise.
@@ -461,25 +464,30 @@ fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<QueryTo
         .newest::<MultiBufferOffset>(&display_snapshot);
     let text = snapshot.text();
     let defaults = default_connection(cx);
-    let (range, connection) = if selection.is_empty() {
+    let (range, connection, parameters) = if selection.is_empty() {
         let resolved = resolve_query_at(&text, selection.head().0, &defaults)?;
-        (resolved.range, resolved.connection)
+        (resolved.range, resolved.connection, resolved.parameters)
     } else {
         let range = selection.start.0..selection.end.0;
-        let connection = connection_for_selection(&text, range.clone(), &defaults);
-        (range, connection)
+        let state = state_for_selection(&text, range.clone(), &defaults);
+        (range, state.connection, state.parameters)
     };
     let query = text.get(range)?.trim();
     (!query.is_empty()).then(|| QueryToRun {
         text: query.to_string(),
         connection,
+        parameters,
     })
 }
 
 /// Where the values of a run's query parameters come from.
 enum ParameterSource {
-    /// The active profile of the files that apply to the query's file.
-    Profiles(ParameterFiles),
+    /// What the file gives the query with directives, else the active profile of the files that
+    /// apply to the query's file.
+    Profiles {
+        files: ParameterFiles,
+        given_by_file: BTreeMap<String, String>,
+    },
     /// The values an earlier run had, to repeat it.
     Values(BTreeMap<String, String>),
 }
@@ -533,7 +541,10 @@ fn start_run_in(
     let spec = RunSpec {
         query: query.text,
         connection: query.connection,
-        parameters: ParameterSource::Profiles(parameter_files),
+        parameters: ParameterSource::Profiles {
+            files: parameter_files,
+            given_by_file: query.parameters,
+        },
         destination,
     };
     launch_run(workspace, runs, spec, window, cx)
@@ -654,9 +665,10 @@ fn launch_run(
                 .log_err();
 
             let parameters = match &parameter_source {
-                ParameterSource::Profiles(files) => {
-                    parameters_of_query(fs.as_ref(), files, &request.query).await
-                }
+                ParameterSource::Profiles {
+                    files,
+                    given_by_file,
+                } => parameters_of_query(fs.as_ref(), files, &request.query, given_by_file).await,
                 ParameterSource::Values(values) => {
                     let declared = declared_parameters(&request.query);
                     Ok(values
@@ -725,16 +737,19 @@ fn launch_run(
     Ok(())
 }
 
-/// The values for the parameters the query declares, from the active profile of the file that applies.
+/// The values for the parameters the query declares: what the file gives it, else the active
+/// profile of the file that applies.
 async fn parameters_of_query(
     fs: &dyn Fs,
     files: &ParameterFiles,
     query: &str,
+    given_by_file: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     let loaded = query_parameters::load(fs, files).await?;
     Ok(parameters_for_query(
         query,
         loaded.profiles.active_profile(),
+        given_by_file,
     ))
 }
 
@@ -1613,6 +1628,100 @@ pub(crate) mod tests {
         );
     }
 
+    const GIVING: &str = "// :setParam(\"raid\", \"from-file\")\n\ndeclare query_parameters(raid:string);\nStormEvents\n| where Id == raid\n";
+
+    const PROFILE_B: &str = "active: B\nprofiles:\n  B:\n    raid: from-b\n";
+
+    #[gpui::test]
+    async fn a_parameter_the_file_sets_is_sent_instead_of_the_profiles_value(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            GIVING,
+            json!({ ".kusto": { "parameters.yaml": PROFILE_B } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        let body = query_body(&sent).await;
+        assert_eq!(
+            body["properties"],
+            json!({ "Parameters": { "raid": "from-file" } })
+        );
+        assert_eq!(
+            body["csl"],
+            "declare query_parameters(raid:string);\nStormEvents\n| where Id == raid",
+            "the directive is not part of the query"
+        );
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(records[0]["parameters"], json!({ "raid": "from-file" }));
+    }
+
+    #[gpui::test]
+    async fn a_parameter_the_file_sets_needs_no_profile(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, GIVING).await;
+        run(&workspace, cx);
+
+        assert_eq!(
+            query_body(&sent).await["properties"],
+            json!({ "Parameters": { "raid": "from-file" } })
+        );
+    }
+
+    #[gpui::test]
+    async fn a_parameter_the_file_clears_goes_back_to_the_profiles_value(
+        cx: &mut TestAppContext,
+    ) {
+        const CLEARED: &str = "// :setParam(\"raid\", \"from-file\")\n// :clearParam(\"raid\")\n\ndeclare query_parameters(raid:string);\nStormEvents\n";
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            CLEARED,
+            json!({ ".kusto": { "parameters.yaml": PROFILE_B } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        assert_eq!(
+            query_body(&sent).await["properties"],
+            json!({ "Parameters": { "raid": "from-b" } })
+        );
+    }
+
+    #[gpui::test]
+    async fn a_parameter_the_query_does_not_declare_is_not_sent(cx: &mut TestAppContext) {
+        const UNDECLARED: &str = "// :setParam(\"raid\", \"from-file\")\n\nStormEvents\n| take 1\n";
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, UNDECLARED).await;
+        run(&workspace, cx);
+
+        assert!(query_body(&sent).await.get("properties").is_none());
+    }
+
+    #[gpui::test]
+    async fn the_directives_above_a_selection_give_its_parameters(cx: &mut TestAppContext) {
+        const SECOND: &str = "// :setParam(\"raid\", \"one\")\n\ndeclare query_parameters(raid:string);\nT1\n\n// :setParam(\"raid\", \"two\")\n\ndeclare query_parameters(raid:string);\nT2\n";
+        let (workspace, editor, sent, cx) = setup_with(cx, 200, ANSWER, SECOND).await;
+        editor.update_in(cx, |editor, window, cx| {
+            let start = editor.text(cx).rfind("declare").expect("the second query");
+            let end = editor.text(cx).trim_end().len();
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(start)..MultiBufferOffset(end)])
+            });
+        });
+        run(&workspace, cx);
+
+        let body = query_body(&sent).await;
+        assert_eq!(body["csl"], "declare query_parameters(raid:string);\nT2");
+        assert_eq!(
+            body["properties"],
+            json!({ "Parameters": { "raid": "two" } })
+        );
+    }
+
     const COMMANDS: &str = "// the functions here\n.show functions\n\nStormEvents\n| take 1\n";
 
     #[gpui::test]
@@ -2030,6 +2139,64 @@ pub(crate) mod tests {
             Some(
                 "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = 'from-b';\nStormEvents\n| where Id == raid"
             )
+        );
+    }
+
+    #[gpui::test]
+    async fn a_copied_query_has_the_values_the_file_sets_for_its_parameters(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            GIVING,
+            json!({ ".kusto": { "parameters.yaml": PROFILE_B } }),
+        )
+        .await;
+        copy(&workspace, &editor, cx);
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = 'from-file';\nStormEvents\n| where Id == raid"
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn a_run_keeps_the_values_the_file_set_in_the_query_of_the_result(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            GIVING,
+            json!({ ".kusto": { "parameters.yaml": PROFILE_B } }),
+        )
+        .await;
+        use_editor_tabs(cx);
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("a results tab");
+        let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
+        assert_eq!(
+            result.query.as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = 'from-file';\nStormEvents\n| where Id == raid"
+            )
+        );
+        assert_eq!(
+            result
+                .parameters
+                .as_ref()
+                .and_then(|values| values.get("raid")),
+            Some(&json!("from-file"))
         );
     }
 

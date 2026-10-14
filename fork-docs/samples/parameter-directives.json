@@ -1,0 +1,137 @@
+[
+  {
+    "name": "without a directive nothing is set",
+    "text": "declare query_parameters(raid:string, count:long);\nT1\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {},
+      {}
+    ]
+  },
+  {
+    "name": "a value applies to every query below it and not to those above",
+    "text": "declare query_parameters(raid:string, count:long);\nT0\n\n//:setParam(\"raid\", \"abc\")\n\ndeclare query_parameters(raid:string, count:long);\nT1\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {},
+      {
+        "raid": "abc"
+      },
+      {
+        "raid": "abc"
+      }
+    ]
+  },
+  {
+    "name": "a later directive of the same name replaces the value, and others are kept",
+    "text": "//:setParam(\"raid\", \"one\")\n//:setParam(\"count\", \"5\")\ndeclare query_parameters(raid:string, count:long);\nT1\n\n//:setParam(\"raid\", \"two\")\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {
+        "raid": "one",
+        "count": "5"
+      },
+      {
+        "raid": "two",
+        "count": "5"
+      }
+    ]
+  },
+  {
+    "name": "clearing a parameter takes away only that one",
+    "text": "//:setParam(\"raid\", \"one\")\n//:setParam(\"count\", \"5\")\n\n//:clearParam(\"raid\")\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {
+        "count": "5"
+      }
+    ]
+  },
+  {
+    "name": "clearing every parameter takes away all of them",
+    "text": "//:setParam(\"raid\", \"one\")\n//:setParam(\"count\", \"5\")\ndeclare query_parameters(raid:string, count:long);\nT1\n\n//:clearParams()\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {
+        "raid": "one",
+        "count": "5"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "a cleared parameter can be set again",
+    "text": "//:setParam(\"raid\", \"one\")\n\n//:clearParam(\"raid\")\n\n//:setParam(\"raid\", \"again\")\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {
+        "raid": "again"
+      }
+    ]
+  },
+  {
+    "name": "clearing what was never set changes nothing",
+    "text": "//:clearParam(\"raid\")\n//:clearParams()\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {}
+    ]
+  },
+  {
+    "name": "changing the cluster or the database keeps the parameters",
+    "text": "//:setParam(\"raid\", \"one\")\n//:setDefaultCluster(\"https://b.kusto.windows.net\")\n//:setDefaultDb(\"db\")\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {
+        "raid": "one"
+      }
+    ]
+  },
+  {
+    "name": "a directive in the same block applies to that query and the ones below",
+    "text": "declare query_parameters(raid:string, count:long);\n//:setParam(\"raid\", \"here\")\nT1\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {
+        "raid": "here"
+      },
+      {
+        "raid": "here"
+      }
+    ]
+  },
+  {
+    "name": "single quotes, spaces and a value with commas, brackets and the other quote in it",
+    "text": "//: setParam ( 'raid' , \"it's, (odd)\" )\n//:setParam(\"count\", 'say \"hi\"')\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {
+        "raid": "it's, (odd)",
+        "count": "say \"hi\""
+      }
+    ]
+  },
+  {
+    "name": "an empty value is a value",
+    "text": "//:setParam(\"raid\", \"\")\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {
+        "raid": ""
+      }
+    ]
+  },
+  {
+    "name": "a directive with a name that cannot be a parameter, the wrong number of arguments or an unquoted value sets nothing",
+    "text": "//:setParam(\"not a name\", \"x\")\n//:setParam(\"raid\")\n//:setParam(\"raid\", 5)\n//:setParam(raid, \"x\")\n//:setParam(\"raid\", \"x\", \"y\")\n//:setParam(\"raid\", \"x\",)\n//:clearParams(\"raid\")\n//:clearParam()\n\ndeclare query_parameters(raid:string, count:long);\nT1",
+    "queries": [
+      {}
+    ]
+  },
+  {
+    "name": "a directive has to start its line",
+    "text": "declare query_parameters(raid:string, count:long);\nT1 //:setParam(\"raid\", \"not-a-directive\")\n\ndeclare query_parameters(raid:string, count:long);\nT2",
+    "queries": [
+      {},
+      {}
+    ]
+  },
+  {
+    "name": "windows line endings",
+    "text": "//:setParam(\"raid\", \"crlf\")\r\n\r\ndeclare query_parameters(raid:string, count:long);\r\nT1",
+    "queries": [
+      {
+        "raid": "crlf"
+      }
+    ]
+  }
+]

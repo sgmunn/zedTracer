@@ -2,7 +2,8 @@
 //! `declare query_parameters(...)`, kept in YAML next to the queries.
 //!
 //! The values travel as native Kusto query parameters. Nothing is substituted into the query
-//! text, so a value cannot change what the query means.
+//! text, so a value cannot change what the query means. A value that the file itself gives with
+//! `// :setParam("name", "value")` (see [crate::directives]) is used instead of the profile's.
 //!
 //! ```yaml
 //! active: Incident A
@@ -45,6 +46,11 @@ static ACTIVE_LINE: LazyLock<Regex> =
 static DECLARATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bdeclare\s+query_parameters\s*\(").expect("a valid pattern")
 });
+
+/// Whether a text can be the name of a parameter.
+pub(crate) fn is_parameter_name(name: &str) -> bool {
+    PARAMETER_NAME.is_match(name)
+}
 
 impl ParameterProfiles {
     /// Reads a profiles file. An empty file has no profiles. A profile's values that are not
@@ -237,17 +243,21 @@ fn without_comments(query: &str) -> String {
         .join("\n")
 }
 
-/// The values for the parameters a query declares, from the active profile. A declared
-/// parameter the profile has no value for is left out, which is right when the declaration
-/// gives it a default and otherwise is for the service to complain about.
-pub fn parameters_for_query(query: &str, profile: Option<&Profile>) -> BTreeMap<String, String> {
-    let Some(profile) = profile else {
-        return BTreeMap::new();
-    };
+/// The values for the parameters a query declares: the ones the file gives with directives, else
+/// the active profile's. A declared parameter that neither has a value for is left out, which is
+/// right when the declaration gives it a default and otherwise is for the service to complain about.
+pub fn parameters_for_query(
+    query: &str,
+    profile: Option<&Profile>,
+    given_by_file: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     declared_parameters(query)
         .into_iter()
         .filter_map(|name| {
-            let value = profile.values.get(&name)?.clone();
+            let value = given_by_file
+                .get(&name)
+                .or_else(|| profile?.values.get(&name))?
+                .clone();
             Some((name, value))
         })
         .collect()
@@ -433,11 +443,34 @@ mod tests {
     fn only_the_declared_parameters_the_profile_has_are_sent() {
         let profile = profile("P", &[("raid", "abc"), ("unused", "x")]);
         let query = "declare query_parameters(raid:string, missing:long);\nT";
+        let none = BTreeMap::new();
         assert_eq!(
-            parameters_for_query(query, Some(&profile)),
+            parameters_for_query(query, Some(&profile), &none),
             BTreeMap::from([("raid".to_string(), "abc".to_string())])
         );
-        assert!(parameters_for_query("T | take 1", Some(&profile)).is_empty());
-        assert!(parameters_for_query(query, None).is_empty());
+        assert!(parameters_for_query("T | take 1", Some(&profile), &none).is_empty());
+        assert!(parameters_for_query(query, None, &none).is_empty());
+    }
+
+    #[test]
+    fn a_value_the_file_gives_comes_before_the_profiles_and_needs_no_profile() {
+        let profile = profile("P", &[("raid", "from-profile"), ("count", "5")]);
+        let given = BTreeMap::from([
+            ("raid".to_string(), "from-file".to_string()),
+            ("unused".to_string(), "x".to_string()),
+        ]);
+        let query = "declare query_parameters(raid:string, count:long, other:string);\nT";
+        assert_eq!(
+            parameters_for_query(query, Some(&profile), &given),
+            BTreeMap::from([
+                ("raid".to_string(), "from-file".to_string()),
+                ("count".to_string(), "5".to_string()),
+            ]),
+            "the file wins for raid, the profile still gives count, and an undeclared name is not sent"
+        );
+        assert_eq!(
+            parameters_for_query(query, None, &given),
+            BTreeMap::from([("raid".to_string(), "from-file".to_string())])
+        );
     }
 }

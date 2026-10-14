@@ -29,8 +29,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use directives::{
-    Connection, DEFAULTS_FILE, ResolvedQuery, connection_for_selection, connection_up_to,
-    connections_of_queries, resolve_query_at,
+    Connection, DEFAULTS_FILE, DirectiveState, ResolvedQuery, connection_up_to,
+    connections_of_queries, resolve_query_at, state_for_selection, state_up_to,
 };
 pub use history::{
     HistoryEntry, HistoryFile, HistoryLimits, HistoryOutcome, files_to_prune, history_entries,
