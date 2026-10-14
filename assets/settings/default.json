@@ -2611,6 +2611,8 @@
       // The colours come from the Kusto language server, which knows all of the language and the
       // schema, so they are used on their own: there is no tree-sitter grammar for Kusto.
       "semantic_tokens": "full",
+      // The same goes for the outline: the server lists the queries and the functions of a file.
+      "document_symbols": "on",
     },
     "LaTeX": {
       "formatter": "language_server",
