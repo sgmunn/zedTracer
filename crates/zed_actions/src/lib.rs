@@ -998,3 +998,18 @@ pub mod git_panel {
         ]
     );
 }
+
+pub mod kusto {
+    use gpui::actions;
+
+    actions!(
+        kusto,
+        [
+            /// Saves the selected text, or the query around the cursor, as a snippet of the
+            /// Kusto language. It is here and not with the other Kusto actions because the
+            /// editor's context menu offers it, and the editor cannot depend on the crate that
+            /// handles it.
+            SaveQueryAsSnippet
+        ]
+    );
+}

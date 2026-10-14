@@ -13,6 +13,7 @@ use std::ops::Range;
 use text::PointUtf16;
 use workspace::OpenInTerminal;
 use zed_actions::agent::AddSelectionToThread;
+use zed_actions::kusto::SaveQueryAsSnippet;
 use zed_actions::preview::{
     markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
 };
@@ -217,6 +218,7 @@ pub fn deploy_context_menu(
                         .is_some()
                 });
 
+        let save_query_as_snippet = window.is_action_available(&SaveQueryAsSnippet, cx);
         let evaluate_selection = window.is_action_available(&EvaluateSelectedText, cx);
         let run_to_cursor = window.is_action_available(&RunToCursor, cx);
         let format_selections = window.is_action_available(&FormatSelections, cx);
@@ -291,6 +293,9 @@ pub fn deploy_context_menu(
                         quick_launch: false,
                     }),
                 )
+                .when(save_query_as_snippet, |this| {
+                    this.action("Save Query as Snippet", Box::new(SaveQueryAsSnippet))
+                })
                 .when(!disable_ai && has_selections, |this| {
                     this.action("Add to Agent Thread", Box::new(AddSelectionToThread))
                 })
