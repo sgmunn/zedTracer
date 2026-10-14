@@ -4,6 +4,9 @@ using Kusto.Language;
 /// <summary>One function of a database as `.show functions` describes it.</summary>
 internal sealed record StoredFunction(string Name, string Parameters, string Body, string? Folder, string? DocString);
 
+/// <summary>A function that has a file in a snapshot: where, and which function of which database it is.</summary>
+internal sealed record SnapshotFile(string Host, string Database, string Name, string? Folder, string Path);
+
 /// <summary>What writing a snapshot did. `Stale` are the files that no function of the database has any more.</summary>
 internal sealed record SnapshotResult(string Directory, int Created, int Changed, int Unchanged, IReadOnlyList<string> Stale);
 
@@ -157,6 +160,57 @@ internal static class FunctionSnapshots
                 .ToList()
             : [];
         return new SnapshotResult(directory, created, changed, unchanged, stale);
+    }
+
+    /// <summary>Every function that has a file under a snapshot folder, read from where the files are and not from the cluster.</summary>
+    public static List<SnapshotFile> Files(string root)
+    {
+        var files = new List<SnapshotFile>();
+        if (!Directory.Exists(root))
+            return files;
+        foreach (var hostDirectory in Directory.EnumerateDirectories(root))
+        {
+            foreach (var databaseDirectory in Directory.EnumerateDirectories(hostDirectory))
+            {
+                var functions = Path.Combine(databaseDirectory, "functions");
+                if (!Directory.Exists(functions))
+                    continue;
+                foreach (var path in Directory.EnumerateFiles(functions, "*.kql", SearchOption.AllDirectories))
+                {
+                    var folders = Path.GetDirectoryName(Path.GetRelativePath(functions, path))!
+                        .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(Uri.UnescapeDataString);
+                    files.Add(new SnapshotFile(
+                        Uri.UnescapeDataString(Path.GetFileName(hostDirectory)),
+                        Uri.UnescapeDataString(Path.GetFileName(databaseDirectory)),
+                        Uri.UnescapeDataString(Path.GetFileNameWithoutExtension(path)),
+                        folders.Any() ? string.Join('/', folders) : null,
+                        path));
+                }
+            }
+        }
+        return files;
+    }
+
+    /// <summary>
+    /// How well a name matches what was typed, best first: 0 is the name itself, 1 starts with it, 2 has it
+    /// inside, 3 has its letters in that order; -1 is no match. Case does not matter.
+    /// </summary>
+    public static int Rank(string name, string query)
+    {
+        if (query.Length == 0 || name.Equals(query, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        if (name.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+            return 1;
+        if (name.Contains(query, StringComparison.OrdinalIgnoreCase))
+            return 2;
+        var next = 0;
+        foreach (var character in name)
+        {
+            if (char.ToLowerInvariant(character) == char.ToLowerInvariant(query[next]) && ++next == query.Length)
+                return 3;
+        }
+        return -1;
     }
 
     /// <summary>The file of a function, wherever its folder put it, or null when there is none.</summary>

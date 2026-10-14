@@ -1167,6 +1167,70 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(message["type"], 2)
         self.assertEqual([csl for _, csl in cluster.commands if csl == ".show functions"], [])
 
+    def workspace_symbols(self, query):
+        return self.request("workspace/symbol", {"query": query})["result"]
+
+    def test_the_server_offers_document_and_workspace_symbols(self):
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster)
+        self.assertTrue(self.capabilities["documentSymbolProvider"])
+        self.assertTrue(self.capabilities["workspaceSymbolProvider"])
+
+    def test_the_functions_with_files_are_the_workspace_symbols_best_match_first(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')", root / "q.kql")
+        self.definition_once_loaded(0, 10)
+        file = self.snapshot_path(root / "kusto-schema", "Utilities", "Storm", "StatesOver.kql")
+
+        self.assertEqual([symbol["name"] for symbol in self.workspace_symbols("")], ["Plain", "StatesOver"])
+        [symbol] = self.workspace_symbols("states")
+        self.assertEqual(symbol["name"], "StatesOver")
+        self.assertEqual(symbol["kind"], 12)
+        self.assertEqual(symbol["containerName"], "Samples / Utilities/Storm")
+        self.assertEqual(symbol["location"]["uri"], file.as_uri())
+        self.assertEqual(
+            symbol["location"]["range"],
+            {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": len("StatesOver")}},
+        )
+        self.assertEqual([symbol["name"] for symbol in self.workspace_symbols("PLAIN")], ["Plain"])
+        self.assertEqual([symbol["name"] for symbol in self.workspace_symbols("sov")], ["StatesOver"], "letters in order")
+        self.assertEqual(self.workspace_symbols("zzz"), [])
+
+    def test_a_better_match_comes_before_a_worse_one_whatever_the_names(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print Plain()", root / "q.kql")
+        self.definition_once_loaded(0, 8)
+        folder = self.snapshot_path(root / "kusto-schema")
+        (folder / "AMainPlainer.kql").write_text("// another\nf()\n")
+        (folder / "Plainer.kql").write_text("// another\nf()\n")
+
+        self.assertEqual(
+            [symbol["name"] for symbol in self.workspace_symbols("plain")],
+            ["Plain", "Plainer", "AMainPlainer"],
+            "the name itself, then names that start with it, then names that have it inside",
+        )
+
+    def test_no_files_means_no_workspace_symbols_and_nothing_is_fetched(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.assertEqual(self.workspace_symbols("plain"), [])
+        self.assertEqual([csl for _, csl in cluster.commands if csl == ".show functions"], [])
+
+    def test_a_full_path_in_the_option_is_searched_without_a_project(self):
+        elsewhere = self.directory() / "snapshots"
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, {"snapshotDirectory": str(elsewhere)})
+        self.open("print Plain()", self.directory() / "q.kql")
+        self.definition_once_loaded(0, 8)
+
+        [symbol] = self.workspace_symbols("plain")
+        self.assertEqual(symbol["location"]["uri"], self.snapshot_path(elsewhere, "Plain.kql").as_uri())
+
     def test_names_that_are_not_stored_functions_have_no_definition(self):
         root = self.directory()
         cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
@@ -1206,6 +1270,89 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(self.messages[0]["type"], 1)
         self.assertIn("Could not write the snapshot", self.messages[0]["message"])
         self.assertFalse((root / "kusto-schema").exists())
+
+
+class OutlineTest(unittest.TestCase):
+    """The outline of a file of queries: the entries the editor lists for it and jumps to."""
+
+    setUp = LanguageServerTest.setUp
+    start_server = LanguageServerTest.start_server
+    tearDown = LanguageServerTest.tearDown
+    stop_server = LanguageServerTest.stop_server
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    open_document = LanguageServerTest.open_document
+
+    def outline(self, text):
+        self.open_document(text)
+        self.send(7, "textDocument/documentSymbol", {"textDocument": {"uri": URI}})
+        while True:
+            message = self.receive()
+            if message.get("id") == 7 and "result" in message:
+                return message["result"]
+
+    def names(self, text):
+        return [(symbol["name"], symbol["kind"]) for symbol in self.outline(text)]
+
+    @staticmethod
+    def span(range_):
+        return (range_["start"]["line"], range_["start"]["character"], range_["end"]["line"], range_["end"]["character"])
+
+    def test_a_query_is_called_by_its_first_comment_and_otherwise_by_its_first_line(self):
+        text = "// Failing activities\nT\n| where x\n\n// :setDefaultDb(\"Samples\")\nStormEvents\n| take 10\n\nprint 1"
+        symbols = self.outline(text)
+
+        self.assertEqual([(s["name"], s["kind"]) for s in symbols], [("Failing activities", 24), ("StormEvents", 24), ("print 1", 24)])
+        self.assertEqual(self.span(symbols[0]["range"]), (0, 0, 2, 9), "the whole query")
+        self.assertEqual(self.span(symbols[0]["selectionRange"]), (0, 3, 0, 21), "the text of the label")
+        self.assertEqual(self.span(symbols[1]["selectionRange"]), (5, 0, 5, 11), "a directive does not name a query")
+
+    def test_notes_and_directives_on_their_own_are_not_entries(self):
+        self.assertEqual(self.names("// a note\n\n// :setDefaultDb(\"Samples\")\n\nprint 1"), [("print 1", 24)])
+
+    def test_a_line_of_dashes_does_not_name_a_query(self):
+        self.assertEqual(self.names("// ----\n// Step two\nprint 1"), [("Step two", 24)])
+
+    def test_a_line_commented_out_of_a_query_does_not_name_it(self):
+        text = "let activityId = 'abc';\nASAz().ASTrace\n| where Level == 1\n//| where CurrentActivityId == activityId\n| take 10"
+        [symbol] = self.outline(text)
+        self.assertEqual(symbol["name"], "let activityId = 'abc';")
+        self.assertEqual(self.span(symbol["selectionRange"]), (0, 0, 0, 23), "the first line, not the comment below")
+
+    def test_a_long_first_line_is_cut(self):
+        [symbol] = self.outline("T | where " + "x == 1 and " * 30 + "y == 2")
+        self.assertLessEqual(len(symbol["name"]), 100)
+        start, end = symbol["selectionRange"]["start"]["character"], symbol["selectionRange"]["end"]["character"]
+        self.assertEqual(end - start, len(symbol["name"]), "the range is the cut text")
+
+    def test_a_functions_block_lists_its_definitions(self):
+        text = "// :functions\nlet Double = (x:long) { x * 2 };\nlet limit = 5;\n\nprint Double(limit)"
+        symbols = self.outline(text)
+
+        self.assertEqual([(s["name"], s["kind"]) for s in symbols], [("Double", 12), ("limit", 13), ("print Double(limit)", 24)])
+        self.assertEqual(symbols[0]["detail"], "(x:long)")
+        self.assertEqual(self.span(symbols[0]["range"]), (1, 0, 1, 31), "the whole statement")
+        self.assertEqual(self.span(symbols[0]["selectionRange"]), (1, 4, 1, 10), "the name")
+        self.assertEqual(self.span(symbols[1]["selectionRange"]), (2, 4, 2, 9))
+
+    def test_a_command_that_defines_a_function_is_that_function(self):
+        text = (
+            "// :setDefaultDb(\"Samples\")\n.create-or-alter function with (folder = 'Demo')\n"
+            "MyFunc(a:long)\n{\n    print a\n\n}\n\n.show functions"
+        )
+        symbols = self.outline(text)
+
+        self.assertEqual([(s["name"], s["kind"]) for s in symbols], [("MyFunc", 12), (".show functions", 24)])
+        self.assertEqual(symbols[0]["detail"], "(a:long)")
+        self.assertEqual(self.span(symbols[0]["range"]), (0, 0, 6, 1), "the whole block, comments and all; a blank line in the body does not end it")
+        self.assertEqual(self.span(symbols[0]["selectionRange"]), (2, 0, 2, 6))
+
+    def test_a_command_with_a_comment_is_called_by_the_comment(self):
+        self.assertEqual(self.names("// the tables\n.show tables"), [("the tables", 24)])
+
+    def test_text_with_no_query_has_no_outline(self):
+        self.assertEqual(self.outline(""), [])
+        self.assertEqual(self.outline("// only a note"), [])
 
 
 class DirectiveTest(unittest.TestCase):

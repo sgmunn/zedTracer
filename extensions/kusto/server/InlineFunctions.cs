@@ -8,6 +8,9 @@ using Kusto.Language.Symbols;
 /// </summary>
 internal sealed record InlineFunction(string Name, string Parameters, string Body, bool IsValue = false);
 
+/// <summary>A definition with where it is in the block that holds it: its whole statement, and its name, as offsets into the block.</summary>
+internal sealed record LocatedFunction(InlineFunction Function, int Start, int End, int NameStart, int NameEnd);
+
 /// <summary>
 /// Functions and values defined in the query file itself. A block with the line `// :functions` holds the
 /// definitions, as `let name = …;` statements, and every query below it can use them (see
@@ -41,9 +44,13 @@ internal static class InlineFunctions
         return functions;
     }
 
-    private static List<InlineFunction> Parse(string block)
+    private static List<InlineFunction> Parse(string block) =>
+        Locate(block).Select(located => located.Function).ToList();
+
+    /// <summary>The functions a functions block defines, in the order written, with where each is in the block.</summary>
+    public static List<LocatedFunction> Locate(string block)
     {
-        var functions = new List<InlineFunction>();
+        var functions = new List<LocatedFunction>();
         if (KustoCode.Parse(block).Syntax is not Kusto.Language.Syntax.QueryBlock query)
             return functions;
         foreach (var element in query.Statements)
@@ -51,16 +58,20 @@ internal static class InlineFunctions
             if (element.Element is not Kusto.Language.Syntax.LetStatement statement)
                 continue;
             var name = statement.Name.SimpleName;
+            InlineFunction? function = null;
             if (statement.Expression is Kusto.Language.Syntax.FunctionDeclaration declaration)
             {
                 // `let f = (x:long);` parses as a function with nothing in its body, which the block's own diagnostics report.
                 if (declaration.Body.ToString().Trim().StartsWith('{'))
-                    functions.Add(new InlineFunction(name, declaration.Parameters.ToString().Trim(), declaration.Body.ToString().Trim()));
+                    function = new InlineFunction(name, declaration.Parameters.ToString().Trim(), declaration.Body.ToString().Trim());
             }
             else if (statement.Expression.ToString().Trim() is { Length: > 0 } expression)
             {
-                functions.Add(new InlineFunction(name, "()", "{ " + expression + " }", IsValue: true));
+                function = new InlineFunction(name, "()", "{ " + expression + " }", IsValue: true);
             }
+            if (function is not null)
+                functions.Add(new LocatedFunction(
+                    function, statement.TextStart, statement.End, statement.Name.TextStart, statement.Name.End));
         }
         return functions;
     }

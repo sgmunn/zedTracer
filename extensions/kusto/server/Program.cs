@@ -102,6 +102,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand, CodeLenses.SnapshotFunctionsCommand, PortableQuery.Command } },
                         hoverProvider = true,
                         definitionProvider = true,
+                        documentSymbolProvider = true,
+                        workspaceSymbolProvider = true,
                         semanticTokensProvider = new
                         {
                             legend = new { tokenTypes = SemanticTokens.Legend, tokenModifiers = Array.Empty<string>() },
@@ -181,6 +183,10 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 return GetCodeLenses(parameters);
             case "textDocument/semanticTokens/full":
                 return GetSemanticTokens(parameters);
+            case "textDocument/documentSymbol":
+                return GetDocumentSymbols(parameters);
+            case "workspace/symbol":
+                return GetWorkspaceSymbols(parameters);
             case "workspace/executeCommand":
                 return ExecuteCommand(parameters);
             default:
