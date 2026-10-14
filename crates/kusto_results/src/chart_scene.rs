@@ -1574,20 +1574,23 @@ impl ChartScene {
     }
 }
 
-/// The colours of a chart written as SVG, as CSS colour text.
+/// How a chart is written as SVG: its style, as CSS colour text, and its font.
 #[derive(Debug, Clone)]
-pub struct SvgColours {
+pub struct SvgStyle {
     /// The fill behind the chart, or none to leave it transparent.
     pub background: Option<String>,
     pub text: String,
     pub muted: String,
     pub grid: String,
     pub axis: String,
-    /// By `color_index`, which wraps around when there are more series than colours.
+    /// By `color_index`, which wraps around when there are more series than style.
     pub series: Vec<String>,
+    /// A CSS font family list. The layout measured text with a guess, so a font of about the
+    /// width of Helvetica is the one the picture was laid out for.
+    pub font_family: String,
 }
 
-impl SvgColours {
+impl SvgStyle {
     pub fn light() -> Self {
         Self {
             background: Some("#ffffff".into()),
@@ -1601,6 +1604,7 @@ impl SvgColours {
             ]
             .map(String::from)
             .to_vec(),
+            font_family: "Helvetica, Arial, sans-serif".into(),
         }
     }
 
@@ -1617,6 +1621,7 @@ impl SvgColours {
             ]
             .map(String::from)
             .to_vec(),
+            font_family: "Helvetica, Arial, sans-serif".into(),
         }
     }
 
@@ -1648,7 +1653,7 @@ fn escape_xml(text: &str) -> String {
     escaped
 }
 
-fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
+fn svg_item(item: &Item, style: &SvgStyle, out: &mut String) {
     use std::fmt::Write as _;
     // Writing to a String does not fail.
     match item {
@@ -1665,7 +1670,7 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
                 from.1,
                 to.0,
                 to.1,
-                colours.of(*role)
+                style.of(*role)
             );
         }
         Item::Polyline {
@@ -1681,7 +1686,7 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
                 out,
                 r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round"/>"#,
                 points.join(" "),
-                colours.of(*role)
+                style.of(*role)
             );
         }
         Item::Rect {
@@ -1696,7 +1701,7 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
                 rect.top,
                 rect.width,
                 rect.height,
-                colours.of(*role)
+                style.of(*role)
             );
         }
         Item::Circle {
@@ -1709,7 +1714,7 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
                 r#"<circle cx="{:.2}" cy="{:.2}" r="{radius}" fill="{}"/>"#,
                 center.0,
                 center.1,
-                colours.of(*role)
+                style.of(*role)
             );
         }
         Item::Text {
@@ -1738,7 +1743,7 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
                 out,
                 r#"<text x="{:.2}" y="{baseline:.2}" font-size="{size}" text-anchor="{anchor}" fill="{}"{weight}>{}</text>"#,
                 at.0,
-                colours.of(*role),
+                style.of(*role),
                 escape_xml(text)
             );
         }
@@ -1747,17 +1752,18 @@ fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
 
 impl ChartScene {
     /// The chart as a stand-alone SVG picture, for copying or saving.
-    pub fn to_svg(&self, colours: &SvgColours) -> String {
+    pub fn to_svg(&self, style: &SvgStyle) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
         // Writing to a String does not fail.
         let _ = writeln!(
             out,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Helvetica, Arial, sans-serif">"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="{family}">"#,
             w = self.width,
-            h = self.height
+            h = self.height,
+            family = escape_xml(&style.font_family)
         );
-        if let Some(background) = &colours.background {
+        if let Some(background) = &style.background {
             let _ = writeln!(
                 out,
                 r#"<rect width="{}" height="{}" fill="{background}"/>"#,
@@ -1770,15 +1776,15 @@ impl ChartScene {
             self.plot.left, self.plot.top, self.plot.width, self.plot.height
         );
         for item in &self.grid {
-            svg_item(item, colours, &mut out);
+            svg_item(item, style, &mut out);
         }
         out.push_str("<g clip-path=\"url(#plot)\">\n");
         for item in &self.plot_items {
-            svg_item(item, colours, &mut out);
+            svg_item(item, style, &mut out);
         }
         out.push_str("</g>\n");
         for item in &self.chrome {
-            svg_item(item, colours, &mut out);
+            svg_item(item, style, &mut out);
         }
         out.push_str("</svg>\n");
         out
@@ -2485,7 +2491,7 @@ mod tests {
             &two_series_over_time(),
             json!({"type": "TimeLine", "title": "Rock & <Roll>"}),
         );
-        let svg = scene.to_svg(&SvgColours::light());
+        let svg = scene.to_svg(&SvgStyle::light());
         assert!(svg.starts_with("<svg "));
         assert!(svg.trim_end().ends_with("</svg>"));
         assert_eq!(svg.matches("<polyline").count(), 2);
@@ -2493,13 +2499,13 @@ mod tests {
         assert!(svg.contains(r##"fill="#ffffff""##), "a light background");
         assert!(svg.contains(&format!(
             r#"stroke="{}""#,
-            SvgColours::light().series[data.series[0].color_index]
+            SvgStyle::light().series[data.series[0].color_index]
         )));
-        let dark = scene.to_svg(&SvgColours::dark());
+        let dark = scene.to_svg(&SvgStyle::dark());
         assert!(dark.contains(r##"fill="#1e2126""##));
-        let transparent = scene.to_svg(&SvgColours {
+        let transparent = scene.to_svg(&SvgStyle {
             background: None,
-            ..SvgColours::light()
+            ..SvgStyle::light()
         });
         assert!(!transparent.contains(r##"fill="#ffffff""##));
     }
@@ -2510,7 +2516,7 @@ mod tests {
             &states(),
             json!({"type": "ColumnStacked", "showValues": true}),
         );
-        let svg = scene.to_svg(&SvgColours::dark());
+        let svg = scene.to_svg(&SvgStyle::dark());
         let mut reader = quick_xml::Reader::from_str(&svg);
         let mut elements = 0;
         loop {

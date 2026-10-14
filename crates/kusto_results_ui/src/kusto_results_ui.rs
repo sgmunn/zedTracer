@@ -3,6 +3,7 @@
 mod activity_tree;
 mod actor_colours;
 mod chart_editor;
+mod chart_export;
 mod chart_view;
 mod code_references;
 mod filter_popover;

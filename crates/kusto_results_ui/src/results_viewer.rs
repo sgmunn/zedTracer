@@ -54,6 +54,8 @@ actions!(
         ToggleChartEditor,
         /// Removes the chart being shown from the result.
         RemoveChart,
+        /// Copies the chart being shown to the clipboard as a picture.
+        CopyChart,
     ]
 );
 
@@ -1643,6 +1645,11 @@ impl Render for ResultsViewer {
                     view.update(cx, |view, cx| view.toggle_editor(window, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &CopyChart, window, cx| {
+                if let Some(view) = this.shown_chart_view().cloned() {
+                    view.update(cx, |view, cx| view.copy_chart(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &RemoveChart, window, cx| {
                 if let ViewMode::Chart(position) = this.mode {
                     this.remove_chart(position, window, cx);
@@ -2685,6 +2692,52 @@ mod tests {
         assert_eq!(chart.options.chart_type, "Column");
         assert_eq!(chart.options.title.as_deref(), Some("Hail and floods"));
         assert_eq!(chart.options.x_column.as_deref(), Some("EventType"));
+    }
+
+    #[gpui::test]
+    async fn a_chart_can_be_copied_as_a_picture(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_charted(
+            cx,
+            json!([{ "options": { "type": "TimeLine", "title": "Storms", "mode": "Dark" } }]),
+        )
+        .await;
+        let view = chart_view(&viewer, cx);
+        let area = view.read_with(cx, |view, _| view.area());
+        let button = cx
+            .debug_bounds("chart-copy")
+            .map(|bounds| bounds.center())
+            .expect("the button");
+        cx.simulate_click(button, gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        let copied = cx.read_from_clipboard().expect("something was copied");
+        let Some(gpui::ClipboardEntry::Image(image)) = copied.entries().first() else {
+            panic!("the clipboard holds a picture, not {:?}", copied.entries());
+        };
+        assert_eq!(image.format, gpui::ImageFormat::Png);
+        let decoded = image::load_from_memory(&image.bytes)
+            .expect("a PNG")
+            .to_rgba8();
+        let expected = (
+            (f32::from(area.size.width) * 2.0).ceil() as u32,
+            (f32::from(area.size.height) * 2.0).ceil() as u32,
+        );
+        assert_eq!(
+            decoded.dimensions(),
+            expected,
+            "twice the size on the screen"
+        );
+        assert_eq!(
+            decoded.get_pixel(1, 1).0,
+            [0x1e, 0x21, 0x26, 255],
+            "the dark background"
+        );
+        let colours: std::collections::HashSet<_> = decoded.pixels().map(|pixel| pixel.0).collect();
+        assert!(
+            colours.len() > 10,
+            "lines, text and a legend were drawn: {} colours",
+            colours.len()
+        );
     }
 
     #[gpui::test]

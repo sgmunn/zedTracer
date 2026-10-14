@@ -10,22 +10,25 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, BorderStyle, Bounds, ContentMask, Context, Entity,
-    EventEmitter, Font, FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathBuilder, Pixels, Point, Render, SharedString, Subscription, Task, TextAlign, TextRun,
-    Window, canvas, div, fill, outline, point, px, size,
+    AnyElement, App, AppContext as _, BorderStyle, Bounds, ClipboardItem, ContentMask, Context,
+    Entity, EventEmitter, Font, FontWeight, Hsla, Image, ImageFormat, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels, Point, Render, SharedString, Subscription,
+    Task, TextAlign, TextRun, Window, canvas, div, fill, outline, point, px, size,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::chart::SortOrder;
+use kusto_results::chart::{ColorMode, SortOrder};
 use kusto_results::chart_data::ChartData;
 use kusto_results::chart_scene::{
-    Anchor, ChartScene, Hover, Item, Rect, Role, TextMeasure, VerticalAnchor, ViewState,
+    Anchor, ChartScene, EstimatedText, Hover, Item, Rect, Role, SvgStyle, TextMeasure,
+    VerticalAnchor, ViewState,
 };
 use kusto_results::{Chart, ChartOptions, ResultSet};
-use ui::{Button, prelude::*};
+use ui::{Button, IconButton, IconName, IconSize, Tooltip, prelude::*};
+use workspace::notifications::DetachAndPromptErr as _;
 
 use crate::actor_colours::theme_actor_palette;
 use crate::chart_editor::{ChartEditor, ChartEditorEvent, ColumnInfo, Effective};
+use crate::chart_export;
 
 const TOOLTIP_OFFSET: Pixels = px(12.);
 const TOOLTIP_MAXIMUM_NAME_WIDTH: Pixels = px(240.);
@@ -523,6 +526,52 @@ impl ChartView {
         }));
     }
 
+    /// Copies the chart to the clipboard as a picture, in the colours of the chart's mode, or of
+    /// the theme when the mode is automatic. The picture is laid out at the size of the chart on
+    /// the screen and drawn away from the window.
+    pub(crate) fn copy_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (data, view, area, series_colors) = {
+            let painted = self.painted.borrow();
+            (
+                painted.data.clone(),
+                painted.view.clone(),
+                painted.area.size,
+                painted.series_colors,
+            )
+        };
+        let Some(data) = data else {
+            return;
+        };
+        let options = self.chart.options.clone();
+        let (width, height) = (f32::from(area.width), f32::from(area.height));
+        let (width, height) = if width < 100.0 || height < 100.0 {
+            (800.0, 450.0)
+        } else {
+            (width, height)
+        };
+        let style = match options.mode {
+            Some(ColorMode::Light) => SvgStyle::light(),
+            Some(ColorMode::Dark) => SvgStyle::dark(),
+            _ => chart_export::themed_style(series_colors, cx),
+        };
+        let picture = cx.background_spawn(async move {
+            let scene = ChartScene::build(&data, &options, &view, width, height, &EstimatedText);
+            chart_export::render_png(&scene.to_svg(&style), chart_export::SCALE)
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let png = picture.await?;
+            cx.update(|_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+                    ImageFormat::Png,
+                    png,
+                )))
+            })
+        })
+        .detach_and_prompt_err("Could not copy the chart", window, cx, |error, _, _| {
+            Some(error.to_string())
+        });
+    }
+
     /// Shows or hides the pane that edits the chart.
     pub(crate) fn toggle_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing = !self.editing;
@@ -800,15 +849,30 @@ impl Render for ChartView {
         v_flex()
             .size_full()
             .child(
-                h_flex().px_2().py_1().gap_1().justify_end().child(
-                    div().debug_selector(|| "chart-edit".to_string()).child(
-                        Button::new("chart-edit", "Edit chart")
-                            .toggle_state(editing)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_editor(window, cx)),
-                            ),
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_1()
+                    .justify_end()
+                    .child(
+                        div().debug_selector(|| "chart-copy".to_string()).child(
+                            IconButton::new("chart-copy", IconName::Copy)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Copy the chart as a picture"))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.copy_chart(window, cx)),
+                                ),
+                        ),
+                    )
+                    .child(
+                        div().debug_selector(|| "chart-edit".to_string()).child(
+                            Button::new("chart-edit", "Edit chart")
+                                .toggle_state(editing)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_editor(window, cx)
+                                })),
+                        ),
                     ),
-                ),
             )
             .child(
                 h_flex()
