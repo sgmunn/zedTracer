@@ -316,6 +316,14 @@ impl ResultSet {
         self.table_views.iter().find(|view| view.name == name)
     }
 
+    /// The table a chart reads: the one it names, else the first.
+    pub fn chart_table(&self, chart: &Chart) -> Option<&Table> {
+        match chart.table_name.as_deref() {
+            Some(name) => self.tables.iter().find(|table| table.name == name),
+            None => self.tables.first(),
+        }
+    }
+
     /// Replaces the charts. A `charts` property that could not be read as charts is dropped,
     /// because it would otherwise be written next to the new ones.
     pub fn set_charts(&mut self, charts: Vec<Chart>) {
@@ -630,6 +638,26 @@ mod tests {
         let written = result.to_json().unwrap();
         assert!(written.contains(r#""no options""#));
         assert_eq!(ResultSet::from_json(&written).unwrap(), result);
+    }
+
+    #[test]
+    fn a_chart_reads_the_table_it_names_else_the_first() {
+        let text = r#"{"tables":[
+            {"name":"a","columns":[{"name":"x","type":"long"}],"rows":[[1]]},
+            {"name":"b","columns":[{"name":"x","type":"long"}],"rows":[[2]]}]}"#;
+        let result = ResultSet::from_json(text).unwrap();
+        let chart = |table_name: Option<&str>| Chart {
+            table_name: table_name.map(str::to_string),
+            ..Chart::default()
+        };
+        let name_of = |table_name| {
+            result
+                .chart_table(&chart(table_name))
+                .map(|table| table.name.clone())
+        };
+        assert_eq!(name_of(None).as_deref(), Some("a"));
+        assert_eq!(name_of(Some("b")).as_deref(), Some("b"));
+        assert_eq!(name_of(Some("gone")), None);
     }
 
     #[test]
