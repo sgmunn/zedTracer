@@ -21,12 +21,28 @@ pub trait TextMeasure {
     fn width(&self, text: &str, size: f32) -> f32;
 }
 
-/// A guess at text width, for tests and for writing SVG where no font is at hand.
+/// A guess at text width, for tests and for writing SVG where no font is at hand. Capitals and
+/// wide letters count for more than narrow ones, which is close enough to size a margin.
 pub struct EstimatedText;
 
 impl TextMeasure for EstimatedText {
     fn width(&self, text: &str, size: f32) -> f32 {
-        text.chars().count() as f32 * size * 0.55
+        let ems: f32 = text
+            .chars()
+            .map(|character| match character {
+                ' ' => 0.28,
+                'i' | 'l' | 'j' | 't' | 'f' | 'I' | '.' | ',' | ':' | ';' | '|' | '!' | '\''
+                | '`' | '(' | ')' | '[' | ']' | '-' | '/' | '\\' => 0.3,
+                'm' | 'w' => 0.8,
+                'M' | 'W' | '@' | '%' => 0.95,
+                'A'..='Z' => 0.68,
+                '0'..='9' => 0.56,
+                character if character.is_ascii() => 0.54,
+                character if (character as u32) >= 0x2E80 => 1.0,
+                _ => 0.6,
+            })
+            .sum();
+        ems * size
     }
 }
 
@@ -517,6 +533,16 @@ impl<'a> Layout<'a> {
         if self.data.kind.is_bars() && !logarithmic {
             low = low.min(0.0);
             high = high.max(0.0);
+            // Room for the value written above the longest bar.
+            if self.options.show_values == Some(true) && self.stacking == Stacking::Grouped {
+                let room = (high - low) * 0.08;
+                if high > 0.0 {
+                    high += room;
+                }
+                if low < 0.0 {
+                    low -= room;
+                }
+            }
         }
         (low, high)
     }
@@ -1548,6 +1574,217 @@ impl ChartScene {
     }
 }
 
+/// The colours of a chart written as SVG, as CSS colour text.
+#[derive(Debug, Clone)]
+pub struct SvgColours {
+    /// The fill behind the chart, or none to leave it transparent.
+    pub background: Option<String>,
+    pub text: String,
+    pub muted: String,
+    pub grid: String,
+    pub axis: String,
+    /// By `color_index`, which wraps around when there are more series than colours.
+    pub series: Vec<String>,
+}
+
+impl SvgColours {
+    pub fn light() -> Self {
+        Self {
+            background: Some("#ffffff".into()),
+            text: "#1f2328".into(),
+            muted: "#59636e".into(),
+            grid: "#e6e9ec".into(),
+            axis: "#9aa3ad".into(),
+            series: [
+                "#3b82c4", "#d9822b", "#8e5bb5", "#3f9b5c", "#c8465a", "#2a9d9d", "#b59a1e",
+                "#b8509c", "#5865c9", "#6f9a2d",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+
+    pub fn dark() -> Self {
+        Self {
+            background: Some("#1e2126".into()),
+            text: "#e6e8eb".into(),
+            muted: "#9aa3ad".into(),
+            grid: "#32373e".into(),
+            axis: "#5d6671".into(),
+            series: [
+                "#5aa2e0", "#e8a05a", "#b48ad6", "#62bb7d", "#e07286", "#4fc0c0", "#d9bf4b",
+                "#d77ab9", "#8a95e8", "#9bc65a",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+
+    fn of(&self, role: Role) -> &str {
+        match role {
+            Role::Text => &self.text,
+            Role::MutedText => &self.muted,
+            Role::Grid => &self.grid,
+            Role::Axis => &self.axis,
+            Role::Series(index) => self
+                .series
+                .get(index % self.series.len().max(1))
+                .map_or(self.text.as_str(), String::as_str),
+        }
+    }
+}
+
+fn escape_xml(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+fn svg_item(item: &Item, colours: &SvgColours, out: &mut String) {
+    use std::fmt::Write as _;
+    // Writing to a String does not fail.
+    match item {
+        Item::Segment {
+            from,
+            to,
+            role,
+            width,
+        } => {
+            let _ = writeln!(
+                out,
+                r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="{width}"/>"#,
+                from.0,
+                from.1,
+                to.0,
+                to.1,
+                colours.of(*role)
+            );
+        }
+        Item::Polyline {
+            points,
+            role,
+            width,
+        } => {
+            let points: Vec<String> = points
+                .iter()
+                .map(|(x, y)| format!("{x:.2},{y:.2}"))
+                .collect();
+            let _ = writeln!(
+                out,
+                r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round"/>"#,
+                points.join(" "),
+                colours.of(*role)
+            );
+        }
+        Item::Rect {
+            rect,
+            role,
+            opacity,
+        } => {
+            let _ = writeln!(
+                out,
+                r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}" fill-opacity="{opacity}"/>"#,
+                rect.left,
+                rect.top,
+                rect.width,
+                rect.height,
+                colours.of(*role)
+            );
+        }
+        Item::Circle {
+            center,
+            radius,
+            role,
+        } => {
+            let _ = writeln!(
+                out,
+                r#"<circle cx="{:.2}" cy="{:.2}" r="{radius}" fill="{}"/>"#,
+                center.0,
+                center.1,
+                colours.of(*role)
+            );
+        }
+        Item::Text {
+            text,
+            at,
+            size,
+            horizontal,
+            vertical,
+            role,
+            bold,
+        } => {
+            // The baseline is worked out here rather than asked of the renderer, which may not
+            // know `dominant-baseline`.
+            let baseline = match vertical {
+                VerticalAnchor::Top => at.1 + size * 0.95,
+                VerticalAnchor::Middle => at.1 + size * 0.35,
+                VerticalAnchor::Bottom => at.1 - size * 0.3,
+            };
+            let anchor = match horizontal {
+                Anchor::Start => "start",
+                Anchor::Middle => "middle",
+                Anchor::End => "end",
+            };
+            let weight = if *bold { r#" font-weight="bold""# } else { "" };
+            let _ = writeln!(
+                out,
+                r#"<text x="{:.2}" y="{baseline:.2}" font-size="{size}" text-anchor="{anchor}" fill="{}"{weight}>{}</text>"#,
+                at.0,
+                colours.of(*role),
+                escape_xml(text)
+            );
+        }
+    }
+}
+
+impl ChartScene {
+    /// The chart as a stand-alone SVG picture, for copying or saving.
+    pub fn to_svg(&self, colours: &SvgColours) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        // Writing to a String does not fail.
+        let _ = writeln!(
+            out,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Helvetica, Arial, sans-serif">"#,
+            w = self.width,
+            h = self.height
+        );
+        if let Some(background) = &colours.background {
+            let _ = writeln!(
+                out,
+                r#"<rect width="{}" height="{}" fill="{background}"/>"#,
+                self.width, self.height
+            );
+        }
+        let _ = writeln!(
+            out,
+            r#"<clipPath id="plot"><rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}"/></clipPath>"#,
+            self.plot.left, self.plot.top, self.plot.width, self.plot.height
+        );
+        for item in &self.grid {
+            svg_item(item, colours, &mut out);
+        }
+        out.push_str("<g clip-path=\"url(#plot)\">\n");
+        for item in &self.plot_items {
+            svg_item(item, colours, &mut out);
+        }
+        out.push_str("</g>\n");
+        for item in &self.chrome {
+            svg_item(item, colours, &mut out);
+        }
+        out.push_str("</svg>\n");
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -1973,6 +2210,26 @@ mod tests {
     }
 
     #[test]
+    fn printed_values_leave_room_above_the_longest_bar() {
+        let tallest = |scene: &ChartScene| {
+            rects(&scene.plot_items)
+                .iter()
+                .map(|bar| bar.top)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let (_, plain) = scene_of(&states(), json!({"type": "Column"}));
+        let (_, with_values) = scene_of(&states(), json!({"type": "Column", "showValues": true}));
+        assert!(
+            (tallest(&plain) - plain.plot.top).abs() < 1.0,
+            "it fills the plot"
+        );
+        assert!(
+            tallest(&with_values) > with_values.plot.top + 4.0,
+            "it leaves a gap for the label"
+        );
+    }
+
+    #[test]
     fn negative_values_hang_below_the_zero_line() {
         let table = table(
             &[("K", "string"), ("V", "long")],
@@ -2219,6 +2476,58 @@ mod tests {
             scene
                 .hover(scene.plot.left + 5.0, scene.plot.top + 5.0)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn the_svg_holds_every_item_with_its_colours_and_escapes_text() {
+        let (data, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "title": "Rock & <Roll>"}),
+        );
+        let svg = scene.to_svg(&SvgColours::light());
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.trim_end().ends_with("</svg>"));
+        assert_eq!(svg.matches("<polyline").count(), 2);
+        assert!(svg.contains("Rock &amp; &lt;Roll&gt;"));
+        assert!(svg.contains(r##"fill="#ffffff""##), "a light background");
+        assert!(svg.contains(&format!(
+            r#"stroke="{}""#,
+            SvgColours::light().series[data.series[0].color_index]
+        )));
+        let dark = scene.to_svg(&SvgColours::dark());
+        assert!(dark.contains(r##"fill="#1e2126""##));
+        let transparent = scene.to_svg(&SvgColours {
+            background: None,
+            ..SvgColours::light()
+        });
+        assert!(!transparent.contains(r##"fill="#ffffff""##));
+    }
+
+    #[test]
+    fn the_svg_of_bars_and_gridlines_is_well_formed() {
+        let (_, scene) = scene_of(
+            &states(),
+            json!({"type": "ColumnStacked", "showValues": true}),
+        );
+        let svg = scene.to_svg(&SvgColours::dark());
+        let mut reader = quick_xml::Reader::from_str(&svg);
+        let mut elements = 0;
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Eof) => break,
+                Ok(quick_xml::events::Event::Start(_) | quick_xml::events::Event::Empty(_)) => {
+                    elements += 1
+                }
+                Ok(_) => {}
+                Err(error) => panic!("not well-formed: {error}\n{svg}"),
+            }
+        }
+        assert!(elements > 20);
+        assert_eq!(
+            svg.matches("<rect").count(),
+            1 + 1 + 6 + 2,
+            "background, clip, six bars, two legend swatches"
         );
     }
 
