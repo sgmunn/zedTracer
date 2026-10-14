@@ -33,6 +33,7 @@ use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem};
 use worktree::Worktree;
 
+use crate::chart_view::ChartView;
 use crate::findings_strip::{FindingsStrip, FindingsStripEvent};
 use crate::grid::{GridOptions, ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
@@ -353,6 +354,8 @@ pub enum ViewMode {
     Timeline,
     /// The query the result came from, to read.
     Query,
+    /// The chart at this position among the charts of the result.
+    Chart(usize),
 }
 
 /// The structured view is built when it is first asked for: the projection of a large trace
@@ -430,6 +433,8 @@ pub struct ResultsViewer {
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
+    /// A view for each chart of the result, built when its tab is first shown.
+    chart_views: Vec<Option<Entity<ChartView>>>,
     /// Whether this tab has already opened Row Details. Moving a tab to another pane adds it to
     /// the workspace again, which must not bring back a panel the user has closed since.
     offered_row_details: bool,
@@ -554,6 +559,7 @@ impl ResultsViewer {
             hide_structural: false,
             can_show_query: false,
             query_view: None,
+            chart_views: Vec::new(),
             offered_row_details: false,
             _grid_subscription: None,
             _extra_grid_subscriptions: Vec::new(),
@@ -561,6 +567,9 @@ impl ResultsViewer {
             _structured_events_subscription: None,
             _reload_subscription: reload,
         };
+        if !item.read(cx).result.charts.is_empty() {
+            viewer.mode = ViewMode::Chart(0);
+        }
         viewer.show(&item, window, cx);
         viewer
     }
@@ -657,8 +666,11 @@ impl ResultsViewer {
                 .as_deref()
                 .is_some_and(|query| !query.trim().is_empty());
         self.query_view = None;
+        self.chart_views = vec![None; result.charts.len()];
         if !self.can_show(self.mode) {
             self.mode = ViewMode::Data;
+        } else if let ViewMode::Chart(position) = self.mode {
+            self.build_chart_view(position, window, cx);
         } else if self.mode == ViewMode::Structured {
             self.build_structured(window, cx);
         } else if self.mode == ViewMode::Sequence {
@@ -667,6 +679,18 @@ impl ResultsViewer {
             self.build_timeline(window, cx);
         } else if self.mode == ViewMode::Query {
             self.build_query_view(window, cx);
+        }
+    }
+
+    /// Makes the view of a chart, which reads its table away from the window.
+    fn build_chart_view(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        let Some(chart) = result.charts.get(position).cloned() else {
+            return;
+        };
+        let view = cx.new(|cx| ChartView::new(result, chart, window, cx));
+        if let Some(slot) = self.chart_views.get_mut(position) {
+            *slot = Some(view);
         }
     }
 
@@ -777,6 +801,7 @@ impl ResultsViewer {
             ViewMode::Sequence => self.can_show_sequence,
             ViewMode::Timeline => self.can_show_timeline,
             ViewMode::Query => self.can_show_query,
+            ViewMode::Chart(position) => self.grid.is_some() && position < self.chart_views.len(),
         }
     }
 
@@ -796,6 +821,11 @@ impl ResultsViewer {
         }
         if mode == ViewMode::Query && self.query_view.is_none() {
             self.build_query_view(window, cx);
+        }
+        if let ViewMode::Chart(position) = mode
+            && self.chart_views.get(position).is_some_and(Option::is_none)
+        {
+            self.build_chart_view(position, window, cx);
         }
         cx.notify();
     }
@@ -869,7 +899,7 @@ impl ResultsViewer {
             ViewMode::Structured => self.build_structured(window, cx),
             ViewMode::Sequence => self.build_sequence(window, cx),
             ViewMode::Timeline => self.build_timeline(window, cx),
-            ViewMode::Data | ViewMode::ExtraData(_) | ViewMode::Query => {}
+            ViewMode::Data | ViewMode::ExtraData(_) | ViewMode::Query | ViewMode::Chart(_) => {}
         }
         cx.notify();
     }
@@ -1362,6 +1392,12 @@ impl Render for ResultsViewer {
                     .p_4()
                     .child(ui::Label::new(self.problem.unwrap_or(NO_RESULT_DATA))),
             },
+            (ViewMode::Chart(position), _) => {
+                match self.chart_views.get(position).and_then(Option::as_ref) {
+                    Some(view) => div().size_full().child(view.clone()),
+                    None => div().p_4().child(ui::Label::new("Drawing the chart…")),
+                }
+            }
             (ViewMode::Timeline, Some(TimelineState::Ready(view))) => {
                 div().size_full().child(view.clone())
             }
@@ -1440,6 +1476,28 @@ impl Render for ResultsViewer {
                     )
             })
             .collect();
+        let result = self.results_file.read(cx).result.clone();
+        let chart_tabs: Vec<_> = result
+            .charts
+            .iter()
+            .enumerate()
+            .map(|(position, chart)| {
+                div()
+                    .debug_selector(move || format!("chart-tab-{position}"))
+                    .child(
+                        Button::new(
+                            ("results-chart-tab", position),
+                            chart.display_name(position),
+                        )
+                        .toggle_state(mode == ViewMode::Chart(position))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.set_mode(ViewMode::Chart(position), window, cx)
+                            },
+                        )),
+                    )
+            })
+            .collect();
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
@@ -1461,6 +1519,7 @@ impl Render for ResultsViewer {
                             ),
                         )
                         .children(extra_tabs)
+                        .children(chart_tabs)
                         .when(self.can_show_structured, |bar| {
                             bar.child(
                                 div().debug_selector(|| "structured-tab".to_string()).child(
@@ -2038,6 +2097,240 @@ mod tests {
             cx.run_until_parked();
         }
         (viewers, cx)
+    }
+
+    /// Six days of two series, with whatever charts the test asks for.
+    fn charted(charts: serde_json::Value) -> String {
+        let mut rows = Vec::new();
+        for day in 1..=6 {
+            for (series, scale) in [("Hail", 10), ("Flood", 3)] {
+                rows.push(json!([
+                    format!("2007-01-0{day}T00:00:00Z"),
+                    series,
+                    day * scale
+                ]));
+            }
+        }
+        json!({
+            "tables": [{
+                "name": "PrimaryResult",
+                "columns": [
+                    { "name": "StartTime", "type": "datetime" },
+                    { "name": "EventType", "type": "string" },
+                    { "name": "Events", "type": "long" },
+                ],
+                "rows": rows,
+            }],
+            "charts": charts,
+        })
+        .to_string()
+    }
+
+    async fn open_charted(
+        cx: &mut TestAppContext,
+        charts: serde_json::Value,
+    ) -> (Entity<ResultsViewer>, &mut gpui::VisualTestContext) {
+        let text: &'static str = Box::leak(charted(charts).into_boxed_str());
+        let (viewers, cx) = open_files(cx, &[("storms.ktt", text)]).await;
+        let viewer = viewers[0].clone();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (viewer, cx)
+    }
+
+    fn chart_view(
+        viewer: &Entity<ResultsViewer>,
+        cx: &gpui::VisualTestContext,
+    ) -> Entity<ChartView> {
+        viewer
+            .read_with(cx, |viewer, _| {
+                viewer.chart_views.first().cloned().flatten()
+            })
+            .expect("the chart is built")
+    }
+
+    #[gpui::test]
+    async fn a_result_with_a_chart_opens_on_it_and_draws_it(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_charted(
+            cx,
+            json!([{ "options": { "type": "TimeLine", "title": "Storms" } }]),
+        )
+        .await;
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Chart(0)
+        );
+        assert!(
+            cx.debug_bounds("chart-tab-0").is_some(),
+            "the chart has a tab"
+        );
+        let view = chart_view(&viewer, cx);
+        let data = view
+            .read_with(cx, |view, _| view.data())
+            .expect("the data is read");
+        assert_eq!(data.series.len(), 2);
+        let texts = view.read_with(cx, |view, _| view.scene_texts());
+        for expected in ["Storms", "Hail", "Flood", "Jan 1"] {
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "{expected}: {texts:?}"
+            );
+        }
+
+        // The grid is still one tab away.
+        let data_tab = cx
+            .debug_bounds("data-tab")
+            .map(|bounds| bounds.center())
+            .expect("the data tab");
+        cx.simulate_click(data_tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let chart_tab = cx
+            .debug_bounds("chart-tab-0")
+            .map(|bounds| bounds.center())
+            .expect("the chart tab");
+        cx.simulate_click(chart_tab, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Chart(0)
+        );
+    }
+
+    #[gpui::test]
+    async fn a_result_without_a_chart_opens_on_its_data(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_charted(cx, json!([])).await;
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data
+        );
+        assert!(cx.debug_bounds("chart-tab-0").is_none());
+        assert!(viewer.read_with(cx, |viewer, _| viewer.chart_views.is_empty()));
+    }
+
+    #[gpui::test]
+    async fn the_pointer_reads_the_chart_and_the_legend_switches_series(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_charted(cx, json!([{ "options": { "type": "TimeLine" } }])).await;
+        let view = chart_view(&viewer, cx);
+        let scene = view
+            .read_with(cx, |view, _| view.scene())
+            .expect("the scene is laid out");
+        let origin = view.read_with(cx, |view, _| view.area().origin);
+        let at = |x: f32, y: f32| gpui::point(origin.x + gpui::px(x), origin.y + gpui::px(y));
+
+        // Over the middle of the plot the tooltip reads both series at the nearest day.
+        cx.simulate_mouse_move(
+            at(
+                scene.plot.left + scene.plot.width / 2.0,
+                scene.plot.top + scene.plot.height / 2.0,
+            ),
+            None,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let hover = view
+            .read_with(cx, |view, _| view.hover())
+            .expect("the pointer is over the plot");
+        assert_eq!(hover.entries.len(), 2);
+        assert!(hover.title.starts_with("2007-01-0"), "{}", hover.title);
+        cx.simulate_mouse_move(at(1.0, 1.0), None, gpui::Modifiers::default());
+        assert!(
+            view.read_with(cx, |view, _| view.hover()).is_none(),
+            "off the plot"
+        );
+
+        // Clicking Flood in the legend takes it out of the chart, and again puts it back.
+        let flood = scene
+            .legend
+            .iter()
+            .find(|entry| entry.name == "Flood")
+            .expect("a legend entry")
+            .rect;
+        let lines = |items: &[kusto_results::chart_scene::Item]| {
+            items
+                .iter()
+                .filter(|item| matches!(item, kusto_results::chart_scene::Item::Polyline { .. }))
+                .count()
+        };
+        assert_eq!(lines(&scene.plot_items), 2);
+        cx.simulate_click(
+            at(flood.left + 3.0, flood.top + 3.0),
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let after = view
+            .read_with(cx, |view, _| view.scene())
+            .expect("laid out again");
+        assert_eq!(lines(&after.plot_items), 1);
+        assert!(
+            after
+                .legend
+                .iter()
+                .any(|entry| entry.name == "Flood" && entry.hidden)
+        );
+        cx.simulate_click(
+            at(flood.left + 3.0, flood.top + 3.0),
+            gpui::Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let restored = view
+            .read_with(cx, |view, _| view.scene())
+            .expect("laid out again");
+        assert_eq!(lines(&restored.plot_items), 2);
+    }
+
+    #[gpui::test]
+    async fn a_chart_that_cannot_be_drawn_says_why_and_the_others_still_draw(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, cx) = open_charted(
+            cx,
+            json!([
+                { "options": { "type": "Sankey" } },
+                { "tableName": "Gone", "options": { "type": "Line" } },
+                { "name": "Totals", "options": { "type": "Column", "xColumn": "EventType", "yColumns": ["Events"] } }
+            ]),
+        )
+        .await;
+        let shown =
+            ["chart-tab-0", "chart-tab-1", "chart-tab-2"].map(|tab| cx.debug_bounds(tab).is_some());
+        assert_eq!(shown, [true, true, true]);
+        for (position, expected) in [
+            (0, "A Sankey chart cannot be drawn here."),
+            (1, "The table Gone is not in this result."),
+        ] {
+            viewer.update_in(cx, |viewer, window, cx| {
+                viewer.set_mode(ViewMode::Chart(position), window, cx)
+            });
+            cx.run_until_parked();
+            let view = viewer
+                .read_with(cx, |viewer, _| viewer.chart_views[position].clone())
+                .expect("built when shown");
+            assert_eq!(
+                view.read_with(cx, |view, _| view.problem()).as_deref(),
+                Some(expected)
+            );
+        }
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Chart(2), window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = viewer
+            .read_with(cx, |viewer, _| viewer.chart_views[2].clone())
+            .expect("built");
+        let data = view.read_with(cx, |view, _| view.data()).expect("drawn");
+        assert_eq!(data.categories, ["Hail", "Flood"]);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.chart().name.clone())
+                .as_deref(),
+            Some("Totals")
+        );
     }
 
     #[gpui::test]

@@ -2,6 +2,7 @@
 
 mod activity_tree;
 mod actor_colours;
+mod chart_view;
 mod code_references;
 mod filter_popover;
 mod findings_strip;

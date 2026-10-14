@@ -1486,7 +1486,8 @@ impl ChartScene {
         x: f32,
         y: f32,
     ) -> Option<Hover> {
-        // The point nearest across, over all the series, decides the X; the others are read at it.
+        // The point nearest across, over all the series, decides the X; the others are read at
+        // it. There is no limit to how far away it may be, so a sparse series still answers.
         let mut nearest: Option<(f32, &HoverPoint)> = None;
         for series in series {
             let after = series.points.partition_point(|point| point.pixel.0 < x);
@@ -1499,10 +1500,7 @@ impl ChartScene {
                 }
             }
         }
-        let (distance, anchor_point) = nearest?;
-        if distance > 48.0 {
-            return None;
-        }
+        let (_, anchor_point) = nearest?;
         let at = anchor_point.x;
         let mut found: Vec<(f32, &HoverSeries, &HoverPoint)> = series
             .iter()
