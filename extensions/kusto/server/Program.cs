@@ -209,7 +209,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             return names;
 
         var (queryText, queryStart) = QueryBlocks.Around(document.Text, offset);
-        var completions = new KustoCodeService(queryText, GlobalsAt(document, offset))
+        var state = ConnectionDirectives.StateAt(document.Text, offset, schema.Defaults);
+        var values = state.Functions.Where(function => function.IsValue).Select(function => function.Name).ToHashSet();
+        var completions = new KustoCodeService(queryText, GlobalsOf(state))
             .GetCompletionItems(offset - queryStart);
         var start = Math.Clamp(queryStart + completions.EditStart, 0, document.Text.Length);
         var end = Math.Clamp(start + completions.EditLength, start, document.Text.Length);
@@ -223,13 +225,17 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             {
                 // Text after the cursor, such as the closing parenthesis, makes the item a snippet so the
                 // cursor lands between the two parts instead of after all of the text.
-                var hasAfterText = !string.IsNullOrEmpty(item.AfterText);
-                var insertedText = hasAfterText
-                    ? EscapeSnippet(item.BeforeText) + "$0" + EscapeSnippet(item.AfterText)
-                    : string.Concat(item.ApplyTexts.Select(part => part.Text));
+                // A value the file defines is written without parentheses, though the library offers it as a call.
+                var isValue = item.Kind.ToString() == "DatabaseFunction" && values.Contains(item.MatchText);
+                var hasAfterText = !isValue && !string.IsNullOrEmpty(item.AfterText);
+                var insertedText = isValue
+                    ? item.MatchText
+                    : hasAfterText
+                        ? EscapeSnippet(item.BeforeText) + "$0" + EscapeSnippet(item.AfterText)
+                        : string.Concat(item.ApplyTexts.Select(part => part.Text));
                 return (object)new
                 {
-                    label = item.DisplayText,
+                    label = isValue ? item.MatchText : item.DisplayText,
                     kind = CompletionKind(item.Kind.ToString()),
                     sortText = item.OrderText,
                     filterText = item.MatchText,
@@ -740,6 +746,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             .ToList();
         if (checkNames)
             found = KnockOnErrors.Without(code, found);
+        var valueCalls = QueryBlocks.IsControlCommand(block.Text) || !state.Functions.Any(function => function.IsValue)
+            ? []
+            : InlineFunctions.CallsOfValues(checkNames ? code : KustoCode.ParseAndAnalyze(block.Text, globals), globals, state.Functions);
         return found
             .Select(diagnostic => (object)new
             {
@@ -759,6 +768,18 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 source = "Kusto",
                 message = diagnostic.Message
             })
+            .Concat(valueCalls.Select(call => (object)new
+            {
+                range = new
+                {
+                    start = document.PositionAt(block.Start + call.Start),
+                    end = document.PositionAt(block.Start + call.Start + call.Length)
+                },
+                severity = 1,
+                code = "inline-value",
+                source = "Kusto",
+                message = $"'{call.Name}' is a value the file defines, not a function. Write it without parentheses."
+            }))
             .ToList();
     }
 

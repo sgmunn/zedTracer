@@ -1050,6 +1050,44 @@ class DirectiveTest(unittest.TestCase):
             )],
         )
 
+    VALUES = "// :functions\nlet Fn_s = 5;\nlet Fn_z = () { 1 };\nlet Fn_t = print x = 1;\n\nprint Fn_s, Fn_z(), toscalar(Fn_t)"
+
+    def test_a_value_the_file_defines_is_known_and_typed(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.assertEqual(self.open_document(self.VALUES), [])
+        hover = self.request_result(
+            7, "textDocument/hover",
+            {"textDocument": {"uri": URI}, "position": {"line": 5, "character": 8}},
+        )
+        self.assertIn("Fn_s(): long", hover["contents"]["value"])
+
+    def test_a_value_is_completed_without_parentheses_and_a_function_as_before(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.open_document(self.VALUES + "\n\nprint Fn_")
+        items = self.request_result(
+            7, "textDocument/completion",
+            {"textDocument": {"uri": URI}, "position": {"line": 7, "character": 9}},
+        )
+        found = {item["label"]: item for item in items if item["label"].startswith("Fn_")}
+        self.assertEqual(sorted(found), ["Fn_s", "Fn_t", "Fn_z()"])
+        self.assertEqual(found["Fn_s"]["textEdit"]["newText"], "Fn_s")
+        self.assertEqual(found["Fn_s"]["insertTextFormat"], 1)
+        self.assertEqual(found["Fn_t"]["textEdit"]["newText"], "Fn_t")
+
+    def test_a_value_called_with_parentheses_is_an_error_but_a_function_without_parameters_is_not(self):
+        self.start({"cluster": "a", "database": "db"})
+        diagnostics = self.open_document(self.VALUES + "\n\nprint Fn_s(), Fn_z(), Fn_z")
+        self.assertEqual(
+            [(d["code"], d["severity"], d["range"]) for d in diagnostics],
+            [("inline-value", 1, {"start": {"line": 7, "character": 6}, "end": {"line": 7, "character": 12}})],
+        )
+        self.assertIn("Fn_s", diagnostics[0]["message"])
+
+    def test_a_let_of_the_query_with_the_name_of_a_value_is_the_querys_own(self):
+        self.start({"cluster": "a", "database": "db"})
+        diagnostics = self.open_document(self.VALUES + "\n\nlet Fn_s = () { 2 };\nprint Fn_s()")
+        self.assertEqual(diagnostics, [])
+
     def test_a_cleared_function_is_no_longer_known(self):
         self.start({"cluster": "a", "database": "db"})
         self.open_document(self.DEFINED + '\n\n// :clearFunction("Fn_a")\n\nprint Fn_a(3)')
