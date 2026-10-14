@@ -11622,6 +11622,13 @@ impl Editor {
         self.enable_lsp_data = false;
     }
 
+    /// Sets whether the editor asks language servers for the data it shows: semantic tokens, inlay
+    /// hints, code lenses and the like. A read-only preview turns it on for a buffer only when it
+    /// has use for it, and sets it before the buffer's excerpts are added so that they are fetched.
+    pub fn set_lsp_data_enabled(&mut self, enabled: bool) {
+        self.enable_lsp_data = enabled;
+    }
+
     fn disable_runnables(&mut self) {
         self.enable_runnables = false;
     }
