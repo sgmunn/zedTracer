@@ -317,7 +317,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     {
         var uri = parameters.GetProperty("textDocument").GetProperty("uri").GetString();
         var tokens = uri is not null && documents.TryGetValue(uri, out var document)
-            ? SemanticTokens.Build(document, schema.GlobalsFor, schema.Defaults)
+            ? SemanticTokens.Build(document, GlobalsOf, schema.Defaults)
             : [];
         return new { data = tokens };
     }
@@ -596,7 +596,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     /// <summary>Starts fetching the schema of every cluster and database the query mentions.</summary>
     private void LoadReferencedSchema(DocumentSnapshot document)
     {
-        foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
+        foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery || block.IsFunctions))
         {
             // Where the query runs, from the file or the defaults, and anything it names itself.
             var connection = ConnectionDirectives.Before(document.Text, block.End, schema.Defaults);
@@ -611,9 +611,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         }
     }
 
-    /// <summary>The symbols for the query at a position, with where that query runs applied.</summary>
+    /// <summary>The symbols for the query at a position, with where that query runs and the functions the file defines applied.</summary>
     private GlobalState GlobalsAt(DocumentSnapshot document, int offset) =>
-        schema.GlobalsFor(ConnectionDirectives.At(document.Text, offset, schema.Defaults));
+        GlobalsOf(ConnectionDirectives.StateAt(document.Text, offset, schema.Defaults));
+
+    private GlobalState GlobalsOf(DirectiveState state) =>
+        InlineFunctions.Apply(schema.GlobalsFor(state.Connection), state.Functions);
 
     /// <summary>On a `// :` line, the directives the editor knows, with the cursor placed inside the quotes.</summary>
     private object[]? CompleteDirective(DocumentSnapshot document, int offset)
@@ -628,13 +631,16 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             start = document.PositionAt(offset - typed.Groups[1].Length),
             end = document.PositionAt(offset)
         };
-        return new (string Name, string Detail, string Arguments)[]
+        return new (string Name, string Detail, string? Arguments)[]
         {
             (ConnectionDirectives.SetCluster, "The cluster for the queries below", "\"$0\""),
             (ConnectionDirectives.SetDatabase, "The database for the queries below", "\"$0\""),
             (ConnectionDirectives.SetParameter, "A value for a parameter the queries below declare", "\"$1\", \"$0\""),
             (ConnectionDirectives.ClearParameter, "Take away the value one parameter was given", "\"$0\""),
-            (ConnectionDirectives.ClearParameters, "Take away the values every parameter was given", "")
+            (ConnectionDirectives.ClearParameters, "Take away the values every parameter was given", ""),
+            ("functions", "This block defines functions for the queries below", null),
+            (ConnectionDirectives.ClearFunction, "Take away a function the file defined", "\"$0\""),
+            (ConnectionDirectives.ClearFunctions, "Take away every function the file defined", "")
         }
         .Select(directive => (object)new
         {
@@ -643,7 +649,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             detail = directive.Detail,
             filterText = directive.Name,
             insertTextFormat = 2,
-            textEdit = new { range, newText = $"{directive.Name}({directive.Arguments})" }
+            textEdit = new { range, newText = directive.Arguments is null ? directive.Name : $"{directive.Name}({directive.Arguments})" }
         })
         .ToArray();
     }
@@ -703,7 +709,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 severity = 2,
                 code = "directive",
                 source = "Kusto",
-                message = "Not a directive the editor knows. Use // :setDefaultCluster(\"…\"), // :setDefaultDb(\"…\"), // :setParam(\"name\", \"value\"), // :clearParam(\"name\") or // :clearParams()."
+                message = "Not a directive the editor knows. Use // :setDefaultCluster(\"…\"), // :setDefaultDb(\"…\"), // :setParam(\"name\", \"value\"), // :clearParam(\"name\"), // :clearParams(), // :clearFunction(\"name\"), // :clearFunctions() or a // :functions block."
             }))
             .ToArray();
 
@@ -722,10 +728,11 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     /// </summary>
     private IEnumerable<object> DiagnosticsOf(DocumentSnapshot document, QueryBlock block)
     {
-        if (!block.IsQuery)
+        if (!block.IsQuery && !block.IsFunctions)
             return [];
-        var connection = ConnectionDirectives.Before(document.Text, block.End, schema.Defaults);
-        var globals = schema.GlobalsFor(connection);
+        var state = ConnectionDirectives.StateBefore(document.Text, block.End, schema.Defaults);
+        var connection = state.Connection;
+        var globals = GlobalsOf(state);
         var checkNames = schemaDiagnostics && !QueryBlocks.IsControlCommand(block.Text) && SchemaIsLoaded(block, connection, globals);
         var code = checkNames ? KustoCode.ParseAndAnalyze(block.Text, globals) : KustoCode.Parse(block.Text);
         var found = (checkNames ? code.GetDiagnostics() : code.GetSyntaxDiagnostics())

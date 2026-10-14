@@ -40,7 +40,7 @@ internal static class SemanticTokens
     /// The tokens of every query in the document, each analysed against the schema of the cluster and
     /// database it runs on, in the relative encoding LSP uses: five numbers per token.
     /// </summary>
-    public static int[] Build(DocumentSnapshot document, Func<Connection, GlobalState> globalsFor, Connection defaults)
+    public static int[] Build(DocumentSnapshot document, Func<DirectiveState, GlobalState> globalsFor, Connection defaults)
     {
         var data = new List<int>();
         var previousLine = 0;
@@ -60,8 +60,8 @@ internal static class SemanticTokens
 
         foreach (var block in QueryBlocks.Find(document.Text))
         {
-            var connection = ConnectionDirectives.Before(document.Text, block.End, defaults);
-            var service = new KustoCodeService(block.Text, globalsFor(connection));
+            var state = ConnectionDirectives.StateBefore(document.Text, block.End, defaults);
+            var service = new KustoCodeService(block.Text, globalsFor(state));
             foreach (var span in service.GetClassifications(0, block.Text.Length).Classifications)
             {
                 var type = TypeOf(span.Kind);

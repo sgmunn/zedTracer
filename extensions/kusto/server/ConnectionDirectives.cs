@@ -6,8 +6,11 @@ internal readonly record struct Connection(string? Cluster, string? Database)
     public string? Host => Cluster is null ? null : KustoRestClient.ClusterHost(Cluster);
 }
 
-/// <summary>What the directives above a point set: where a query runs, and the values the file gives to parameters.</summary>
-internal sealed record DirectiveState(Connection Connection, IReadOnlyDictionary<string, string> Parameters);
+/// <summary>What the directives above a point set: where a query runs, the values the file gives to parameters, and the functions it defines.</summary>
+internal sealed record DirectiveState(
+    Connection Connection,
+    IReadOnlyDictionary<string, string> Parameters,
+    IReadOnlyList<InlineFunction> Functions);
 
 /// <summary>
 /// What the file says about how its queries run. A line that is a comment of the form
@@ -20,6 +23,10 @@ internal sealed record DirectiveState(Connection Connection, IReadOnlyDictionary
 /// below it, until a later `setParam` of the same name gives another, `// :clearParam("raid")` takes it
 /// away, or `// :clearParams()` takes away every one. These values are the file's own, so they come
 /// before those of the active parameter profile.
+///
+/// A block with the line `// :functions` defines functions (see <see cref="InlineFunctions"/>) that every query
+/// below it can use. A later definition of the same name replaces it, `// :clearFunction("name")` takes one
+/// away and `// :clearFunctions()` every one.
 ///
 /// The space after the slashes is optional: Zed adds `// ` when a comment line is continued, so
 /// `// :` is what gets typed, and `//:` is what other Kusto extensions write. An argument is a string in
@@ -34,6 +41,8 @@ internal static partial class ConnectionDirectives
     public const string SetParameter = "setParam";
     public const string ClearParameter = "clearParam";
     public const string ClearParameters = "clearParams";
+    public const string ClearFunction = "clearFunction";
+    public const string ClearFunctions = "clearFunctions";
 
     private const string Quoted = @"(?:""[^""]*""|'[^']*')";
 
@@ -51,6 +60,12 @@ internal static partial class ConnectionDirectives
     [GeneratedRegex(@"^\s*//\s*:")]
     private static partial Regex DirectiveStart();
 
+    [GeneratedRegex(@"^\s*//\s*:\s*functions\s*$")]
+    private static partial Regex FunctionsMarker();
+
+    /// <summary>Whether a line marks its block as one of function definitions.</summary>
+    public static bool IsFunctionsMarker(string line) => FunctionsMarker().IsMatch(line);
+
     /// <summary>The directive a line is, or null when it is not one of the directives the editor knows with arguments that fit.</summary>
     private static Directive? Read(string line)
     {
@@ -67,6 +82,8 @@ internal static partial class ConnectionDirectives
             SetParameter => arguments.Length == 2 && QueryParameters.IsParameterName(arguments[0]),
             ClearParameter => arguments.Length == 1 && QueryParameters.IsParameterName(arguments[0]),
             ClearParameters => arguments.Length == 0,
+            ClearFunction => arguments.Length == 1 && QueryParameters.IsParameterName(arguments[0]),
+            ClearFunctions => arguments.Length == 0,
             _ => false
         };
         return fits ? new Directive(name, arguments) : null;
@@ -77,11 +94,18 @@ internal static partial class ConnectionDirectives
     {
         var connection = defaults;
         var parameters = new Dictionary<string, string>();
+        var functions = new List<InlineFunction>();
+        var definitions = new Queue<QueryBlock>(QueryBlocks.Find(text).Where(block => block.IsFunctions));
         var lineStart = 0;
         foreach (var line in text.Split('\n'))
         {
             if (lineStart > offset)
                 break;
+            while (definitions.Count > 0 && definitions.Peek().Start <= lineStart)
+            {
+                foreach (var definition in InlineFunctions.Read(definitions.Dequeue().Text))
+                    InlineFunctions.Define(functions, definition);
+            }
             if (Read(line) is { } directive)
             {
                 switch (directive.Name)
@@ -101,11 +125,17 @@ internal static partial class ConnectionDirectives
                     case ClearParameters:
                         parameters.Clear();
                         break;
+                    case ClearFunction:
+                        functions.RemoveAll(function => function.Name == directive.Arguments[0]);
+                        break;
+                    case ClearFunctions:
+                        functions.Clear();
+                        break;
                 }
             }
             lineStart += line.Length + 1;
         }
-        return new DirectiveState(connection, parameters);
+        return new DirectiveState(connection, parameters, functions);
     }
 
     /// <summary>The connection after every directive on a line that starts at or before `offset`.</summary>
@@ -116,10 +146,14 @@ internal static partial class ConnectionDirectives
     /// The connection at a position: that of the query it is in, or where a new query would
     /// start when it is on a blank line.
     /// </summary>
-    public static Connection At(string text, int offset, Connection defaults)
+    public static Connection At(string text, int offset, Connection defaults) =>
+        StateAt(text, offset, defaults).Connection;
+
+    /// <summary>What applies at a position: to the query it is in, or where a new query would start when it is on a blank line.</summary>
+    public static DirectiveState StateAt(string text, int offset, Connection defaults)
     {
         var block = QueryBlocks.At(QueryBlocks.Find(text), offset);
-        return Before(text, block?.End ?? offset, defaults);
+        return StateBefore(text, block?.End ?? offset, defaults);
     }
 
     /// <summary>The connection of each query, in order.</summary>
@@ -135,7 +169,7 @@ internal static partial class ConnectionDirectives
         var lines = text.Split('\n');
         for (var line = 0; line < lines.Length; line++)
         {
-            if (DirectiveStart().IsMatch(lines[line]) && Read(lines[line]) is null)
+            if (DirectiveStart().IsMatch(lines[line]) && !IsFunctionsMarker(lines[line]) && Read(lines[line]) is null)
                 yield return (line, lines[line].TrimEnd('\r').Length);
         }
     }

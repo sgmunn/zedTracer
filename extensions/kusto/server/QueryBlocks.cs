@@ -3,9 +3,9 @@
 /// That is how Kusto Explorer reads a file and how the editor chooses the query to run. Each
 /// query is analysed on its own, so a query never continues into the one after it and a `let`
 /// in one is not visible in the next. A block of only comments, such as a directive or a note, is
-/// not a query.
+/// not a query, and neither is a block of function definitions (see <see cref="InlineFunctions"/>).
 /// </summary>
-internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string Text, bool IsQuery)
+internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string Text, bool IsQuery, bool IsFunctions = false)
 {
     public int End => Start + Text.Length;
 }
@@ -30,8 +30,9 @@ internal static class QueryBlocks
             if (blank && firstLine >= 0)
             {
                 var queryText = text[firstStart..Math.Min(lineStart, text.Length)].TrimEnd('\r', '\n');
-                var isQuery = lines[firstLine..line].Any(text => !text.TrimStart().StartsWith("//", StringComparison.Ordinal));
-                blocks.Add(new QueryBlock(firstLine, line - 1, firstStart, queryText, isQuery));
+                var isFunctions = lines[firstLine..line].Any(ConnectionDirectives.IsFunctionsMarker);
+                var isQuery = !isFunctions && lines[firstLine..line].Any(text => !text.TrimStart().StartsWith("//", StringComparison.Ordinal));
+                blocks.Add(new QueryBlock(firstLine, line - 1, firstStart, queryText, isQuery, isFunctions));
                 firstLine = -1;
             }
             if (line < lines.Length)

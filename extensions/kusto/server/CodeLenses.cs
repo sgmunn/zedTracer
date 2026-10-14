@@ -30,7 +30,7 @@ internal static class CodeLenses
         var lenses = new List<object>();
         foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
         {
-            var (connection, givenByFile) = ConnectionDirectives.StateBefore(document.Text, block.End, defaults);
+            var (connection, givenByFile, _) = ConnectionDirectives.StateBefore(document.Text, block.End, defaults);
             runs.TryGetValue(RunLog.Key(block.Text, connection.Cluster, connection.Database), out var state);
             var range = new
             {

@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import select
 import subprocess
 import sys
@@ -805,7 +806,27 @@ class CodeLensTest(unittest.TestCase):
 CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "connection-directives.json"
 PARAMETER_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "query-parameters.json"
 PARAMETER_DIRECTIVE_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "parameter-directives.json"
-DIRECTIVE_NAMES = ["clearParam", "clearParams", "setDefaultCluster", "setDefaultDb", "setParam"]
+FUNCTION_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "function-definitions.json"
+DIRECTIVE_NAMES = [
+    "clearFunction", "clearFunctions", "clearParam", "clearParams",
+    "functions", "setDefaultCluster", "setDefaultDb", "setParam",
+]
+
+
+def query_line_ranges(lines):
+    """The first and last line of each query of a text, found without the server: a run of non-blank
+    lines that has code in it and is not a block of function definitions."""
+    ranges, start = [], None
+    for number, line in enumerate(lines + [""]):
+        if line.strip():
+            start = number if start is None else start
+        elif start is not None:
+            block = lines[start:number]
+            defines = any(re.match(r"^\s*//\s*:\s*functions\s*$", item) for item in block)
+            if not defines and any(not item.strip().startswith("//") for item in block):
+                ranges.append((start, number - 1))
+            start = None
+    return ranges
 
 
 def expected_title(connection):
@@ -983,6 +1004,69 @@ class DirectiveTest(unittest.TestCase):
             '// :clearParam("raid")\n// :clearParams()\n\n// a note\n\nprint 1'
         )
         self.assertEqual(diagnostics, [])
+
+    def request_result(self, request_id, method, parameters):
+        self.send(request_id, method, parameters)
+        return self.receive_result(request_id)
+
+    DEFINED = "// :functions\nlet Fn_a = (x:long) { x * 2 };\n\nprint Fn_a(2)"
+
+    def knows_function(self, request_id, line):
+        """Whether hovering on the call of Fn_a on a line says what the function is."""
+        hover = self.request_result(
+            request_id, "textDocument/hover",
+            {"textDocument": {"uri": URI}, "position": {"line": line, "character": 8}},
+        )
+        return hover is not None and "Fn_a(x): long" in hover["contents"]["value"]
+
+    def test_a_functions_block_is_not_a_query_and_its_marker_is_not_warned_about(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.assertEqual(self.open_document(self.DEFINED), [])
+        lenses = self.request_result(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        lines = sorted({lens["range"]["start"]["line"] for lens in lenses})
+        self.assertEqual(lines, [3], "only the query has lenses")
+
+    def test_a_syntax_error_in_a_definition_is_reported_where_it_is_written(self):
+        self.start({"cluster": "a", "database": "db"})
+        diagnostics = self.open_document("// :functions\nlet Fn_a = (x:long) { x * };\n\nprint 1")
+        self.assertEqual([(d["range"]["start"]["line"], d["severity"]) for d in diagnostics], [(1, 1)])
+
+    def test_a_defined_function_is_known_to_hover_and_completion_below_its_block_only(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.open_document("print Fn_a(1)\n\n" + self.DEFINED)
+        self.assertTrue(self.knows_function(7, 5), "the query below the definitions")
+        self.assertFalse(self.knows_function(8, 0), "the query above them")
+        items = self.request_result(
+            9, "textDocument/completion",
+            {"textDocument": {"uri": URI}, "position": {"line": 5, "character": 9}},
+        )
+        found = [item for item in items if item["label"] == "Fn_a(x)"]
+        self.assertEqual([item["kind"] for item in found], [3])
+        self.assertNotIn(
+            "Fn_a(x)",
+            [item["label"] for item in self.request_result(
+                10, "textDocument/completion",
+                {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 9}},
+            )],
+        )
+
+    def test_a_cleared_function_is_no_longer_known(self):
+        self.start({"cluster": "a", "database": "db"})
+        self.open_document(self.DEFINED + '\n\n// :clearFunction("Fn_a")\n\nprint Fn_a(3)')
+        self.assertTrue(self.knows_function(7, 3), "before the directive that clears it")
+        self.assertFalse(self.knows_function(8, 7), "after it")
+
+    def test_the_function_directives_are_warned_about_only_when_they_do_not_fit(self):
+        self.start()
+        diagnostics = self.open_document(
+            '// :clearFunction("Fn_a")\n// :clearFunctions()\n// :clearFunction()\n'
+            '// :clearFunction("not a name")\n// :clearFunctions("Fn_a")\n// :functions()\n'
+            '// :functions extra\n\n// :functions\nlet Fn_a = () { 1 };'
+        )
+        self.assertEqual(
+            [d["range"]["start"]["line"] for d in diagnostics if d["code"] == "directive"],
+            [2, 3, 4, 5, 6],
+        )
 
     def test_a_comment_only_block_has_no_run_lens(self):
         self.start({"cluster": "a", "database": "db"})
@@ -1619,6 +1703,28 @@ class SemanticTokensTest(unittest.TestCase):
         self.assertIn("keyword", self.legend)
         self.assertEqual(len(self.legend), len(set(self.legend)))
 
+    def test_the_shared_function_cases_colour_the_functions_the_editor_resolves(self):
+        cases = json.loads(FUNCTION_CASES.read_text())
+        self.assertTrue(cases)
+        for number, case in enumerate(cases):
+            uri = f"file:///functions-{number}.kql"
+            self.open(case["text"], uri)
+            coloured = {(line, column) for line, column, _, kind in self.tokens(uri) if kind == "function"}
+            lines = case["text"].split("\n")
+            queries = query_line_ranges(lines)
+            self.assertEqual(len(queries), len(case["queries"]), case["name"])
+            for (first, last), in_scope in zip(queries, case["queries"]):
+                # A function the query defines for itself is coloured whatever the file says.
+                if any("let Fn_" in line for line in lines[first:last + 1]):
+                    continue
+                for line in range(first, last + 1):
+                    for found in re.finditer(r"Fn_[a-z]", lines[line]):
+                        self.assertEqual(
+                            (line, found.start()) in coloured,
+                            found.group() in in_scope,
+                            f"{case['name']}: {found.group()} on line {line}",
+                        )
+
     def test_declare_and_print_are_coloured_which_the_old_grammar_could_not_do(self):
         self.open("declare query_parameters (raid:string);\nprint raid")
         self.assertEqual(
@@ -2078,6 +2184,22 @@ class SchemaDiagnosticsTest(unittest.TestCase):
         )
         self.assertTrue(self.diagnostics_become("Nope", lambda found: len(found) == 1), "the schema loaded")
         self.assertEqual(self.diagnostics(text), [])
+
+    def test_a_function_the_file_defines_is_not_an_unknown_name(self):
+        self.begin_with(self.fake(["Samples"], STORM_ENTITIES))
+        text = (
+            "// :functions\nlet Fn_a = (x:long) { x * 2 };\n\n"
+            "StormEvents | extend d = Fn_a(1)\n\nStormEvents | extend d = Fn_b(1)\n\n"
+            "// :clearFunctions()\n\nStormEvents | extend d = Fn_a(1)"
+        )
+        found = self.diagnostics_become(text, lambda found: len(found) >= 2)
+        self.assertEqual(
+            [item["range"]["start"]["line"] for item in found],
+            [5, 9],
+            "Fn_b was never defined, and Fn_a was cleared",
+        )
+        self.assertIn("Fn_b", found[0]["message"])
+        self.assertIn("Fn_a", found[1]["message"])
 
     def test_nothing_is_called_wrong_while_the_schema_is_still_on_its_way(self):
         cluster = self.fake(["Samples"], STORM_ENTITIES, delay=1.5)
