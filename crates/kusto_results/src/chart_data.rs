@@ -53,6 +53,8 @@ pub struct ChartData {
     pub x_name: String,
     /// The names of the columns that hold the values.
     pub value_names: Vec<String>,
+    /// The names of the columns the rows were split into series by.
+    pub series_columns: Vec<String>,
     /// For a category axis: the label at each position.
     pub categories: Vec<String>,
     pub series: Vec<Series>,
@@ -272,6 +274,11 @@ impl ChartData {
             x_name: x_column.name.clone(),
             value_names: columns
                 .values
+                .iter()
+                .map(|column| table.columns[*column].name.clone())
+                .collect(),
+            series_columns: columns
+                .series
                 .iter()
                 .map(|column| table.columns[*column].name.clone())
                 .collect(),
@@ -694,6 +701,7 @@ mod tests {
         assert_eq!(data.series[0].points[0].row, 2, "points know their row");
         assert_eq!(data.series[1].color_index, 1);
         assert_eq!(data.value_names, ["Events"]);
+        assert_eq!(data.series_columns, ["EventType"]);
         assert_eq!(
             data.x_extent().map(|(low, _)| low),
             parse_datetime_text("2007-01-01T00:00:00Z")

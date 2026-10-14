@@ -10,7 +10,7 @@ use encoding_rs::Encoding;
 use gpui::{
     Action as _, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, actions, div,
 };
 use editor::Editor;
 use menu::{Cancel, Confirm};
@@ -21,7 +21,8 @@ use kusto_results::sequence::{SequenceOptions, build_sequence};
 use kusto_results::timeline::{Timeline, TimelineOptions};
 use kusto_results::waterfall::Waterfall;
 use kusto_results::trace_schema::TraceRole;
-use kusto_results::{NoResultData, ResultSet, TableView};
+use kusto_results::chart_data::suggest_chart_type;
+use kusto_results::{Chart, ChartOptions, NoResultData, ResultSet, TableView};
 use project::{Project, ProjectEntryId, ProjectPath};
 use rope::Rope;
 use settings::Settings as _;
@@ -33,7 +34,7 @@ use workspace::Workspace;
 use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem};
 use worktree::Worktree;
 
-use crate::chart_view::ChartView;
+use crate::chart_view::{ChartView, ChartViewEvent};
 use crate::findings_strip::{FindingsStrip, FindingsStripEvent};
 use crate::grid::{GridOptions, ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
@@ -43,6 +44,18 @@ use crate::run_query::RerunQuery;
 use crate::sequence_view::SequenceView;
 use crate::structured_view::{StructuredView, StructuredViewEvent};
 use crate::waterfall_view::{WaterfallEvent, WaterfallView};
+
+actions!(
+    kusto,
+    [
+        /// Adds a chart of the table being shown to the result, and shows it.
+        AddChart,
+        /// Shows or hides the pane that edits the chart being shown.
+        ToggleChartEditor,
+        /// Removes the chart being shown from the result.
+        RemoveChart,
+    ]
+);
 
 pub fn init(cx: &mut App) {
     workspace::register_project_item::<ResultsViewer>(cx);
@@ -149,6 +162,24 @@ impl ResultsFile {
         let mut result = (*self.result).clone();
         result.set_table_view(layout);
         self.result = Arc::new(result);
+        self.schedule_write(cx);
+    }
+
+    /// Keeps changed charts in the result and writes them back, as `save_layout` does a layout.
+    /// Everything else in the file is kept.
+    fn save_charts(&mut self, charts: Vec<Chart>, cx: &mut Context<Self>) {
+        if self.result.charts == charts {
+            return;
+        }
+        let mut result = (*self.result).clone();
+        result.set_charts(charts);
+        self.result = Arc::new(result);
+        self.schedule_write(cx);
+    }
+
+    /// Writes the file after the user has stopped changing it for a moment, where it can be
+    /// written.
+    fn schedule_write(&mut self, cx: &mut Context<Self>) {
         if self.storage.is_none() {
             return;
         }
@@ -435,6 +466,7 @@ pub struct ResultsViewer {
     query_view: Option<Entity<QueryView>>,
     /// A view for each chart of the result, built when its tab is first shown.
     chart_views: Vec<Option<Entity<ChartView>>>,
+    _chart_subscriptions: Vec<Subscription>,
     /// Whether this tab has already opened Row Details. Moving a tab to another pane adds it to
     /// the workspace again, which must not bring back a panel the user has closed since.
     offered_row_details: bool,
@@ -560,6 +592,7 @@ impl ResultsViewer {
             can_show_query: false,
             query_view: None,
             chart_views: Vec::new(),
+            _chart_subscriptions: Vec::new(),
             offered_row_details: false,
             _grid_subscription: None,
             _extra_grid_subscriptions: Vec::new(),
@@ -667,6 +700,7 @@ impl ResultsViewer {
                 .is_some_and(|query| !query.trim().is_empty());
         self.query_view = None;
         self.chart_views = vec![None; result.charts.len()];
+        self._chart_subscriptions.clear();
         if !self.can_show(self.mode) {
             self.mode = ViewMode::Data;
         } else if let ViewMode::Chart(position) = self.mode {
@@ -689,8 +723,109 @@ impl ResultsViewer {
             return;
         };
         let view = cx.new(|cx| ChartView::new(result, chart, window, cx));
+        self._chart_subscriptions.push(cx.subscribe_in(
+            &view,
+            window,
+            |this, view, event: &ChartViewEvent, window, cx| {
+                // The position is looked up when the event comes: charts before this one may
+                // have been removed since the view was made.
+                let Some(position) = this
+                    .chart_views
+                    .iter()
+                    .position(|slot| slot.as_ref() == Some(view))
+                else {
+                    return;
+                };
+                match event {
+                    ChartViewEvent::Changed(chart) => {
+                        this.chart_changed(position, chart.clone(), cx)
+                    }
+                    ChartViewEvent::Remove => this.remove_chart(position, window, cx),
+                }
+            },
+        ));
         if let Some(slot) = self.chart_views.get_mut(position) {
             *slot = Some(view);
+        }
+    }
+
+    /// Saves an edited chart in the result.
+    fn chart_changed(&mut self, position: usize, chart: Chart, cx: &mut Context<Self>) {
+        let mut charts = self.result(cx).charts.clone();
+        let Some(slot) = charts.get_mut(position) else {
+            return;
+        };
+        *slot = chart;
+        self.results_file
+            .update(cx, |file, cx| file.save_charts(charts, cx));
+        // The tab may have a new name.
+        cx.notify();
+    }
+
+    /// Adds a chart of the table this tab is about, with the type its columns suggest.
+    fn add_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.grid.is_none() {
+            return;
+        }
+        let result = self.result(cx);
+        let table_index = match self.mode {
+            ViewMode::ExtraData(position) => position + 1,
+            ViewMode::Chart(position) => result
+                .charts
+                .get(position)
+                .and_then(|chart| {
+                    let name = chart.table_name.as_deref()?;
+                    result.tables.iter().position(|table| table.name == name)
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        let Some(table) = result.tables.get(table_index) else {
+            return;
+        };
+        let mut chart = Chart::new(ChartOptions::new(suggest_chart_type(table)));
+        chart.table_name = Some(table.name.clone());
+        let mut charts = result.charts.clone();
+        charts.push(chart);
+        let position = charts.len() - 1;
+        self.results_file
+            .update(cx, |file, cx| file.save_charts(charts, cx));
+        self.chart_views.push(None);
+        self.set_mode(ViewMode::Chart(position), window, cx);
+    }
+
+    fn remove_chart(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let mut charts = self.result(cx).charts.clone();
+        if position >= charts.len() {
+            return;
+        }
+        charts.remove(position);
+        let remaining = charts.len();
+        self.results_file
+            .update(cx, |file, cx| file.save_charts(charts, cx));
+        if position < self.chart_views.len() {
+            self.chart_views.remove(position);
+        }
+        self.mode = match self.mode {
+            ViewMode::Chart(shown) if shown == position && remaining == 0 => ViewMode::Data,
+            ViewMode::Chart(shown) if shown == position => {
+                ViewMode::Chart(position.min(remaining - 1))
+            }
+            ViewMode::Chart(shown) if shown > position => ViewMode::Chart(shown - 1),
+            other => other,
+        };
+        if let ViewMode::Chart(shown) = self.mode
+            && self.chart_views.get(shown).is_some_and(Option::is_none)
+        {
+            self.build_chart_view(shown, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn shown_chart_view(&self) -> Option<&Entity<ChartView>> {
+        match self.mode {
+            ViewMode::Chart(position) => self.chart_views.get(position)?.as_ref(),
+            _ => None,
         }
     }
 
@@ -1477,6 +1612,7 @@ impl Render for ResultsViewer {
             })
             .collect();
         let result = self.results_file.read(cx).result.clone();
+        let has_charts = !result.charts.is_empty();
         let chart_tabs: Vec<_> = result
             .charts
             .iter()
@@ -1501,6 +1637,17 @@ impl Render for ResultsViewer {
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &AddChart, window, cx| this.add_chart(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleChartEditor, window, cx| {
+                if let Some(view) = this.shown_chart_view().cloned() {
+                    view.update(cx, |view, cx| view.toggle_editor(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &RemoveChart, window, cx| {
+                if let ViewMode::Chart(position) = this.mode {
+                    this.remove_chart(position, window, cx);
+                }
+            }))
             .when(self.grid.is_some(), |viewer| {
                 viewer.child(
                     h_flex()
@@ -1520,6 +1667,27 @@ impl Render for ResultsViewer {
                         )
                         .children(extra_tabs)
                         .children(chart_tabs)
+                        .child(
+                            div().debug_selector(|| "add-chart".to_string()).child(
+                                if has_charts {
+                                    IconButton::new("results-add-chart", IconName::Plus)
+                                        .icon_size(IconSize::Small)
+                                        .tooltip(ui::Tooltip::text("Add a chart of this table"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.add_chart(window, cx)
+                                        }))
+                                        .into_any_element()
+                                } else {
+                                    Button::new("results-add-chart", "Add chart")
+                                        .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
+                                        .tooltip(ui::Tooltip::text("Draw this table as a chart"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.add_chart(window, cx)
+                                        }))
+                                        .into_any_element()
+                                },
+                            ),
+                        )
                         .when(self.can_show_structured, |bar| {
                             bar.child(
                                 div().debug_selector(|| "structured-tab".to_string()).child(
@@ -2331,6 +2499,286 @@ mod tests {
                 .as_deref(),
             Some("Totals")
         );
+    }
+
+    /// Opens one file the way a user does, keeping the file system to read back what was written.
+    async fn open_one<'a>(
+        cx: &'a mut TestAppContext,
+        name: &'static str,
+        text: String,
+    ) -> (
+        Entity<ResultsViewer>,
+        Arc<FakeFs>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            AppState::test(cx);
+            init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ name: text })).await;
+        let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        let worktree_id = project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).id())
+            })
+            .expect("the test project has a worktree");
+        let path = ProjectPath {
+            worktree_id,
+            path: RelPath::new(Path::new(name), util::paths::PathStyle::Unix)
+                .expect("relative path")
+                .into_arc(),
+        };
+        let item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("the file opens");
+        let viewer = item.downcast::<ResultsViewer>().expect("a results viewer");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (viewer, fs, cx)
+    }
+
+    async fn written(fs: &FakeFs, name: &str) -> ResultSet {
+        let text = fs
+            .load(Path::new("/root").join(name).as_path())
+            .await
+            .expect("the file can be read");
+        ResultSet::from_json(&text).expect("the written file parses")
+    }
+
+    #[gpui::test]
+    async fn a_chart_can_be_added_to_a_result_and_is_saved_with_it(cx: &mut TestAppContext) {
+        let original = charted(json!([]));
+        let (viewer, fs, cx) = open_one(cx, "storms.ktt", original.clone()).await;
+        assert!(
+            cx.debug_bounds("add-chart").is_some(),
+            "a result without a chart offers one"
+        );
+
+        let button = cx
+            .debug_bounds("add-chart")
+            .map(|bounds| bounds.center())
+            .expect("the button");
+        cx.simulate_click(button, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Chart(0)
+        );
+        let view = chart_view(&viewer, cx);
+        let data = view
+            .read_with(cx, |view, _| view.data())
+            .expect("the data is read");
+        assert_eq!(data.series.len(), 2, "split by the event type");
+        assert_eq!(
+            data.kind,
+            kusto_results::ChartType::TimeLine,
+            "a datetime and a number suggest a time chart"
+        );
+
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert_eq!(reread.charts.len(), 1);
+        assert_eq!(reread.charts[0].options.chart_type, "TimeLine");
+        assert_eq!(
+            reread.charts[0].table_name.as_deref(),
+            Some("PrimaryResult")
+        );
+        let mut expected = ResultSet::from_json(&original).expect("parses");
+        expected.set_charts(reread.charts.clone());
+        assert_eq!(reread, expected, "only the charts changed");
+        assert!(
+            cx.debug_bounds("add-chart").is_some(),
+            "a result with a chart still offers to add another"
+        );
+    }
+
+    #[gpui::test]
+    async fn editing_a_chart_draws_it_again_and_saves_the_edit(cx: &mut TestAppContext) {
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "name": "Storms", "options": { "type": "TimeLine" } }])),
+        )
+        .await;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = chart_view(&viewer, cx);
+        assert!(
+            view.read_with(cx, |view, _| view.editor()).is_none(),
+            "the pane is made when asked for"
+        );
+
+        let edit = cx
+            .debug_bounds("chart-edit")
+            .map(|bounds| bounds.center())
+            .expect("the button");
+        cx.simulate_click(edit, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("chart-editor").is_some(),
+            "the pane shows beside the chart"
+        );
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor exists");
+
+        // Typing a title draws it, and changing the type reads the table again.
+        let title = editor.read_with(cx, |editor, _| editor.title_editor());
+        title.update_in(cx, |title, window, cx| {
+            title.set_text("Hail and floods", window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let texts = view.read_with(cx, |view, _| view.scene_texts());
+        assert!(
+            texts.iter().any(|text| text == "Hail and floods"),
+            "{texts:?}"
+        );
+
+        editor.update(cx, |editor, cx| {
+            editor.edit(
+                |chart| {
+                    chart.options.set_kind(kusto_results::ChartType::Column);
+                    chart.options.x_column = Some("EventType".into());
+                    chart.options.y_columns = Some(vec!["Events".into()]);
+                    chart.options.series_columns = None;
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let data = view
+            .read_with(cx, |view, _| view.data())
+            .expect("read again");
+        assert_eq!(data.kind, kusto_results::ChartType::Column);
+        assert_eq!(data.categories, ["Hail", "Flood"]);
+        assert!(
+            view.read_with(cx, |view, _| view.scene_texts())
+                .iter()
+                .any(|text| text == "Hail and floods"),
+            "the title is kept"
+        );
+
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert_eq!(reread.charts.len(), 1);
+        let chart = &reread.charts[0];
+        assert_eq!(chart.name.as_deref(), Some("Storms"));
+        assert_eq!(chart.options.chart_type, "Column");
+        assert_eq!(chart.options.title.as_deref(), Some("Hail and floods"));
+        assert_eq!(chart.options.x_column.as_deref(), Some("EventType"));
+    }
+
+    #[gpui::test]
+    async fn an_edit_leaves_the_other_charts_exactly_as_they_were(cx: &mut TestAppContext) {
+        let sankey = json!({
+            "name": "Flow", "options": { "type": "Sankey", "nodesTable": "nodes", "futureOption": [1, 2] },
+            "futureProperty": true
+        });
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([sankey.clone(), { "options": { "type": "Line" } }])),
+        )
+        .await;
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Chart(1), window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = viewer
+            .read_with(cx, |viewer, _| viewer.chart_views[1].clone())
+            .expect("built");
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        editor.update(cx, |editor, cx| {
+            editor.edit(|chart| chart.options.title = Some("Edited".into()), cx)
+        });
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+
+        let reread = written(&fs, "storms.ktt").await;
+        assert_eq!(reread.charts.len(), 2);
+        assert_eq!(serde_json::Value::Object(reread.charts[0].to_map()), sankey);
+        assert_eq!(reread.charts[1].options.title.as_deref(), Some("Edited"));
+    }
+
+    #[gpui::test]
+    async fn removing_a_chart_shows_its_neighbour_and_saves(cx: &mut TestAppContext) {
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([
+                { "name": "One", "options": { "type": "Line" } },
+                { "name": "Two", "options": { "type": "Column" } },
+                { "name": "Three", "options": { "type": "TimeLine" } }
+            ])),
+        )
+        .await;
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Chart(1), window, cx)
+        });
+        cx.run_until_parked();
+        viewer.update_in(cx, |viewer, window, cx| viewer.remove_chart(1, window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Chart(1),
+            "the chart that followed takes its place"
+        );
+        let shown = chart_name(&viewer, 1, cx);
+        assert_eq!(shown.as_deref(), Some("Three"));
+
+        // A chart before the shown one is removed: the shown one keeps showing.
+        viewer.update_in(cx, |viewer, window, cx| viewer.remove_chart(0, window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Chart(0)
+        );
+        assert_eq!(chart_name(&viewer, 0, cx).as_deref(), Some("Three"));
+
+        viewer.update_in(cx, |viewer, window, cx| viewer.remove_chart(0, window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Data,
+            "the last one goes back to the data"
+        );
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert!(reread.charts.is_empty());
+    }
+
+    fn chart_name(
+        viewer: &Entity<ResultsViewer>,
+        position: usize,
+        cx: &gpui::VisualTestContext,
+    ) -> Option<String> {
+        let view = viewer.read_with(cx, |viewer, _| viewer.chart_views[position].clone())?;
+        view.read_with(cx, |view, _| view.chart().name.clone())
     }
 
     #[gpui::test]

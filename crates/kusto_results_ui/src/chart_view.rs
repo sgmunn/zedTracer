@@ -10,27 +10,67 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, ContentMask, Context, Font, FontWeight, Hsla,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels, Point, Render,
-    SharedString, Task, TextAlign, TextRun, Window, canvas, div, fill, outline, point, px, size,
+    AnyElement, App, AppContext as _, BorderStyle, Bounds, ContentMask, Context, Entity,
+    EventEmitter, Font, FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PathBuilder, Pixels, Point, Render, SharedString, Subscription, Task, TextAlign, TextRun,
+    Window, canvas, div, fill, outline, point, px, size,
 };
 use gpui_util::ResultExt as _;
+use kusto_results::chart::SortOrder;
 use kusto_results::chart_data::ChartData;
 use kusto_results::chart_scene::{
     Anchor, ChartScene, Hover, Item, Rect, Role, TextMeasure, VerticalAnchor, ViewState,
 };
 use kusto_results::{Chart, ChartOptions, ResultSet};
-use ui::prelude::*;
+use ui::{Button, prelude::*};
 
 use crate::actor_colours::theme_actor_palette;
+use crate::chart_editor::{ChartEditor, ChartEditorEvent, ColumnInfo, Effective};
 
 const TOOLTIP_OFFSET: Pixels = px(12.);
 const TOOLTIP_MAXIMUM_NAME_WIDTH: Pixels = px(240.);
 
 enum DataState {
-    Building { _task: Task<()> },
+    Building,
     Ready(Arc<ChartData>),
     Problem(SharedString),
+}
+
+/// What a change to a chart asks of the view that shows it.
+pub(crate) enum ChartViewEvent {
+    /// The chart was edited and should be saved.
+    Changed(Chart),
+    /// The user asked to remove the chart.
+    Remove,
+}
+
+/// The options that change which series there are. A change to any other option only draws the
+/// chart again.
+#[derive(PartialEq)]
+struct DataInputs {
+    chart_type: String,
+    x_column: Option<String>,
+    y_columns: Option<Vec<String>>,
+    series_columns: Option<Vec<String>>,
+    anomaly_columns: Option<Vec<String>>,
+    accumulate: Option<bool>,
+    sort: Option<SortOrder>,
+    max_series: Option<u32>,
+}
+
+impl DataInputs {
+    fn of(options: &ChartOptions) -> Self {
+        Self {
+            chart_type: options.chart_type.clone(),
+            x_column: options.x_column.clone(),
+            y_columns: options.y_columns.clone(),
+            series_columns: options.series_columns.clone(),
+            anomaly_columns: options.anomaly_columns.clone(),
+            accumulate: options.accumulate,
+            sort: options.sort,
+            max_series: options.max_series,
+        }
+    }
 }
 
 /// What the canvas needs, shared with its closures, which outlive a call to `render`.
@@ -380,12 +420,29 @@ fn build_data(result: &ResultSet, chart: &Chart) -> Result<ChartData, SharedStri
         .map_err(|problem| SharedString::from(problem.to_string()))
 }
 
+fn effective_columns(data: Option<&Arc<ChartData>>) -> Effective {
+    match data {
+        Some(data) => Effective {
+            x: Some(data.x_name.clone()),
+            values: data.value_names.clone(),
+            series: data.series_columns.clone(),
+        },
+        None => Effective::default(),
+    }
+}
+
 pub(crate) struct ChartView {
     result: Arc<ResultSet>,
     chart: Chart,
     data: DataState,
+    _data_task: Option<Task<()>>,
     painted: Rc<RefCell<Painted>>,
+    editing: bool,
+    editor: Option<Entity<ChartEditor>>,
+    _editor_subscription: Option<Subscription>,
 }
+
+impl EventEmitter<ChartViewEvent> for ChartView {}
 
 impl ChartView {
     pub(crate) fn new(
@@ -409,8 +466,12 @@ impl ChartView {
         let mut view = Self {
             result,
             chart,
-            data: DataState::Problem(SharedString::default()),
+            data: DataState::Building,
+            _data_task: None,
             painted,
+            editing: false,
+            editor: None,
+            _editor_subscription: None,
         };
         view.build_data(window, cx);
         view
@@ -425,36 +486,112 @@ impl ChartView {
     fn build_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.result.clone();
         let chart = self.chart.clone();
-        self.data = DataState::Building {
-            _task: cx.spawn_in(window, async move |this, cx| {
-                let built = cx
-                    .background_spawn(async move { build_data(&result, &chart) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.data = match built {
-                        Ok(data) => {
-                            let data = Arc::new(data);
-                            let mut painted = this.painted.borrow_mut();
-                            painted.series_colors = data
-                                .series
-                                .iter()
-                                .map(|series| series.color_index + 1)
-                                .max()
-                                .unwrap_or(0);
-                            painted.data = Some(data.clone());
-                            painted.generation += 1;
-                            DataState::Ready(data)
+        // What is shown stays until the new data is ready, so editing does not flash.
+        self._data_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let built = cx
+                .background_spawn(async move { build_data(&result, &chart) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.data = match built {
+                    Ok(data) => {
+                        let data = Arc::new(data);
+                        let mut painted = this.painted.borrow_mut();
+                        painted.series_colors = data
+                            .series
+                            .iter()
+                            .map(|series| series.color_index + 1)
+                            .max()
+                            .unwrap_or(0);
+                        painted.data = Some(data.clone());
+                        painted.generation += 1;
+                        drop(painted);
+                        if let Some(editor) = &this.editor {
+                            let effective = effective_columns(Some(&data));
+                            editor.update(cx, |editor, cx| editor.set_effective(effective, cx));
                         }
-                        Err(problem) => {
-                            this.painted.borrow_mut().data = None;
-                            DataState::Problem(problem)
-                        }
-                    };
-                    cx.notify();
-                })
-                .log_err();
-            }),
+                        DataState::Ready(data)
+                    }
+                    Err(problem) => {
+                        this.painted.borrow_mut().data = None;
+                        DataState::Problem(problem)
+                    }
+                };
+                this._data_task = None;
+                cx.notify();
+            })
+            .log_err();
+        }));
+    }
+
+    /// Shows or hides the pane that edits the chart.
+    pub(crate) fn toggle_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing = !self.editing;
+        if self.editing && self.editor.is_none() {
+            self.open_editor(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let columns: Vec<ColumnInfo> = self
+            .result
+            .chart_table(&self.chart)
+            .map(|table| {
+                table
+                    .columns
+                    .iter()
+                    .map(|column| ColumnInfo {
+                        name: SharedString::from(column.name.clone()),
+                        numeric: column.kind.is_numeric(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tables: Vec<SharedString> = self
+            .result
+            .tables
+            .iter()
+            .map(|table| SharedString::from(table.name.clone()))
+            .collect();
+        let effective = match &self.data {
+            DataState::Ready(data) => effective_columns(Some(data)),
+            _ => Effective::default(),
         };
+        let chart = self.chart.clone();
+        let editor = cx.new(|cx| ChartEditor::new(chart, tables, columns, effective, window, cx));
+        self._editor_subscription = Some(cx.subscribe_in(
+            &editor,
+            window,
+            |this, _, event: &ChartEditorEvent, window, cx| match event {
+                ChartEditorEvent::Changed(chart) => this.apply_chart(chart.clone(), window, cx),
+                ChartEditorEvent::Remove => cx.emit(ChartViewEvent::Remove),
+            },
+        ));
+        self.editor = Some(editor);
+    }
+
+    /// Takes the edited chart: draws it again, reads the table again when the edit changes which
+    /// series there are, and tells whoever saves.
+    fn apply_chart(&mut self, chart: Chart, window: &mut Window, cx: &mut Context<Self>) {
+        let before = std::mem::replace(&mut self.chart, chart.clone());
+        let table_changed = before.table_name != chart.table_name;
+        let needs_data =
+            table_changed || DataInputs::of(&before.options) != DataInputs::of(&chart.options);
+        {
+            let mut painted = self.painted.borrow_mut();
+            painted.options = chart.options.clone();
+            painted.generation += 1;
+            painted.hover = None;
+        }
+        if table_changed {
+            // The editor lists the columns of the table it was opened for.
+            self.open_editor(window, cx);
+        }
+        if needs_data {
+            self.build_data(window, cx);
+        }
+        cx.emit(ChartViewEvent::Changed(chart));
+        cx.notify();
     }
 
     fn pointer_moved(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -582,6 +719,11 @@ impl ChartView {
     }
 
     #[cfg(test)]
+    pub(crate) fn editor(&self) -> Option<Entity<ChartEditor>> {
+        self.editor.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn hover(&self) -> Option<Hover> {
         self.painted.borrow().hover.clone()
     }
@@ -611,7 +753,7 @@ impl Render for ChartView {
             _ => Vec::new(),
         };
         let body = match &self.data {
-            DataState::Building { .. } => div()
+            DataState::Building => div()
                 .p_4()
                 .child(Label::new("Drawing the chart…"))
                 .into_any_element(),
@@ -653,9 +795,28 @@ impl Render for ChartView {
                     .into_any_element()
             }
         };
+        let editing = self.editing;
+        let editor = self.editor.clone().filter(|_| editing);
         v_flex()
             .size_full()
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                h_flex().px_2().py_1().gap_1().justify_end().child(
+                    div().debug_selector(|| "chart-edit".to_string()).child(
+                        Button::new("chart-edit", "Edit chart")
+                            .toggle_state(editing)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.toggle_editor(window, cx)),
+                            ),
+                    ),
+                ),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().flex_1().min_w_0().h_full().child(body))
+                    .children(editor),
+            )
             .when(!notes.is_empty(), |view| {
                 view.child(
                     div().px_3().py_1().children(
