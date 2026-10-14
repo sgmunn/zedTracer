@@ -84,23 +84,27 @@
     ]
   },
   {
-    "name": "only a let that has parameters and a body is a function",
-    "text": "// :functions\nlet Fn_a = 5;\nlet Fn_b = (1 + 2);\nlet Fn_c = (x:long);\nlet Fn_d = (x:long) { x };\nlet Fn_e = view () { print 1 };\nprint 1;\n\nprint Fn_b(), Fn_c(1), Fn_d(1), Fn_e()",
+    "name": "every let is a definition, whether it is a function, a scalar or a table, and nothing else is",
+    "text": "// :functions\nlet Fn_a = 5;\nlet Fn_b = (1 + 2);\nlet Fn_d = (x:long) { x };\nlet Fn_e = view () { print 1 };\nlet Fn_t = print x = 1;\nprint 1;\n\nprint Fn_a, Fn_b, Fn_d(1), Fn_e(), toscalar(Fn_t)",
     "queries": [
       [
+        "Fn_a",
+        "Fn_b",
         "Fn_d",
-        "Fn_e"
+        "Fn_e",
+        "Fn_t"
       ]
     ]
   },
   {
     "name": "semicolons in strings and bodies do not end a definition, and a missing last semicolon is allowed",
-    "text": "// :functions\nlet Fn_a = (x:string) { strcat(x, \";\") };\nlet Fn_b = () { let y = 1; y };\nlet Fn_c = () { 3 }\n\nprint Fn_a('x'), Fn_b(), Fn_c()",
+    "text": "// :functions\nlet Fn_a = (x:string) { strcat(x, \";\") };\nlet Fn_b = () { let y = 1; y };\nlet Fn_c = () { 3 };\nlet Fn_d = 'a;b'\n\nprint Fn_a('x'), Fn_b(), Fn_c(), Fn_d",
     "queries": [
       [
         "Fn_a",
         "Fn_b",
-        "Fn_c"
+        "Fn_c",
+        "Fn_d"
       ]
     ]
   },

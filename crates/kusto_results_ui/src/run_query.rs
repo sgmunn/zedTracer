@@ -1771,6 +1771,34 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn a_value_the_file_defines_is_sent_with_the_query_and_with_the_function_that_uses_it(
+        cx: &mut TestAppContext,
+    ) {
+        const VALUES: &str = "// :functions\nlet Limit = 5;\nlet Window = ago(7d);\nlet Few = () { StormEvents | take Limit };\n\nFew()\n\nprint Window\n";
+        let (workspace, editor, sent, cx) = setup_with(cx, 200, ANSWER, VALUES).await;
+        run(&workspace, cx);
+        assert_eq!(
+            query_body(&sent).await["csl"],
+            "let Limit = 5;\nlet Few = () { StormEvents | take Limit };\nFew()",
+            "the function brings the value it uses, and the value nothing uses is left out"
+        );
+
+        editor.update_in(cx, |editor, window, cx| {
+            let start = editor.text(cx).find("print Window").expect("the second query");
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(start)..MultiBufferOffset(start)])
+            });
+        });
+        copy(&workspace, &editor, cx);
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet Window = ago(7d);\nprint Window"
+            )
+        );
+    }
+
+    #[gpui::test]
     async fn a_query_that_uses_no_function_is_sent_as_written(cx: &mut TestAppContext) {
         const UNUSED: &str = "// :functions\nlet Double = (x:long) { x * 2 };\n\nprint 1\n";
         let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, UNUSED).await;

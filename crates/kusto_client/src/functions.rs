@@ -1,9 +1,10 @@
-//! Functions defined in the query file itself, and added to the queries that use them.
+//! Functions and values defined in the query file itself, and added to the queries that use them.
 //!
-//! A block (a run of non-blank lines) with the line `// :functions` in it holds definitions: the
-//! `let name = (parameters) { body };` statements in it are functions every query below it may use
-//! (see [crate::directives] for how long they last). The block is not a query. When a query is run
-//! or copied it gets a `let` for each function it uses, and for those they use in turn, so the text
+//! A block (a run of non-blank lines) with the line `// :functions` in it holds definitions: each
+//! `let name = …;` statement in it, whether it defines a function with `(parameters) { body }`, a
+//! scalar such as `5` or `ago(7d)`, or a table, is one every query below it may use (see
+//! [crate::directives] for how long they last). The block is not a query. When a query is run or
+//! copied it gets a `let` for each definition it uses, and for those they use in turn, so the text
 //! that reaches the service is self-contained. Nothing else of a functions block is used.
 
 use std::collections::HashSet;
@@ -22,7 +23,7 @@ pub(crate) fn is_functions_marker(line: &str) -> bool {
     MARKER.is_match(line)
 }
 
-/// A function defined in the file: its name, and the whole `let` statement, ending in `;`.
+/// A function or value defined in the file: its name, and the whole `let` statement, ending in `;`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDefinition {
     pub name: String,
@@ -165,56 +166,24 @@ fn statements(text: &str) -> Vec<(usize, String)> {
     found
 }
 
-/// The name a statement gives a function, if it is `let name = (parameters) { body }`, or the same
-/// with `view` before the parameters.
-fn function_name(statement: &str) -> Option<String> {
+/// The name a statement defines, if it is `let name = …`.
+fn definition_name(statement: &str) -> Option<String> {
     let classified = classify(statement);
     let words = identifiers(&classified, statement);
     let [(keyword, _, _), (name, _, name_end), ..] = words.as_slice() else {
         return None;
     };
-    if keyword != "let" {
-        return None;
-    }
-    // Strings and comments are left out, so the brackets that remain are the ones that count.
-    let code: String = classified
-        .iter()
-        .filter(|(offset, character, kind)| {
-            *offset >= *name_end && *kind == Kind::Code && !character.is_whitespace()
-        })
-        .map(|(_, character, _)| *character)
-        .collect();
-    let after_equals = code.strip_prefix('=')?;
-    let signature = after_equals.strip_prefix("view").unwrap_or(after_equals);
-    if !signature.starts_with('(') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (index, character) in signature.char_indices() {
-        match character {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return signature
-                        .get(index + 1..)
-                        .is_some_and(|rest| rest.starts_with('{'))
-                        .then(|| name.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    (keyword == "let" && next_code_character(&classified, *name_end) == Some('='))
+        .then(|| name.clone())
 }
 
-/// The functions a functions block defines, in the order written. A statement of the block that is
-/// not a function, or that has no body, is left out; one that lacks its `;` gets it.
+/// What a functions block defines, in the order written: every `let` statement. Any other
+/// statement of the block is left out, and one that lacks its `;` gets it.
 pub fn definitions_in(block: &str) -> Vec<FunctionDefinition> {
     statements(block)
         .into_iter()
         .filter_map(|(_, statement)| {
-            let name = function_name(&statement)?;
+            let name = definition_name(&statement)?;
             let text = if statement.ends_with(';') {
                 statement
             } else {
@@ -225,9 +194,8 @@ pub fn definitions_in(block: &str) -> Vec<FunctionDefinition> {
         .collect()
 }
 
-/// The definitions after `definition` is made: it replaces a function of the same name where that
-/// was, so the functions defined after it, which may use it, keep coming after it; otherwise it
-/// goes last.
+/// The definitions after `definition` is made: it replaces one of the same name where that was,
+/// so the definitions after it, which may use it, keep coming after it; otherwise it goes last.
 pub fn define(functions: &mut Vec<FunctionDefinition>, definition: FunctionDefinition) {
     match functions
         .iter_mut()
@@ -372,10 +340,13 @@ mod tests {
     }
 
     #[test]
-    fn a_block_gives_its_functions_whole_and_in_order() {
-        let block = "// :functions\nlet Double = (x:long) { x * 2 };\n// a note\nlet Recent = (count:long, since:datetime = datetime(2024-01-01)) {\n    Events\n    | where At > since // not a ; end\n    | top count by At desc\n};\nlet notAFunction = 5;\nlet ViewOfIt = view () { Events };";
+    fn a_block_gives_its_definitions_whole_and_in_order() {
+        let block = "// :functions\nlet Double = (x:long) { x * 2 };\n// a note\nlet Recent = (count:long, since:datetime = datetime(2024-01-01)) {\n    Events\n    | where At > since // not a ; end\n    | top count by At desc\n};\nlet Limit = 5;\nlet Window = ago(7d);\nlet ViewOfIt = view () { Events };\nlet Few = Events | take 3;";
         let found = definitions_in(block);
-        assert_eq!(names(&found), ["Double", "Recent", "ViewOfIt"]);
+        assert_eq!(
+            names(&found),
+            ["Double", "Recent", "Limit", "Window", "ViewOfIt", "Few"]
+        );
         assert_eq!(found[0].text, "let Double = (x:long) { x * 2 };");
         assert!(
             found[1].text.starts_with("let Recent = (count:long")
@@ -383,15 +354,19 @@ mod tests {
             "{:?}",
             found[1].text
         );
-        assert_eq!(found[2].text, "let ViewOfIt = view () { Events };");
+        assert_eq!(found[2].text, "let Limit = 5;");
+        assert_eq!(found[3].text, "let Window = ago(7d);");
+        assert_eq!(found[4].text, "let ViewOfIt = view () { Events };");
+        assert_eq!(found[5].text, "let Few = Events | take 3;");
     }
 
     #[test]
     fn a_semicolon_in_a_string_or_a_body_does_not_end_a_statement() {
         let found = definitions_in(
-            "let A = (x:string) { strcat(x, \";\", 'it\\'s;') };\nlet B = () { let y = 1; y };",
+            "let A = (x:string) { strcat(x, \";\", 'it\\'s;') };\nlet B = () { let y = 1; y };\nlet C = 'a;b';",
         );
-        assert_eq!(names(&found), ["A", "B"]);
+        assert_eq!(names(&found), ["A", "B", "C"]);
+        assert_eq!(found[2].text, "let C = 'a;b';");
         assert_eq!(found[1].text, "let B = () { let y = 1; y };");
     }
 
@@ -402,9 +377,10 @@ mod tests {
     }
 
     #[test]
-    fn what_is_not_a_function_defined_with_let_is_not_one() {
-        assert!(definitions_in("let a = 5;\nlet b = (1 + 2);\nlet c = (x:long);\nprint 1;\nT | take 1").is_empty());
+    fn only_a_let_statement_is_a_definition() {
+        assert!(definitions_in("print 1;\nT | take 1;\nset notruncation").is_empty());
         assert!(definitions_in("// let A = () { 1 };").is_empty());
+        assert!(definitions_in("let;\nlet a;\nlet 5 = 1;").is_empty());
         assert!(definitions_in("").is_empty());
     }
 
@@ -441,6 +417,16 @@ mod tests {
             "a comment does not use a function"
         );
         assert!(functions_used_by("print 'Quad'", &defined()).is_empty());
+        let with_value = definitions_in("let Limit = 5;\nlet Few = (x:long) { Events | take Limit };");
+        assert_eq!(
+            functions_used_by("Few(1)", &with_value),
+            ["let Limit = 5;", "let Few = (x:long) { Events | take Limit };"],
+            "a value that a function uses comes along with it"
+        );
+        assert_eq!(
+            functions_used_by("print Limit", &with_value),
+            ["let Limit = 5;"]
+        );
         assert!(functions_used_by("T | take 1", &defined()).is_empty());
     }
 
