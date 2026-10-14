@@ -1168,7 +1168,9 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual([csl for _, csl in cluster.commands if csl == ".show functions"], [])
 
     def workspace_symbols(self, query):
-        return self.request("workspace/symbol", {"query": query})["result"]
+        """The functions found; the queries of the project's files are found too, which other tests look at."""
+        symbols = self.request("workspace/symbol", {"query": query})["result"]
+        return [symbol for symbol in symbols if symbol["kind"] == 12]
 
     def test_the_server_offers_document_and_workspace_symbols(self):
         cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
@@ -1353,6 +1355,125 @@ class OutlineTest(unittest.TestCase):
     def test_text_with_no_query_has_no_outline(self):
         self.assertEqual(self.outline(""), [])
         self.assertEqual(self.outline("// only a note"), [])
+
+
+class ProjectSymbolTest(unittest.TestCase):
+    """What the project symbols search finds in the .kql files of the open project."""
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    tearDown = LanguageServerTest.tearDown
+    stop_server = LanguageServerTest.stop_server
+    start_server = LanguageServerTest.start_server
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.request_id = 100
+        self.start_server(self.root.as_uri())
+
+    def write(self, relative, text):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def symbols(self, query):
+        self.request_id += 1
+        self.send(self.request_id, "workspace/symbol", {"query": query})
+        while True:
+            message = self.receive()
+            if message.get("id") == self.request_id and "method" not in message:
+                return message["result"]
+
+    def names(self, query):
+        return [symbol["name"] for symbol in self.symbols(query)]
+
+    def test_the_queries_and_functions_of_every_file_are_found_by_their_names(self):
+        a = self.write("a.kql", "// Failing activities\nT | take 1\n\n// :functions\nlet Twice = (x:long) { x * 2 };\n")
+        self.write("sub/b.kql", "StormEvents | take 1\n")
+        self.write(".hidden/c.kql", "// hidden thing\nT\n")
+        self.write("bin/d.kql", "// built thing\nT\n")
+        self.write("notes.txt", "// text thing\n")
+
+        [query] = self.symbols("failing")
+        self.assertEqual((query["name"], query["kind"], query["containerName"]), ("Failing activities", 24, "a.kql"))
+        self.assertEqual(query["location"]["uri"], a.as_uri())
+        self.assertEqual(
+            query["location"]["range"],
+            {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 21}},
+        )
+        [function] = self.symbols("twice")
+        self.assertEqual((function["name"], function["kind"], function["containerName"]), ("Twice", 12, "a.kql"))
+        self.assertEqual(
+            function["location"]["range"],
+            {"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 9}},
+        )
+        [first_line] = self.symbols("stormevents")
+        self.assertEqual((first_line["name"], first_line["containerName"]), ("StormEvents | take 1", "sub/b.kql"))
+        self.assertEqual(self.symbols("thing"), [], "a folder that starts with a dot, a build folder and other files")
+
+    def test_a_file_is_read_again_only_when_its_time_or_its_size_changed(self):
+        path = self.write("c.kql", "// alpha one\nT\n")
+        before = path.stat()
+        self.assertEqual(self.names("alpha"), ["alpha one"])
+
+        # The same size and the same time: what was read is used, so the file is not looked into again.
+        path.write_text("// bravo one\nT\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(self.names("bravo"), [])
+        self.assertEqual(self.names("alpha"), ["alpha one"])
+
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10_000_000_000))
+        self.assertEqual(self.names("bravo"), ["bravo one"])
+        self.assertEqual(self.names("alpha"), [])
+
+        path.write_text("// charlie, a longer one\nT\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10_000_000_000))
+        self.assertEqual(self.names("charlie"), ["charlie, a longer one"], "a new size is enough")
+
+    def test_a_file_that_is_gone_is_not_found(self):
+        path = self.write("c.kql", "// alpha one\nT\n")
+        self.assertEqual(self.names("alpha"), ["alpha one"])
+        path.unlink()
+        self.assertEqual(self.names("alpha"), [])
+
+    def test_an_open_file_is_searched_as_it_is_in_the_editor(self):
+        path = self.write("c.kql", "// on disk\nT\n")
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        thread = Path(outside.name) / "thread.kql"
+        for opened, text in ((path, "// in the editor\nT\n"), (thread, "// in a thread\nT\n")):
+            self.send(
+                None,
+                "textDocument/didOpen",
+                {"textDocument": {"uri": opened.as_uri(), "languageId": "kusto", "version": 1, "text": text}},
+            )
+
+        self.assertEqual(self.names("on disk"), [])
+        [in_editor] = self.symbols("in the editor")
+        self.assertEqual(in_editor["location"]["uri"], path.as_uri())
+        [in_thread] = self.symbols("in a thread")
+        self.assertEqual((in_thread["containerName"], in_thread["location"]["uri"]), ("thread.kql", thread.as_uri()))
+
+    def test_the_snapshot_folder_is_not_searched_for_files_as_its_functions_are_listed_already(self):
+        self.write(
+            "kusto-schema/h.kusto.windows.net/Db/functions/Demo/F.kql",
+            '// :setDefaultCluster("h.kusto.windows.net")\n// :setDefaultDb("Db")\n'
+            ".create-or-alter function\nF()\n{ print 1 }\n",
+        )
+
+        [function] = self.symbols("F")
+        self.assertEqual((function["name"], function["containerName"]), ("F", "Db / Demo"))
+        self.assertEqual(self.symbols("create-or-alter"), [])
+
+    def test_the_best_match_is_first_whether_it_is_a_function_or_a_query(self):
+        self.write("a.kql", "// notes about plain things\nT\n")
+        self.write("kusto-schema/h.kusto.windows.net/Db/functions/Plain.kql", "// :setDefaultDb(\"Db\")\n.create-or-alter function\nPlain()\n{ print 1 }\n")
+        self.write("b.kql", "// :functions\nlet Plainer = () { 1 };\n")
+
+        self.assertEqual(self.names("plain"), ["Plain", "Plainer", "notes about plain things"])
 
 
 class DirectiveTest(unittest.TestCase):

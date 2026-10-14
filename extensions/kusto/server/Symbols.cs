@@ -135,45 +135,83 @@ internal sealed partial class KustoLanguageServer
     }
 
     /// <summary>
-    /// The functions that have a file in a snapshot (see <see cref="FunctionSnapshots"/>) whose name matches the
-    /// query, best matches first. Only functions with a file can be listed, because a symbol is a place in a
-    /// file, and nothing is fetched: going to a definition is what makes the files.
+    /// What the editor's project symbols search finds, best matches first: the functions that have a file in a
+    /// snapshot (see <see cref="FunctionSnapshots"/>), and the queries and function definitions of every `.kql`
+    /// file in the open projects (see <see cref="ProjectSymbols"/>), by name. The editor filters what it is given
+    /// by the name only, so the name is all that can be searched. Only functions with a file can be listed,
+    /// because a symbol is a place in a file, and nothing is fetched: going to a definition is what makes the files.
     /// </summary>
     private object[] GetWorkspaceSymbols(JsonElement parameters)
     {
         var query = parameters.TryGetProperty("query", out var typed) ? typed.GetString() ?? "" : "";
-        var matches = SnapshotRoots()
-            .SelectMany(FunctionSnapshots.Files)
-            .Select(file => (File: file, Rank: FunctionSnapshots.Rank(file.Name, query)))
-            .Where(match => match.Rank >= 0)
-            .OrderBy(match => match.Rank)
-            .ThenBy(match => match.File.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(match => match.File.Path, StringComparer.Ordinal)
+        var roots = SnapshotRoots().ToList();
+        var candidates = new List<(int Rank, string Name, string Tie, Func<object> Build)>();
+
+        foreach (var file in roots.SelectMany(FunctionSnapshots.Files))
+        {
+            var rank = FunctionSnapshots.Rank(file.Name, query);
+            if (rank >= 0)
+                candidates.Add((rank, file.Name, file.Path, () => StoredFunctionSymbol(file)));
+        }
+
+        var open = documents.ToArray()
+            .Select(pair => (Path: DocumentPath(pair.Key), Document: pair.Value))
+            .Where(pair => pair.Path is not null)
+            .GroupBy(pair => pair.Path!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Document, StringComparer.Ordinal);
+        foreach (var (path, container, symbol) in projectSymbols.All(workspaceFolders, roots, open))
+        {
+            var rank = FunctionSnapshots.Rank(symbol.Name, query);
+            if (rank >= 0)
+                candidates.Add((rank, symbol.Name, $"{path}:{symbol.Line:D8}", () => FileSymbolOf(path, container, symbol)));
+        }
+
+        return candidates
+            .OrderBy(candidate => candidate.Rank)
+            .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.Tie, StringComparer.Ordinal)
             .Take(WorkspaceSymbolLimit)
-            .ToList();
-        return matches
-            .Select(match =>
-            {
-                var file = match.File;
-                var line = FunctionSnapshots.NameLine(File.ReadAllText(file.Path), file.Name);
-                return (object)new
-                {
-                    name = file.Name,
-                    kind = Outline.FunctionKind,
-                    containerName = file.Folder is null ? file.Database : $"{file.Database} / {file.Folder}",
-                    location = new
-                    {
-                        uri = new Uri(file.Path).AbsoluteUri,
-                        range = new
-                        {
-                            start = new { line, character = 0 },
-                            end = new { line, character = file.Name.Length }
-                        }
-                    }
-                };
-            })
+            .Select(candidate => candidate.Build())
             .ToArray();
     }
+
+    private readonly ProjectSymbols projectSymbols = new();
+
+    private static object StoredFunctionSymbol(SnapshotFile file)
+    {
+        var line = FunctionSnapshots.NameLine(File.ReadAllText(file.Path), file.Name);
+        return new
+        {
+            name = file.Name,
+            kind = Outline.FunctionKind,
+            containerName = file.Folder is null ? file.Database : $"{file.Database} / {file.Folder}",
+            location = new
+            {
+                uri = new Uri(file.Path).AbsoluteUri,
+                range = new
+                {
+                    start = new { line, character = 0 },
+                    end = new { line, character = file.Name.Length }
+                }
+            }
+        };
+    }
+
+    private static object FileSymbolOf(string path, string container, FileSymbol symbol) => new
+    {
+        name = symbol.Name,
+        kind = symbol.Kind,
+        containerName = container,
+        location = new
+        {
+            uri = new Uri(path).AbsoluteUri,
+            range = new
+            {
+                start = new { line = symbol.Line, character = symbol.Character },
+                end = new { line = symbol.EndLine, character = symbol.EndCharacter }
+            }
+        }
+    };
 
     private const int WorkspaceSymbolLimit = 200;
 
