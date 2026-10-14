@@ -31,6 +31,7 @@ fn request(query: &str) -> Result<QueryRequest> {
         query: query.into(),
         client_request_id: "ZedTracer;live-test".into(),
         parameters: Default::default(),
+        functions: Vec::new(),
     })
 }
 
@@ -180,6 +181,7 @@ fn time_a_query_from_a_file() -> Result<()> {
         query,
         client_request_id: "ZedTracer;timing".into(),
         parameters: Default::default(),
+        functions: Vec::new(),
     };
     let client = client();
     block_on(client.execute(&self::request("print 1")?)).ok();

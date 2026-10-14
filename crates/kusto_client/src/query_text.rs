@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use crate::functions::is_functions_marker;
+
 /// A control command as the service wants it: from its first line that is not blank or a comment,
 /// because the service rejects a command with a comment before the dot. The text of the query, which
 /// people label with such comments, is kept as it is everywhere else.
@@ -29,42 +31,59 @@ pub fn is_control_command(query: &str) -> bool {
 struct Block {
     range: Range<usize>,
     /// Whether anything in it is more than comments. A block of only comments, such as a
-    /// directive or a note, is not a query.
+    /// directive or a note, is not a query, and neither is a block of function definitions.
     is_query: bool,
+    /// Whether it has the `// :functions` line.
+    is_functions: bool,
 }
 
 fn blocks(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
-    let mut current: Option<(usize, bool)> = None;
+    // Where the block started, whether it has code, and whether it has the functions marker.
+    let mut current: Option<(usize, bool, bool)> = None;
     let mut line_start = 0;
     let mut previous_end = 0;
     for line in text.split_inclusive('\n') {
         let line_end = line_start + line.len();
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            if let Some((start, is_query)) = current.take() {
+            if let Some((start, has_code, is_functions)) = current.take() {
                 blocks.push(Block {
                     range: start..previous_end,
-                    is_query,
+                    is_query: has_code && !is_functions,
+                    is_functions,
                 });
             }
         } else {
             let content = !trimmed.starts_with("//");
+            let marker = is_functions_marker(line);
             current = Some(match current {
-                Some((start, is_query)) => (start, is_query || content),
-                None => (line_start, content),
+                Some((start, has_code, is_functions)) => {
+                    (start, has_code || content, is_functions || marker)
+                }
+                None => (line_start, content, marker),
             });
             previous_end = line_start + line.trim_end_matches(['\r', '\n']).len();
         }
         line_start = line_end;
     }
-    if let Some((start, is_query)) = current {
+    if let Some((start, has_code, is_functions)) = current {
         blocks.push(Block {
             range: start..previous_end,
-            is_query,
+            is_query: has_code && !is_functions,
+            is_functions,
         });
     }
     blocks
+}
+
+/// Every block of function definitions of a text, in order.
+pub(crate) fn function_blocks(text: &str) -> Vec<Range<usize>> {
+    blocks(text)
+        .into_iter()
+        .filter(|block| block.is_functions)
+        .map(|block| block.range)
+        .collect()
 }
 
 /// Every query of a text, in order.
@@ -161,6 +180,25 @@ mod tests {
             "a trailing note, to the query above"
         );
         assert_eq!(query_at(text, "T1"), Some("T1"));
+    }
+
+    #[test]
+    fn a_block_of_function_definitions_is_not_a_query() {
+        let text = "// :functions\nlet A = () { 1 };\n\nprint A()\n\nlet B = () { 2 };\n// :functions";
+        assert_eq!(
+            query_blocks(text).into_iter().map(|range| &text[range]).collect::<Vec<_>>(),
+            ["print A()"],
+            "the marker may come anywhere in its block"
+        );
+        assert_eq!(
+            function_blocks(text).into_iter().map(|range| &text[range]).collect::<Vec<_>>(),
+            ["// :functions\nlet A = () { 1 };", "let B = () { 2 };\n// :functions"]
+        );
+        assert_eq!(
+            query_at(text, "let A"),
+            Some("print A()"),
+            "a cursor in the definitions belongs to the query below"
+        );
     }
 
     #[test]

@@ -20,8 +20,8 @@ use gpui_util::ResultExt as _;
 use kusto_client::{
     AzureCliTokenProvider, Cluster, Connection, DEFAULTS_FILE, HistoryLimits, KustoClient,
     Qualified, QueryRequest, RUN_LOG_FILE, RunRecord, TokenProvider, append_record,
-    declared_parameters, parameters_for_query, portable_query, resolve_query_at,
-    state_for_selection,
+    declared_parameters, functions_used_by, parameters_for_query, portable_query,
+    resolve_query_at, state_for_selection, with_functions,
 };
 use multi_buffer::MultiBufferOffset;
 use project::{ProjectItem as _, ProjectPath};
@@ -70,6 +70,9 @@ pub struct RerunQuery {
     pub database: String,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
+    /// The statements of the functions the query used that its file defines.
+    #[serde(default)]
+    pub functions: Vec<String>,
 }
 
 /// Copies the client request id of a run, which names it to the service and to support.
@@ -248,9 +251,11 @@ fn copy_query(
         let text = async {
             let values =
                 parameters_of_query(fs.as_ref(), &files, &query.text, &query.parameters).await?;
-            let qualified = qualify_query::qualify(server, &query.text, &query.connection).await;
+            let with_functions = with_functions(&query.text, &query.functions);
+            let qualified =
+                qualify_query::qualify(server, &with_functions, &query.connection).await;
             Ok::<_, anyhow::Error>(portable_query(
-                &query.text,
+                &with_functions,
                 &query.connection,
                 &values,
                 qualified.as_ref(),
@@ -445,6 +450,8 @@ struct QueryToRun {
     connection: Connection,
     /// The values the file gives to parameters with directives, which come before a profile's.
     parameters: BTreeMap<String, String>,
+    /// The statements of the functions the file defines that the query uses.
+    functions: Vec<String>,
 }
 
 /// The cluster and database that apply where no directive in the file says otherwise.
@@ -464,19 +471,25 @@ fn query_to_run(editor: &mut Editor, cx: &mut Context<Editor>) -> Option<QueryTo
         .newest::<MultiBufferOffset>(&display_snapshot);
     let text = snapshot.text();
     let defaults = default_connection(cx);
-    let (range, connection, parameters) = if selection.is_empty() {
+    let (range, connection, parameters, defined) = if selection.is_empty() {
         let resolved = resolve_query_at(&text, selection.head().0, &defaults)?;
-        (resolved.range, resolved.connection, resolved.parameters)
+        (
+            resolved.range,
+            resolved.connection,
+            resolved.parameters,
+            resolved.functions,
+        )
     } else {
         let range = selection.start.0..selection.end.0;
         let state = state_for_selection(&text, range.clone(), &defaults);
-        (range, state.connection, state.parameters)
+        (range, state.connection, state.parameters, state.functions)
     };
     let query = text.get(range)?.trim();
     (!query.is_empty()).then(|| QueryToRun {
         text: query.to_string(),
         connection,
         parameters,
+        functions: functions_used_by(query, &defined),
     })
 }
 
@@ -506,6 +519,7 @@ struct RunSpec {
     query: String,
     connection: Connection,
     parameters: ParameterSource,
+    functions: Vec<String>,
     destination: Destination,
 }
 
@@ -545,6 +559,7 @@ fn start_run_in(
             files: parameter_files,
             given_by_file: query.parameters,
         },
+        functions: query.functions,
         destination,
     };
     launch_run(workspace, runs, spec, window, cx)
@@ -564,6 +579,7 @@ fn rerun_query(
             database: Some(action.database.clone()),
         },
         parameters: ParameterSource::Values(action.parameters.clone()),
+        functions: action.functions.clone(),
         destination: Destination::Configured,
     };
     if let Err(error) = launch_run(workspace, runs, spec, window, cx) {
@@ -597,6 +613,7 @@ fn launch_run(
         query,
         client_request_id: format!("ZedTracer;{run_uuid}"),
         parameters: Default::default(),
+        functions: spec.functions,
     };
 
     let run_id = runs.update(cx, |runs, _| {
@@ -633,7 +650,7 @@ fn launch_run(
     let log_lock = runs.read(cx).log_lock.clone();
     let server = qualify_query::language_server(workspace.project().read(cx), cx);
     let qualified = cx.background_spawn({
-        let query = request.query.clone();
+        let query = request.text_to_send();
         let connection = connection.clone();
         async move { qualify_query::qualify(server, &query, &connection).await }
     });
@@ -894,7 +911,7 @@ async fn save_run(
             let mut result = client.execute(&request).await?;
             let qualified = qualified.await;
             result.query = Some(portable_query(
-                &request.query,
+                &request.text_to_send(),
                 &connection,
                 &request.parameters,
                 qualified.as_ref(),
@@ -942,6 +959,7 @@ struct RunLog {
     database: String,
     at: String,
     parameters: BTreeMap<String, String>,
+    functions: Vec<String>,
 }
 
 impl RunLog {
@@ -953,6 +971,7 @@ impl RunLog {
             database: request.database.clone(),
             at: started_at.to_string(),
             parameters: request.parameters.clone(),
+            functions: request.functions.clone(),
         }
     }
 
@@ -964,6 +983,7 @@ impl RunLog {
             database: self.database.clone(),
             at: self.at.clone(),
             parameters: self.parameters.clone(),
+            functions: self.functions.clone(),
         }
     }
 
@@ -978,6 +998,7 @@ impl RunLog {
             rows: saved.rows,
             path: saved.path.to_string_lossy().into_owned(),
             parameters: self.parameters.clone(),
+            functions: self.functions.clone(),
         }
     }
 
@@ -990,6 +1011,7 @@ impl RunLog {
             at: self.at.clone(),
             message,
             parameters: self.parameters.clone(),
+            functions: self.functions.clone(),
         }
     }
 
@@ -1722,6 +1744,143 @@ pub(crate) mod tests {
         );
     }
 
+    const DEFINING: &str = "// :functions\nlet Double = (x:long) { x * 2 };\nlet Unused = () { 1 };\n\nprint Double(4)\n";
+
+    const DEFINING_WITH_PARAMETER: &str = "// :functions\nlet Plus = (x:long) { x + raid };\n\ndeclare query_parameters(raid:long);\nprint Plus(1)\n";
+
+    #[gpui::test]
+    async fn the_functions_a_query_uses_are_sent_with_it_and_the_log_keeps_what_was_written(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, DEFINING).await;
+        run(&workspace, cx);
+
+        let body = query_body(&sent).await;
+        assert_eq!(
+            body["csl"],
+            "let Double = (x:long) { x * 2 };\nprint Double(4)",
+            "Unused is not added, and the definitions block is not part of the query"
+        );
+        let records = run_log(&workspace, cx).await;
+        assert_eq!(records[0]["query"], "print Double(4)");
+        assert_eq!(
+            records[0]["functions"],
+            json!(["let Double = (x:long) { x * 2 };"])
+        );
+        assert_eq!(records[1]["functions"], records[0]["functions"]);
+    }
+
+    #[gpui::test]
+    async fn a_query_that_uses_no_function_is_sent_as_written(cx: &mut TestAppContext) {
+        const UNUSED: &str = "// :functions\nlet Double = (x:long) { x * 2 };\n\nprint 1\n";
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, UNUSED).await;
+        run(&workspace, cx);
+
+        assert_eq!(query_body(&sent).await["csl"], "print 1");
+        assert!(run_log(&workspace, cx).await[0].get("functions").is_none());
+    }
+
+    #[gpui::test]
+    async fn the_functions_come_after_the_declaration_so_that_they_can_use_a_parameter(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DEFINING_WITH_PARAMETER,
+            json!({ ".kusto": { "parameters.yaml": "active: A\nprofiles:\n  A:\n    raid: 5\n" } }),
+        )
+        .await;
+        run(&workspace, cx);
+
+        let body = query_body(&sent).await;
+        assert_eq!(
+            body["csl"],
+            "declare query_parameters(raid:long);\nlet Plus = (x:long) { x + raid };\nprint Plus(1)"
+        );
+        assert_eq!(body["properties"], json!({ "Parameters": { "raid": "5" } }));
+    }
+
+    #[gpui::test]
+    async fn a_copied_query_has_the_functions_after_the_parameter_values(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, editor, _sent, cx) = setup_in(
+            cx,
+            200,
+            ANSWER,
+            DEFINING_WITH_PARAMETER,
+            json!({ ".kusto": { "parameters.yaml": "active: A\nprofiles:\n  A:\n    raid: 5\n" } }),
+        )
+        .await;
+        copy(&workspace, &editor, cx);
+        assert_eq!(
+            clipboard_text(cx).as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet raid = long(5);\nlet Plus = (x:long) { x + raid };\nprint Plus(1)"
+            ),
+            "the parameter's let comes first, because the function uses it"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_run_keeps_the_functions_it_used_in_the_query_of_the_result(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup_with(cx, 200, ANSWER, DEFINING).await;
+        use_editor_tabs(cx);
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("a results tab");
+        let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
+        assert_eq!(
+            result.query.as_deref(),
+            Some(
+                "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nlet Double = (x:long) { x * 2 };\nprint Double(4)"
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn a_rerun_sends_the_functions_the_run_had_even_if_the_file_changed(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _editor, sent, cx) = setup_with(cx, 200, ANSWER, DEFINING).await;
+        let runs = cx.new(|_| QueryRuns::default());
+        start(&workspace, &runs, cx);
+
+        let records = run_log(&workspace, cx).await;
+        let log = records
+            .iter()
+            .map(|record| record.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entry = kusto_client::history_entries(&log)
+            .into_iter()
+            .next()
+            .expect("the first run is listed");
+        assert_eq!(entry.functions, ["let Double = (x:long) { x * 2 };"]);
+        let action = RerunQuery {
+            query: entry.query,
+            cluster: entry.cluster,
+            database: entry.database,
+            parameters: entry.parameters,
+            functions: entry.functions,
+        };
+        workspace.update_in(cx, |workspace, window, cx| {
+            rerun_query(workspace, &runs, &action, window, cx)
+        });
+        cx.run_until_parked();
+
+        let sent = bodies(&sent, "/v2/rest/query");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1], sent[0]);
+    }
+
     const COMMANDS: &str = "// the functions here\n.show functions\n\nStormEvents\n| take 1\n";
 
     #[gpui::test]
@@ -1812,6 +1971,7 @@ pub(crate) mod tests {
             cluster: entry.cluster,
             database: entry.database,
             parameters: entry.parameters,
+            functions: entry.functions,
         };
         workspace.update_in(cx, |workspace, window, cx| {
             rerun_query(workspace, &runs, &action, window, cx)
@@ -1849,6 +2009,7 @@ pub(crate) mod tests {
             cluster: String::new(),
             database: "Samples".into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         };
         workspace.update_in(cx, |workspace, window, cx| {
             rerun_query(workspace, &runs, &action, window, cx)

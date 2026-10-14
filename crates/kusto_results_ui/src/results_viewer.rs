@@ -712,6 +712,8 @@ impl ResultsViewer {
             cluster: text(&result.cluster)?,
             database: text(&result.database)?,
             parameters: parameter_values(result).into_iter().collect(),
+            // The query of a result already holds the functions it used.
+            functions: Vec::new(),
         })
     }
 

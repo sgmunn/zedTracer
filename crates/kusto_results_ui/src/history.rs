@@ -261,6 +261,7 @@ fn rerun_action(entry: &HistoryEntry) -> RerunQuery {
         cluster: entry.cluster.clone(),
         database: entry.database.clone(),
         parameters: entry.parameters.clone(),
+        functions: entry.functions.clone(),
     }
 }
 
@@ -600,6 +601,7 @@ mod tests {
                 database: "Samples".into(),
                 at: "2026-10-01T14:30:05.000Z".into(),
                 parameters: BTreeMap::new(),
+                functions: Vec::new(),
                 outcome,
             },
             available,

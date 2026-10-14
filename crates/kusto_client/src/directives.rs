@@ -11,6 +11,10 @@
 //! it away, or `// :clearParams()` takes away every one. These values are the file's own, so they
 //! come before those of the active parameter profile.
 //!
+//! A block with the line `// :functions` defines functions (see [crate::functions]) that every query
+//! below it can use. A later definition of the same name replaces it, `// :clearFunction("name")` takes
+//! one away and `// :clearFunctions()` every one.
+//!
 //! The space after the slashes is optional: Zed adds `// ` when a comment line is continued, so
 //! `// :` is what gets typed, and `//:` is what other Kusto extensions write. An argument is
 //! a string in double or single quotes, written as it is: there are no escapes, so a value with
@@ -22,8 +26,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::functions::{FunctionDefinition, define, definitions_in};
 use crate::parameters::is_parameter_name;
-use crate::query_text::{query_blocks, query_range_at};
+use crate::query_text::{function_blocks, query_blocks, query_range_at};
 
 const QUOTED: &str = r#"(?:"[^"]*"|'[^']*')"#;
 
@@ -58,12 +63,13 @@ impl Connection {
     }
 }
 
-/// What the directives above a point set: where a query runs, and the values the file gives to
-/// the parameters a query declares.
+/// What the directives above a point set: where a query runs, the values the file gives to the
+/// parameters a query declares, and the functions it defines.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DirectiveState {
     pub connection: Connection,
     pub parameters: BTreeMap<String, String>,
+    pub functions: Vec<FunctionDefinition>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +77,7 @@ pub struct ResolvedQuery {
     pub range: Range<usize>,
     pub connection: Connection,
     pub parameters: BTreeMap<String, String>,
+    pub functions: Vec<FunctionDefinition>,
 }
 
 enum Directive {
@@ -79,6 +86,8 @@ enum Directive {
     SetParameter { name: String, value: String },
     ClearParameter(String),
     ClearParameters,
+    ClearFunction(String),
+    ClearFunctions,
 }
 
 fn directive_in(line: &str) -> Option<Directive> {
@@ -106,6 +115,10 @@ fn directive_in(line: &str) -> Option<Directive> {
             Some(Directive::ClearParameter(name.clone()))
         }
         ("clearParams", []) => Some(Directive::ClearParameters),
+        ("clearFunction", [name]) if is_parameter_name(name) => {
+            Some(Directive::ClearFunction(name.clone()))
+        }
+        ("clearFunctions", []) => Some(Directive::ClearFunctions),
         _ => None,
     }
 }
@@ -115,11 +128,21 @@ pub fn state_up_to(text: &str, offset: usize, defaults: &Connection) -> Directiv
     let mut state = DirectiveState {
         connection: defaults.clone(),
         parameters: BTreeMap::new(),
+        functions: Vec::new(),
     };
+    let mut definitions = function_blocks(text)
+        .into_iter()
+        .map(|range| (range.start, definitions_in(text.get(range).unwrap_or_default())))
+        .peekable();
     let mut line_start = 0;
     for line in text.split_inclusive('\n') {
         if line_start > offset {
             break;
+        }
+        while let Some((_, block)) = definitions.next_if(|(start, _)| *start <= line_start) {
+            for definition in block {
+                define(&mut state.functions, definition);
+            }
         }
         match directive_in(line) {
             Some(Directive::SetCluster(cluster)) => {
@@ -136,6 +159,10 @@ pub fn state_up_to(text: &str, offset: usize, defaults: &Connection) -> Directiv
                 state.parameters.remove(&name);
             }
             Some(Directive::ClearParameters) => state.parameters.clear(),
+            Some(Directive::ClearFunction(name)) => {
+                state.functions.retain(|function| function.name != name)
+            }
+            Some(Directive::ClearFunctions) => state.functions.clear(),
             None => {}
         }
         line_start += line.len();
@@ -162,11 +189,13 @@ pub fn resolve_query_at(text: &str, offset: usize, defaults: &Connection) -> Opt
     let DirectiveState {
         connection,
         parameters,
+        functions,
     } = state_up_to(text, range.end, defaults);
     Some(ResolvedQuery {
         range,
         connection,
         parameters,
+        functions,
     })
 }
 
@@ -282,6 +311,60 @@ mod tests {
                 .collect();
             assert_eq!(resolved, case.queries, "{}", case.name);
         }
+    }
+
+    #[derive(Deserialize)]
+    struct FunctionCase {
+        name: String,
+        text: String,
+        queries: Vec<Vec<String>>,
+    }
+
+    /// The same cases the language server is tested with, through what it colours as a function.
+    #[test]
+    fn the_shared_function_cases_resolve_as_expected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fork-docs/samples/function-definitions.json"
+        );
+        let cases: Vec<FunctionCase> =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("the cases file reads"))
+                .expect("the cases file parses");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let resolved: Vec<Vec<String>> = query_blocks(&case.text)
+                .into_iter()
+                .map(|range| {
+                    state_up_to(&case.text, range.end, &defaults())
+                        .functions
+                        .into_iter()
+                        .map(|function| function.name)
+                        .collect()
+                })
+                .collect();
+            assert_eq!(resolved, case.queries, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn the_cursor_picks_the_functions_of_its_query() {
+        let text = "// :functions\nlet A = () { 1 };\n\nprint A()\n\n// :clearFunctions()\n\nprint 2";
+        let first = resolve_query_at(text, text.find("print A").unwrap(), &defaults()).unwrap();
+        assert_eq!(first.functions.len(), 1);
+        let second = resolve_query_at(text, text.len(), &defaults()).unwrap();
+        assert!(second.functions.is_empty());
+    }
+
+    #[test]
+    fn selected_text_takes_the_functions_of_its_query() {
+        let text = "// :functions\nlet A = () { 1 };\n\nprint A()";
+        let selection = text.find("print").unwrap()..text.len();
+        assert_eq!(
+            state_for_selection(text, selection, &defaults())
+                .functions
+                .len(),
+            1
+        );
     }
 
     #[test]

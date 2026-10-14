@@ -33,6 +33,10 @@ pub enum RunRecord {
         /// The values the run's declared query parameters had, so that the run can be repeated.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         parameters: BTreeMap<String, String>,
+        /// The statements of the functions the file defined that the query used, so that the run
+        /// can be repeated.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        functions: Vec<String>,
     },
     Finished {
         cid: String,
@@ -47,6 +51,10 @@ pub enum RunRecord {
         /// The values the run's declared query parameters had, so that the run can be repeated.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         parameters: BTreeMap<String, String>,
+        /// The statements of the functions the file defined that the query used, so that the run
+        /// can be repeated.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        functions: Vec<String>,
     },
     Failed {
         cid: String,
@@ -58,6 +66,10 @@ pub enum RunRecord {
         /// The values the run's declared query parameters had, so that the run can be repeated.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         parameters: BTreeMap<String, String>,
+        /// The statements of the functions the file defined that the query used, so that the run
+        /// can be repeated.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        functions: Vec<String>,
     },
     Cancelled {
         cid: String,
@@ -94,6 +106,7 @@ mod tests {
             database: "Samples".into(),
             at: "2026-10-01T14:00:00.000Z".into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -116,6 +129,7 @@ mod tests {
             rows: 1240,
             path: "/history/a.ktt".into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         };
         let value: serde_json::Value =
             serde_json::from_str(append_record("", &finished).unwrap().trim()).unwrap();
@@ -148,6 +162,21 @@ mod tests {
     }
 
     #[test]
+    fn functions_are_kept_when_there_are_some_and_left_out_when_there_are_none() {
+        let plain = append_record("", &started("id")).unwrap();
+        assert!(!plain.contains("functions"), "{plain}");
+
+        let mut record = started("id");
+        if let RunRecord::Started { functions, .. } = &mut record {
+            functions.push("let A = () { 1 };".into());
+        }
+        let text = append_record("", &record).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(value["functions"], serde_json::json!(["let A = () { 1 };"]));
+        assert_eq!(serde_json::from_str::<RunRecord>(text.trim()).unwrap(), record);
+    }
+
+    #[test]
     fn a_query_with_line_breaks_stays_on_one_line() {
         let record = RunRecord::Started {
             cid: "id".into(),
@@ -156,6 +185,7 @@ mod tests {
             database: "d".into(),
             at: "x".into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         };
         assert_eq!(append_record("", &record).unwrap().lines().count(), 1);
     }

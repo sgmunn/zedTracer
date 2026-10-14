@@ -16,6 +16,8 @@ pub struct HistoryEntry {
     pub at: String,
     /// The values the declared query parameters had in the run.
     pub parameters: BTreeMap<String, String>,
+    /// The statements of the functions the file defined that the query used in the run.
+    pub functions: Vec<String>,
     pub outcome: HistoryOutcome,
 }
 
@@ -42,7 +44,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
         .lines()
         .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
     {
-        let (cid, query, cluster, database, at, parameters, outcome) = match record {
+        let (cid, query, cluster, database, at, parameters, functions, outcome) = match record {
             RunRecord::Started {
                 cid,
                 query,
@@ -50,6 +52,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 parameters,
+                functions,
             } => (
                 cid,
                 query,
@@ -57,6 +60,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 parameters,
+                functions,
                 HistoryOutcome::NoResult,
             ),
             RunRecord::Finished {
@@ -69,6 +73,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 rows,
                 path,
                 parameters,
+                functions,
             } => (
                 cid,
                 query,
@@ -76,6 +81,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 parameters,
+                functions,
                 HistoryOutcome::Finished {
                     duration_ms,
                     rows,
@@ -90,6 +96,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 at,
                 message,
                 parameters,
+                functions,
             } => (
                 cid,
                 query,
@@ -97,6 +104,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 parameters,
+                functions,
                 HistoryOutcome::Failed { message },
             ),
             RunRecord::Cancelled {
@@ -112,6 +120,7 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
                 database,
                 at,
                 BTreeMap::new(),
+                Vec::new(),
                 HistoryOutcome::NoResult,
             ),
         };
@@ -122,12 +131,16 @@ pub fn history_entries(log: &str) -> Vec<HistoryEntry> {
             database,
             at,
             parameters,
+            functions,
             outcome,
         };
         match positions.get(&cid) {
             Some(&position) => {
                 if entry.parameters.is_empty() {
                     entry.parameters = std::mem::take(&mut entries[position].parameters);
+                }
+                if entry.functions.is_empty() {
+                    entry.functions = std::mem::take(&mut entries[position].functions);
                 }
                 entries[position] = entry;
             }
@@ -228,6 +241,7 @@ mod tests {
             database: "Samples".into(),
             at: at.into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -242,6 +256,7 @@ mod tests {
             rows: 7,
             path: path.into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -259,6 +274,7 @@ mod tests {
                 at: "2026-10-01T11:00:00Z".into(),
                 message: "Semantic error".into(),
                 parameters: BTreeMap::new(),
+                functions: Vec::new(),
             },
             started("c", "2026-10-01T12:00:00Z"),
         ]);
@@ -307,6 +323,16 @@ mod tests {
             entries[0].outcome,
             HistoryOutcome::Finished { .. }
         ));
+    }
+
+    #[test]
+    fn a_runs_functions_survive_the_records_that_follow_its_start() {
+        let mut start = started("a", "2026-10-01T10:00:00Z");
+        if let RunRecord::Started { functions, .. } = &mut start {
+            functions.push("let A = () { 1 };".into());
+        }
+        let text = log(&[start, finished("a", "2026-10-01T10:00:00Z", "/h/a.ktt")]);
+        assert_eq!(history_entries(&text)[0].functions, ["let A = () { 1 };"]);
     }
 
     #[test]

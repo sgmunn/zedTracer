@@ -47,7 +47,7 @@ static DECLARATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bdeclare\s+query_parameters\s*\(").expect("a valid pattern")
 });
 
-/// Whether a text can be the name of a parameter.
+/// Whether a text can be the name of a parameter, which is what a function is named by too.
 pub(crate) fn is_parameter_name(name: &str) -> bool {
     PARAMETER_NAME.is_match(name)
 }

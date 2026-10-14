@@ -1,0 +1,147 @@
+[
+  {
+    "name": "without a functions block nothing is defined",
+    "text": "print Fn_a(1)\n\nprint Fn_b(1)",
+    "queries": [
+      [],
+      []
+    ]
+  },
+  {
+    "name": "a definition applies to every query below its block and not to those above",
+    "text": "print Fn_a(1)\n\n// :functions\nlet Fn_a = (x:long) { x * 2 };\n\nprint Fn_a(1)\n\nprint Fn_a(2)",
+    "queries": [
+      [],
+      [
+        "Fn_a"
+      ],
+      [
+        "Fn_a"
+      ]
+    ]
+  },
+  {
+    "name": "a block may define several functions, in the order written, and the marker may come anywhere in it",
+    "text": "let Fn_a = (x:long) { x };\nlet Fn_b = () { Fn_a(1) };\n// :functions\n\nprint Fn_a(1), Fn_b()",
+    "queries": [
+      [
+        "Fn_a",
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "a later block adds to the earlier ones",
+    "text": "// :functions\nlet Fn_a = () { 1 };\n\n// :functions\nlet Fn_b = () { 2 };\n\nprint Fn_a(), Fn_b()",
+    "queries": [
+      [
+        "Fn_a",
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "defining a name again replaces it where it was",
+    "text": "// :functions\nlet Fn_a = () { 1 };\nlet Fn_b = () { 2 };\n\nprint Fn_a(), Fn_b()\n\n// :functions\nlet Fn_a = () { 3 };\n\nprint Fn_a(), Fn_b()",
+    "queries": [
+      [
+        "Fn_a",
+        "Fn_b"
+      ],
+      [
+        "Fn_a",
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "clearing one function takes away only that one",
+    "text": "// :functions\nlet Fn_a = () { 1 };\nlet Fn_b = () { 2 };\n\n// :clearFunction(\"Fn_a\")\n\nprint Fn_a(), Fn_b()",
+    "queries": [
+      [
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "clearing every function takes away all of them, and a function can be defined again",
+    "text": "// :functions\nlet Fn_a = () { 1 };\n\nprint Fn_a(), Fn_b()\n\n// :clearFunctions()\n\nprint Fn_a(), Fn_b()\n\n// :functions\nlet Fn_b = () { 2 };\n\nprint Fn_a(), Fn_b()",
+    "queries": [
+      [
+        "Fn_a"
+      ],
+      [],
+      [
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "clearing what was never defined changes nothing",
+    "text": "// :clearFunction(\"Fn_a\")\n// :clearFunctions()\n\nprint 1",
+    "queries": [
+      []
+    ]
+  },
+  {
+    "name": "only a let that has parameters and a body is a function",
+    "text": "// :functions\nlet Fn_a = 5;\nlet Fn_b = (1 + 2);\nlet Fn_c = (x:long);\nlet Fn_d = (x:long) { x };\nlet Fn_e = view () { print 1 };\nprint 1;\n\nprint Fn_b(), Fn_c(1), Fn_d(1), Fn_e()",
+    "queries": [
+      [
+        "Fn_d",
+        "Fn_e"
+      ]
+    ]
+  },
+  {
+    "name": "semicolons in strings and bodies do not end a definition, and a missing last semicolon is allowed",
+    "text": "// :functions\nlet Fn_a = (x:string) { strcat(x, \";\") };\nlet Fn_b = () { let y = 1; y };\nlet Fn_c = () { 3 }\n\nprint Fn_a('x'), Fn_b(), Fn_c()",
+    "queries": [
+      [
+        "Fn_a",
+        "Fn_b",
+        "Fn_c"
+      ]
+    ]
+  },
+  {
+    "name": "a definition in a comment is not one",
+    "text": "// :functions\n// let Fn_a = () { 1 };\nlet Fn_b = () { 2 }; // let Fn_c = () { 3 };\n\nprint Fn_a(), Fn_b(), Fn_c()",
+    "queries": [
+      [
+        "Fn_b"
+      ]
+    ]
+  },
+  {
+    "name": "a definition inside a query's own block is part of the query, not a definition",
+    "text": "let Fn_a = () { 1 };\nprint Fn_a()\n\nprint Fn_a()",
+    "queries": [
+      [],
+      []
+    ]
+  },
+  {
+    "name": "a functions block is not a query, whatever else is in it",
+    "text": "// :functions\nlet Fn_a = () { 1 };\nprint Fn_a()",
+    "queries": []
+  },
+  {
+    "name": "windows line endings",
+    "text": "// :functions\r\nlet Fn_a = () { 1 };\r\n\r\nprint Fn_a()",
+    "queries": [
+      [
+        "Fn_a"
+      ]
+    ]
+  },
+  {
+    "name": "a function name that cannot be one, and the wrong number of arguments, clear nothing",
+    "text": "// :functions\nlet Fn_a = () { 1 };\n\n// :clearFunction(\"not a name\")\n// :clearFunction()\n// :clearFunctions(\"Fn_a\")\n// :clearFunction(Fn_a)\n\nprint Fn_a()",
+    "queries": [
+      [
+        "Fn_a"
+      ]
+    ]
+  }
+]

@@ -5,6 +5,7 @@
 //! network.
 
 mod directives;
+mod functions;
 mod history;
 mod parameters;
 mod portable_query;
@@ -32,6 +33,7 @@ pub use directives::{
     Connection, DEFAULTS_FILE, DirectiveState, ResolvedQuery, connection_up_to,
     connections_of_queries, resolve_query_at, state_for_selection, state_up_to,
 };
+pub use functions::{FunctionDefinition, functions_used_by, with_functions};
 pub use history::{
     HistoryEntry, HistoryFile, HistoryLimits, HistoryOutcome, files_to_prune, history_entries,
     is_history_file_name,
@@ -97,6 +99,16 @@ pub struct QueryRequest {
     pub client_request_id: String,
     /// Values for the parameters the query declares.
     pub parameters: BTreeMap<String, String>,
+    /// The statements of the functions the query uses that the file defines, which are added to
+    /// the query when it is sent. `query` stays as it was written.
+    pub functions: Vec<String>,
+}
+
+impl QueryRequest {
+    /// The query with the functions it uses, as the service gets it.
+    pub fn text_to_send(&self) -> String {
+        with_functions(&self.query, &self.functions)
+    }
 }
 
 /// Runs queries. Keep one around and reuse it: it remembers each cluster's token audience and
@@ -129,10 +141,11 @@ impl KustoClient {
         // The service answers a control command at another endpoint, in another format, and does
         // not take a comment before it.
         let is_command = is_control_command(&request.query);
+        let to_send = request.text_to_send();
         let text = if is_command {
             command_text(&request.query)
         } else {
-            request.query.as_str()
+            to_send.as_str()
         };
         let mut body = json!({ "db": request.database, "csl": text });
         if !request.parameters.is_empty() {
@@ -487,6 +500,7 @@ mod tests {
             query: "print a=1".into(),
             client_request_id: "ZedTracer;1".into(),
             parameters: BTreeMap::new(),
+            functions: Vec::new(),
         }
     }
 
