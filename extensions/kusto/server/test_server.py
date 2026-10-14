@@ -807,6 +807,7 @@ CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "connect
 PARAMETER_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "query-parameters.json"
 PARAMETER_DIRECTIVE_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "parameter-directives.json"
 FUNCTION_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "function-definitions.json"
+BLOCK_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "query-blocks.json"
 DIRECTIVE_NAMES = [
     "clearFunction", "clearFunctions", "clearParam", "clearParams",
     "functions", "setDefaultCluster", "setDefaultDb", "setParam",
@@ -815,7 +816,8 @@ DIRECTIVE_NAMES = [
 
 def query_line_ranges(lines):
     """The first and last line of each query of a text, found without the server: a run of non-blank
-    lines that has code in it and is not a block of function definitions."""
+    lines that has code in it and is not a block of function definitions. It does not know that a
+    blank line inside brackets is no gap, so it is only for texts that have none."""
     ranges, start = [], None
     for number, line in enumerate(lines + [""]):
         if line.strip():
@@ -838,6 +840,51 @@ def expected_title(connection):
     if ".kusto." not in host:
         host += ".kusto.windows.net"
     return f"{host} / {database or 'no database'}"
+
+
+class QueryBlockTest(unittest.TestCase):
+    """Where a query starts, which the editor and the server must agree on."""
+
+    setUp = LanguageServerTest.setUp
+    start_server = LanguageServerTest.start_server
+    tearDown = LanguageServerTest.tearDown
+    stop_server = LanguageServerTest.stop_server
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    open_document = LanguageServerTest.open_document
+
+    def lens_lines(self, text):
+        """The line each query's connection lens is above, which is the first line of the query."""
+        self.open_document(text)
+        self.send(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        while True:
+            message = self.receive()
+            if message.get("id") == 7 and "result" in message:
+                return [
+                    lens["range"]["start"]["line"]
+                    for lens in message["result"]
+                    if lens["command"]["command"] == "kusto.connection"
+                ]
+
+    def test_the_shared_cases_put_a_lens_above_the_first_line_of_the_queries_the_editor_finds(self):
+        cases = json.loads(BLOCK_CASES.read_text())
+        self.assertTrue(cases)
+        for case in cases:
+            self.assertEqual(
+                self.lens_lines(case["text"]),
+                [first for first, _ in case["queries"]],
+                case["name"],
+            )
+
+    def test_a_blank_line_inside_brackets_does_not_split_the_query_that_is_analysed(self):
+        # Read as two queries, the first is cut off inside its parenthesis and the second starts
+        # with a plus.
+        self.assertEqual(self.open_document("print (1\n\n+ 2)"), [])
+
+    def test_a_query_with_brackets_that_are_never_closed_is_still_cut_at_the_blank_line(self):
+        diagnostics = self.open_document("print (1\n\nprint 2")
+        self.assertTrue(diagnostics)
+        self.assertEqual({item["range"]["start"]["line"] for item in diagnostics}, {0})
 
 
 class DirectiveTest(unittest.TestCase):

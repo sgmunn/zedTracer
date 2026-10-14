@@ -1,9 +1,13 @@
 /// <summary>
 /// A file holds several queries, each a run of non-blank lines, with blank lines between them.
-/// That is how Kusto Explorer reads a file and how the editor chooses the query to run. Each
+/// That is how Kusto Explorer reads a file and how the editor chooses the query to run. A blank
+/// line inside parentheses or braces that are still open, such as a gap in the body of a function,
+/// does not end the query; <see cref="QueryBlocks.Find"/> says when it does. Each
 /// query is analysed on its own, so a query never continues into the one after it and a `let`
 /// in one is not visible in the next. A block of only comments, such as a directive or a note, is
 /// not a query, and neither is a block of function definitions (see <see cref="InlineFunctions"/>).
+/// The editor finds the same blocks (`query_text.rs`), which the cases in
+/// `fork-docs/samples/query-blocks.json` keep true.
 /// </summary>
 internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string Text, bool IsQuery, bool IsFunctions = false)
 {
@@ -12,33 +16,142 @@ internal sealed record QueryBlock(int FirstLine, int LastLine, int Start, string
 
 internal static class QueryBlocks
 {
+    /// <summary>
+    /// The blocks of a text. A blank line ends a block unless a bracket the block opened is still open
+    /// (a gap in a function body or a call), or a multi-line string is. Brackets that are never closed
+    /// are no gap: they would join every query below to this one, so a block whose brackets are open at
+    /// the end of the text ends at its first blank line instead.
+    /// </summary>
     public static List<QueryBlock> Find(string text)
     {
         var blocks = new List<QueryBlock>();
         var lines = text.Split('\n');
-        var lineStart = 0;
-        var firstLine = -1;
-        var firstStart = 0;
-        for (var line = 0; line <= lines.Length; line++)
+        var starts = new int[lines.Length];
+        var offset = 0;
+        for (var line = 0; line < lines.Length; line++)
         {
-            var blank = line == lines.Length || string.IsNullOrWhiteSpace(lines[line]);
-            if (!blank && firstLine < 0)
+            starts[line] = offset;
+            offset += lines[line].Length + 1;
+        }
+
+        var first = 0;
+        while (first < lines.Length)
+        {
+            if (string.IsNullOrWhiteSpace(lines[first]))
             {
-                firstLine = line;
-                firstStart = lineStart;
+                first++;
+                continue;
             }
-            if (blank && firstLine >= 0)
-            {
-                var queryText = text[firstStart..Math.Min(lineStart, text.Length)].TrimEnd('\r', '\n');
-                var isFunctions = lines[firstLine..line].Any(ConnectionDirectives.IsFunctionsMarker);
-                var isQuery = !isFunctions && lines[firstLine..line].Any(text => !text.TrimStart().StartsWith("//", StringComparison.Ordinal));
-                blocks.Add(new QueryBlock(firstLine, line - 1, firstStart, queryText, isQuery, isFunctions));
-                firstLine = -1;
-            }
-            if (line < lines.Length)
-                lineStart += lines[line].Length + 1;
+            var last = LastLineOfBlock(lines, first);
+            var contents = lines[first..(last + 1)].Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+            var isFunctions = contents.Any(ConnectionDirectives.IsFunctionsMarker);
+            var isQuery = !isFunctions && contents.Any(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal));
+            var queryText = text[starts[first]..(starts[last] + lines[last].Length)].TrimEnd('\r', '\n');
+            blocks.Add(new QueryBlock(first, last, starts[first], queryText, isQuery, isFunctions));
+            first = last + 1;
         }
         return blocks;
+    }
+
+    private static int LastLineOfBlock(string[] lines, int first)
+    {
+        var brackets = new Brackets();
+        var last = first;
+        for (var line = first; line < lines.Length; line++)
+        {
+            if (!string.IsNullOrWhiteSpace(lines[line]))
+            {
+                brackets.Follow(lines[line]);
+                last = line;
+            }
+            else if (!brackets.IsOpen)
+            {
+                return last;
+            }
+        }
+        if (!brackets.IsOpen)
+            return last;
+        var blank = Array.FindIndex(lines, first, line => string.IsNullOrWhiteSpace(line));
+        return blank < 0 ? lines.Length - 1 : blank - 1;
+    }
+
+    /// <summary>
+    /// Follows the brackets of the lines it is given, to tell whether a blank line comes inside parentheses
+    /// or braces or between two queries. Brackets in comments and strings do not count. A string of one
+    /// quote ends with its line, so a quote left open while typing does not hold the rest of the file.
+    /// </summary>
+    private sealed class Brackets
+    {
+        private int depth;
+        private string? multilineString;
+
+        public bool IsOpen => depth > 0 || multilineString is not null;
+
+        public void Follow(string line)
+        {
+            var index = 0;
+            while (index < line.Length)
+            {
+                if (multilineString is { } delimiter)
+                {
+                    var end = line.IndexOf(delimiter, index, StringComparison.Ordinal);
+                    if (end < 0)
+                        return;
+                    index = end + delimiter.Length;
+                    multilineString = null;
+                    continue;
+                }
+                switch (line[index])
+                {
+                    case '/' when index + 1 < line.Length && line[index + 1] == '/':
+                        return;
+                    case '`' or '~' when index + 2 < line.Length && line[index + 1] == line[index] && line[index + 2] == line[index]:
+                        multilineString = new string(line[index], 3);
+                        index += 3;
+                        break;
+                    case '\'' or '"':
+                        index = EndOfString(line, index);
+                        break;
+                    case '(' or '{':
+                        depth++;
+                        index++;
+                        break;
+                    case ')' or '}':
+                        depth = Math.Max(0, depth - 1);
+                        index++;
+                        break;
+                    default:
+                        index++;
+                        break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Where the string of one quote that starts at <paramref name="start"/> ends, or the end of the line.
+        /// A verbatim string (`@'…'`) has no escapes and doubles its quote; any other takes a backslash as one.
+        /// </summary>
+        private static int EndOfString(string line, int start)
+        {
+            var quote = line[start];
+            var verbatim = start > 0 && line[start - 1] == '@';
+            var index = start + 1;
+            while (index < line.Length)
+            {
+                if (line[index] == quote)
+                {
+                    if (verbatim && index + 1 < line.Length && line[index + 1] == quote)
+                        index += 2;
+                    else
+                        return index + 1;
+                }
+                else
+                {
+                    index += line[index] == '\\' && !verbatim ? 2 : 1;
+                }
+            }
+            return line.Length;
+        }
     }
 
     /// <summary>
