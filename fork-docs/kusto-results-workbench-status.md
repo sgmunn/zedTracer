@@ -39,6 +39,7 @@ cargo test -p kusto_results_ui --profile release-fast --lib -- --ignored --nocap
 ./script/clippy -p kusto_results -p kusto_results_ui -p kusto_client
 cargo test -p kusto_client                       # fake service, no network
 cargo test -p editor --lib test_code_lens         # includes the dispatchAction test
+cargo test -p snippet -p snippet_provider       # the snippet escape and the snippets file writer
 cargo test -p zed --bin zed keymap                # built-in keymaps name real actions
 dotnet build extensions/kusto/server/KustoLanguageServer.csproj --no-restore && python3 extensions/kusto/server/test_server.py
 ./extensions/kusto/install-server.sh              # then restart the language server in Zed
@@ -181,6 +182,16 @@ Per-query lenses above each blank-line-separated query, from the language server
 - **Actions** in `run_query.rs`: `kusto::CancelQuery` (cancels the newest running query at the cursor, else the newest run), `kusto::ShowResult { path }` (shows any saved result in the panel, or a tab), `kusto::CopyClientRequestId { id }`. Lenses that only show text name `kusto.noop`, which the server accepts, so that Zed makes them clickable.
 - Not built: Select, Copy and Format lenses (RUN-9), a lens for a query the server cannot tell apart from another with the same text, and two Zed windows writing the log at the same moment can lose a record.
 
+## Saving a query as a snippet
+
+Asked for by the user: right-click a query and make it a snippet. `kusto::SaveQueryAsSnippet` (a command of the palette and an entry of the editor's context menu, **Save Query as Snippet**) takes the selection, or the query at the cursor as a run would (`query_text_at_cursor`), asks for a prefix in a small prompt (`query_snippet.rs`, shaped like `open_url_modal.rs`) and adds the snippet to `<config dir>/snippets/kusto.json`, which Zed's snippet provider already watches, so it completes without a restart.
+
+- **Fork changes in Zed:** the action is declared in `zed_actions::kusto`, because the context menu in `crates/editor/src/mouse_context_menu.rs` has to name it and `editor` cannot depend on `kusto_results_ui`; the menu entry is shown when `window.is_action_available(&SaveQueryAsSnippet)`, the way Run to Cursor is. `kusto_results_ui` handles the action per editor with `register_action_renderer`, only while the editor shows a buffer whose language is `Kusto`, so the entry is in the menu of `.kql` files and in no other. Both edits are a few lines, to keep merges of upstream Zed easy.
+- **What is saved:** the text as written, one line per `body` entry, with `$` and `\` escaped (`snippet::escape`; a test parses the escaped text back to itself). Nothing is qualified, no parameter is replaced and the functions a file defines are not added, so a query that calls one of them needs it where the snippet is inserted. The prefix is also the name (the key of the file's object).
+- **Writing the file** (`snippet_provider::add_snippet`): the snippets file is commented JSON that people edit, so it is not parsed and written back. The new entry is placed after the last one with `end_of_entries`, a small scanner that skips strings and comments, because `settings_json::replace_value_in_json_text` puts a new key before the first one, which moves a comment from the snippet it describes to the new one (found while writing the tests). A comment on the line of the last snippet stays on that line, and a comma is added or not as the file needs. Formatting is `settings_json::to_pretty_json` with the file's own indentation (2 spaces when it has no snippet to take it from). A name the file has gives `AddedSnippet::NameTaken`, a file that is not a JSON object an error, and neither changes the file.
+- **Tests:** `snippet::tests::test_escaped_text_parses_back_to_itself`; in `snippet_provider` the exact text for a file with comments, with a trailing comment, with only comments, with braces and quotes in strings and comments, and the cases above through a `FakeFs`; in `query_snippet::tests` the offer only for Kusto buffers, the cursor and the selection, `$` and `\`, an empty prefix, a name that is taken, and a file with no query. The prompt is exercised by calling its handler, because the workspace of the tests is not rendered inside a `MultiWorkspace` (see `run`).
+- **Not built:** a lens (the lens lines are full), a description or tab stops chosen in the prompt (the **Open** button on the notice is for adding them), saving the file's `// :functions` along with the query, snippets for other languages, and replacing a snippet of the same name.
+
 ## Query threads (THR, first slice)
 
 A thread in the Threads sidebar whose surface in the agent panel is a Kusto query editor, with its results opening as tabs in the editor area (spec section 5.10). Decided with the user: the queries of a thread are a `.kql` file in the user data directory (a query worth keeping is moved into a project), and results always open as tabs whatever `kusto.results_location` says.
@@ -227,7 +238,7 @@ Also found at the same time, and fixed: every run built a new client and so aske
 
 ## Not proven yet
 
-Most of this ran on GPUI's test platform and the language server's own tests: no GPU, no pixels. Looked at in a real window by the user: the grid, Row Details, row picking, the wheel, the filter popover, running a query with F5, and the speed of a release build (about the same as VS Code). Not confirmed in a real window: the Results panel, the code lenses and the spinner, schema and signature-help completion, the snippet cursor placement, per-query diagnostics, severity colours, the context menu, Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.
+Most of this ran on GPUI's test platform and the language server's own tests: no GPU, no pixels. Looked at in a real window by the user: the grid, Row Details, row picking, the wheel, the filter popover, running a query with F5, and the speed of a release build (about the same as VS Code). Not confirmed in a real window: the Results panel, the code lenses and the spinner, schema and signature-help completion, the snippet cursor placement, per-query diagnostics, severity colours, the context menu, Save Query as Snippet (its entry in the editor's context menu, the prompt, and completing the saved snippet in a Kusto file), Copy as datatable pasted into a query, column saving on a real file, the gutter handle, keyboard and auto-scroll feel, the invalid-file messages, an outside edit, Ctrl+F inside the inspector, panel position persistence.
 
 ## Known gaps
 

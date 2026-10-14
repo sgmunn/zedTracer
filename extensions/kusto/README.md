@@ -554,6 +554,20 @@ put it on a line below. The lenses of one line are joined with ` | `, so the ser
 
 After updating, run `./install-server.sh`, then **Zed: Rebuild Dev Extension**, then restart Zed.
 
+## Saving a query as a snippet
+
+Right-click in a Kusto file and choose **Save Query as Snippet**, or run `kusto: save query as snippet` from the command palette.
+It saves the selected text, or else the query around the cursor, as a snippet of the Kusto language. Zed asks for a prefix, and
+typing that prefix in a Kusto file afterwards offers the query in the completion list. The command has no key binding by default.
+
+- The query is saved as written, comments included. Nothing is qualified or filled in as **Copy** does it. `$` and `\` are escaped,
+  so `$left.Id` in a join is inserted as typed and not read as a tab stop.
+- The snippet goes into `kusto.json` in Zed's snippets folder (`~/.config/zed/snippets`, which `snippets: configure snippets` also
+  opens). The file is created when there is none. A file you have written is not rewritten: the new snippet is added after the last
+  one, and the comments and the other snippets stay where they are. A file that is not valid JSON is left alone, and the prompt says so.
+- The prefix is also the name of the snippet. A name the file already has is refused, and the prompt stays open for another.
+- The notice after saving has an **Open** button for `kusto.json`, to give the snippet tab stops (`$1`, `${1:StormEvents}`) or a description.
+
 ## Offline schema
 
 For offline table and column completion, put a `.kusto-schema.json` file in the
