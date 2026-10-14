@@ -165,10 +165,11 @@ impl KustoClient {
             )
             .await?;
         let parsing = Instant::now();
-        let tables = if is_command {
-            response::parse_management_response(&body)?
+        let (tables, charts) = if is_command {
+            (response::parse_management_response(&body)?, Vec::new())
         } else {
-            response::parse_query_response(&body)?
+            let response = response::parse_query_result(&body)?;
+            (response.tables, response.charts)
         };
         log::info!(
             "kusto: parsed {:.1} MB in {:?}; the whole run took {:?}",
@@ -194,6 +195,7 @@ impl KustoClient {
                     .collect()
             }),
             tables,
+            charts,
             ..ResultSet::default()
         })
     }

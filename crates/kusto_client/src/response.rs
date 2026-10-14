@@ -1,7 +1,7 @@
 //! Reads the answers of the Kusto REST API: the v2 query response and its error bodies.
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use kusto_results::{Cell, Column, Table};
+use kusto_results::{Cell, Chart, ChartOptions, Column, Table};
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -10,6 +10,8 @@ use serde_json::value::RawValue;
 struct Frame<'a> {
     #[serde(rename = "FrameType")]
     frame_type: String,
+    #[serde(rename = "TableId", default)]
+    table_id: Option<i64>,
     #[serde(rename = "TableKind", default)]
     table_kind: Option<String>,
     #[serde(rename = "TableName", default)]
@@ -34,15 +36,27 @@ struct FrameColumn {
     type_name: String,
 }
 
-/// The primary result tables of a v2 response, in the order the service sent them.
+/// What a v2 query response holds that is a result: the primary tables, and the charts the
+/// query's `render` operators asked for.
+pub struct QueryResponse {
+    pub tables: Vec<Table>,
+    pub charts: Vec<Chart>,
+}
+
+/// The primary result tables of a v2 response, in the order the service sent them, and a chart
+/// for each table a `render` operator applies to.
 ///
 /// Other tables, such as query properties and completion information, are not results.
-pub fn parse_query_response(body: &[u8]) -> Result<Vec<Table>> {
+pub fn parse_query_result(body: &[u8]) -> Result<QueryResponse> {
     let text = std::str::from_utf8(body).context("the response is not UTF-8")?;
     let frames: Vec<Frame<'_>> =
         serde_json::from_str(text).context("the response is not a list of v2 frames")?;
 
     let mut tables: Vec<Table> = Vec::new();
+    // The service names a table in the properties by the id of its frame, and sends the
+    // properties before the tables.
+    let mut frame_tables: Vec<(i64, usize)> = Vec::new();
+    let mut renders: Vec<(i64, ChartOptions)> = Vec::new();
     for frame in frames {
         match frame.frame_type.as_str() {
             "DataTable" if frame.table_kind.as_deref() == Some("PrimaryResult") => {
@@ -53,7 +67,15 @@ pub fn parse_query_response(body: &[u8]) -> Result<Vec<Table>> {
                     .into_iter()
                     .map(|column| Column::new(column.name, column.type_name))
                     .collect();
+                if let Some(table_id) = frame.table_id {
+                    frame_tables.push((table_id, tables.len()));
+                }
                 tables.push(read_table(name, columns, frame.rows.unwrap_or_default())?);
+            }
+            "DataTable" if frame.table_kind.as_deref() == Some("QueryProperties") => {
+                for row in frame.rows.unwrap_or_default() {
+                    renders.extend(read_render(row));
+                }
             }
             "DataSetCompletion" => {
                 if frame.has_errors {
@@ -68,7 +90,32 @@ pub fn parse_query_response(body: &[u8]) -> Result<Vec<Table>> {
             _ => {}
         }
     }
-    Ok(tables)
+
+    let charts = renders
+        .into_iter()
+        .filter_map(|(table_id, options)| {
+            let (_, index) = frame_tables.iter().find(|(id, _)| *id == table_id)?;
+            let mut chart = Chart::new(options);
+            chart.table_name = Some(tables.get(*index)?.name.clone());
+            Some(chart)
+        })
+        .collect();
+    Ok(QueryResponse { tables, charts })
+}
+
+/// A row of the query properties that is a `render`: `[table id, "Visualization", options]`.
+/// The options are JSON text in the usual answer, and a JSON object when the service has
+/// already parsed them. A row that is anything else is not a render, and not an error.
+fn read_render(row: &RawValue) -> Option<(i64, ChartOptions)> {
+    let (table_id, key, value): (i64, String, Value) = serde_json::from_str(row.get()).ok()?;
+    if key != "Visualization" {
+        return None;
+    }
+    let properties = match value {
+        Value::String(text) => serde_json::from_str(&text).ok()?,
+        object => object,
+    };
+    Some((table_id, ChartOptions::from_render_properties(&properties)?))
 }
 
 #[derive(Deserialize)]
@@ -261,10 +308,16 @@ mod tests {
 
     use super::*;
 
+    fn parse_query_response(body: &[u8]) -> Result<Vec<Table>> {
+        Ok(parse_query_result(body)?.tables)
+    }
+
     const RESPONSE: &str = r#"[
         {"FrameType":"DataSetHeader","IsProgressive":false,"Version":"v2.0"},
         {"FrameType":"DataTable","TableId":0,"TableKind":"QueryProperties","TableName":"@ExtendedProperties",
-         "Columns":[{"ColumnName":"Key","ColumnType":"string"}],"Rows":[["Visualization"]]},
+         "Columns":[{"ColumnName":"TableId","ColumnType":"int"},{"ColumnName":"Key","ColumnType":"string"},
+                    {"ColumnName":"Value","ColumnType":"dynamic"}],
+         "Rows":[[1,"Visualization","{\"Visualization\":\"table\",\"Title\":null}"]]},
         {"FrameType":"DataTable","TableId":1,"TableKind":"PrimaryResult","TableName":"PrimaryResult",
          "Columns":[{"ColumnName":"a","ColumnType":"long"},{"ColumnName":"d","ColumnType":"dynamic"}],
          "Rows":[[9223372036854775807,{"k":[1,2]}],[null,null]]},
@@ -290,6 +343,112 @@ mod tests {
         assert_eq!(tables[0].rows[0][1].display_text(), r#"{"k":[1,2]}"#);
         assert_eq!(tables[0].rows[1][0], Cell::Null);
         assert_eq!(tables[1].rows[0][0].display_text(), "5.0");
+    }
+
+    /// The frames of `StormEvents | summarize ... | render timechart with (title=..., ytitle=...)`
+    /// as the help cluster sent them, with the rows cut down.
+    const RENDER_TIMECHART: &str = r#"[
+        {"FrameType":"DataSetHeader","IsProgressive":false,"Version":"v2.0","IsFragmented":true,"ErrorReportingPlacement":"EndOfTable"},
+        {"FrameType":"DataTable","TableId":0,"TableKind":"QueryProperties","TableName":"@ExtendedProperties",
+         "Columns":[{"ColumnName":"TableId","ColumnType":"int"},{"ColumnName":"Key","ColumnType":"string"},{"ColumnName":"Value","ColumnType":"dynamic"}],
+         "Rows":[[1,"Visualization","{\"Visualization\":\"timechart\",\"Title\":\"Storm events\",\"XColumn\":null,\"Series\":null,\"YColumns\":null,\"AnomalyColumns\":null,\"XTitle\":null,\"YTitle\":\"Events\",\"XAxis\":null,\"YAxis\":null,\"Legend\":null,\"YSplit\":null,\"Accumulate\":false,\"IsQuerySorted\":true,\"Kind\":null,\"Ymin\":\"NaN\",\"Ymax\":\"NaN\",\"Xmin\":null,\"Xmax\":null}"]]},
+        {"FrameType":"DataTable","TableId":1,"TableKind":"PrimaryResult","TableName":"PrimaryResult",
+         "Columns":[{"ColumnName":"StartTime","ColumnType":"datetime"},{"ColumnName":"EventType","ColumnType":"string"},{"ColumnName":"Events","ColumnType":"long"}],
+         "Rows":[["2007-01-01T00:00:00Z","Flood",35],["2007-01-01T00:00:00Z","Hail",4]]},
+        {"FrameType":"DataTable","TableId":2,"TableKind":"QueryCompletionInformation","TableName":"QueryCompletionInformation",
+         "Columns":[{"ColumnName":"Level","ColumnType":"int"}],"Rows":[[4]]},
+        {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}
+    ]"#;
+
+    #[test]
+    fn a_render_becomes_a_chart_on_its_table() {
+        let response = parse_query_result(RENDER_TIMECHART.as_bytes()).unwrap();
+        assert_eq!(response.tables.len(), 1);
+        assert_eq!(response.charts.len(), 1);
+        let chart = &response.charts[0];
+        assert_eq!(chart.table_name.as_deref(), Some("PrimaryResult"));
+        assert_eq!(
+            chart.options.kind(),
+            Some(kusto_results::ChartType::TimeLine)
+        );
+        assert_eq!(chart.options.title.as_deref(), Some("Storm events"));
+        assert_eq!(chart.options.y_title.as_deref(), Some("Events"));
+        assert_eq!(chart.options.y_min, None);
+    }
+
+    #[test]
+    fn a_render_on_a_later_statement_charts_that_table() {
+        let body = RENDER_TIMECHART
+            .replace(r#"[[1,"Visualization""#, r#"[[2,"Visualization""#)
+            .replace(
+                r#"{"FrameType":"DataTable","TableId":2,"TableKind":"QueryCompletionInformation""#,
+                r#"{"FrameType":"DataTable","TableId":2,"TableKind":"PrimaryResult","TableName":"PrimaryResult","Columns":[{"ColumnName":"n","ColumnType":"long"}],"Rows":[[1]]},
+                   {"FrameType":"DataTable","TableId":3,"TableKind":"QueryCompletionInformation""#,
+            );
+        let response = parse_query_result(body.as_bytes()).unwrap();
+        let names: Vec<_> = response
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect();
+        assert_eq!(names, ["PrimaryResult", "PrimaryResult_2"]);
+        assert_eq!(response.charts.len(), 1);
+        assert_eq!(
+            response.charts[0].table_name.as_deref(),
+            Some("PrimaryResult_2")
+        );
+    }
+
+    #[test]
+    fn a_visualization_that_is_not_a_chart_gives_no_chart() {
+        for value in [
+            r#"{\"Visualization\":\"table\"}"#,
+            r#"not json"#,
+            r#"[1,2]"#,
+        ] {
+            let body = RENDER_TIMECHART
+                .lines()
+                .map(|line| {
+                    if line.contains(r#"\"Visualization\":\"timechart\""#) {
+                        format!(r#"         "Rows":[[1,"Visualization","{value}"]]}},"#)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let response = parse_query_result(body.as_bytes()).unwrap();
+            assert_eq!(response.tables.len(), 1, "{value}");
+            assert!(response.charts.is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_properties_row_that_is_not_a_visualization_is_ignored() {
+        let body = RENDER_TIMECHART.replace(r#"[1,"Visualization""#, r#"[1,"Cursor""#);
+        let response = parse_query_result(body.as_bytes()).unwrap();
+        assert!(response.charts.is_empty());
+    }
+
+    #[test]
+    fn options_the_service_already_parsed_are_read_too() {
+        let object_row = r#"[[1,"Visualization",{"Visualization":"barchart","Title":"x"}]]"#;
+        let body = RENDER_TIMECHART
+            .lines()
+            .map(|line| {
+                if line.contains(r#"\"Visualization\":\"timechart\""#) {
+                    format!(r#"         "Rows":{object_row}}},"#)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let response = parse_query_result(body.as_bytes()).unwrap();
+        assert_eq!(
+            response.charts[0].options.kind(),
+            Some(kusto_results::ChartType::Bar)
+        );
     }
 
     const MANAGEMENT: &str = r#"{"Tables":[

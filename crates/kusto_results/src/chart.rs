@@ -402,6 +402,82 @@ impl ChartOptions {
         }
     }
 
+    /// The options a `render` operator asks for, from the JSON object the service sends in the
+    /// `Visualization` row of `@ExtendedProperties`. `None` for a visualization this crate has
+    /// no chart type for, such as `table`.
+    pub fn from_render_properties(properties: &Value) -> Option<Self> {
+        let visualization = render_property(properties, "Visualization")?.as_str()?;
+        let stacking = render_property(properties, "Kind").and_then(Value::as_str);
+        let stacked = |plain, stacked, stacked_to_full| match stacking {
+            Some("stacked") => stacked,
+            Some("stacked100") => stacked_to_full,
+            _ => plain,
+        };
+        let chart_type = match visualization {
+            "areachart" => stacked(
+                ChartType::Area,
+                ChartType::AreaStacked,
+                ChartType::AreaStacked100,
+            ),
+            "stackedareachart" => ChartType::AreaStacked,
+            "barchart" => stacked(
+                ChartType::Bar,
+                ChartType::BarStacked,
+                ChartType::BarStacked100,
+            ),
+            "columnchart" => stacked(
+                ChartType::Column,
+                ChartType::ColumnStacked,
+                ChartType::ColumnStacked100,
+            ),
+            "linechart" | "pivotchart" => ChartType::Line,
+            "timechart" => ChartType::TimeLine,
+            "anomalychart" => ChartType::TimeLineAnomaly,
+            "ladderchart" => ChartType::Ladder,
+            "timeline" | "timepivot" => ChartType::TimePivot,
+            "scatterchart" => ChartType::Scatter,
+            "piechart" => ChartType::Pie,
+            "card" => ChartType::Card,
+            "3Dchart" => ChartType::ThreeD,
+            "treemap" => ChartType::TreeMap,
+            "plotly" => ChartType::Plotly,
+            "graph" => ChartType::Graph,
+            "sankey" => ChartType::Sankey,
+            _ => return None,
+        };
+
+        let mut options = Self::new(chart_type);
+        options.title = render_text(properties, "Title");
+        options.x_title = render_text(properties, "XTitle");
+        options.y_title = render_text(properties, "YTitle");
+        options.x_column = render_text(properties, "XColumn");
+        options.y_columns = render_names(properties, "YColumns");
+        options.series_columns = render_names(properties, "Series");
+        options.anomaly_columns = render_names(properties, "AnomalyColumns");
+        if render_text(properties, "XAxis").as_deref() == Some("log") {
+            options.x_axis = Some(AxisScale::Log);
+        }
+        if render_text(properties, "YAxis").as_deref() == Some("log") {
+            options.y_axis = Some(AxisScale::Log);
+        }
+        if render_text(properties, "Legend").as_deref() == Some("hidden") {
+            options.legend_position = Some(LegendPosition::None);
+        }
+        options.y_layout = match render_text(properties, "YSplit").as_deref() {
+            Some("axes") => Some(YLayout::DualAxis),
+            Some("panels") => Some(YLayout::SeparatePanels),
+            _ => None,
+        };
+        if render_property(properties, "Accumulate").and_then(Value::as_bool) == Some(true) {
+            options.accumulate = Some(true);
+        }
+        options.x_min = render_limit(properties, "Xmin");
+        options.x_max = render_limit(properties, "Xmax");
+        options.y_min = render_limit(properties, "Ymin");
+        options.y_max = render_limit(properties, "Ymax");
+        Some(options)
+    }
+
     pub fn to_map(&self) -> Map<String, Value> {
         let mut map = Map::new();
         if !self.chart_type.is_empty() {
@@ -441,6 +517,50 @@ impl ChartOptions {
             map.entry(key.clone()).or_insert_with(|| value.clone());
         }
         map
+    }
+}
+
+/// The service names its properties like `XTitle`; a response from another version may differ in
+/// case, so a property is found without regard to it.
+fn render_property<'a>(properties: &'a Value, name: &str) -> Option<&'a Value> {
+    let object = properties.as_object()?;
+    object.get(name).or_else(|| {
+        object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    })
+}
+
+fn render_text(properties: &Value, name: &str) -> Option<String> {
+    render_property(properties, name)?
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn render_names(properties: &Value, name: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = render_property(properties, name)?
+        .as_array()?
+        .iter()
+        .filter_map(|name| name.as_str().map(str::to_string))
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// An axis limit: a number, or the text of a datetime. The service writes "no limit" as `NaN`,
+/// and a limit that is not finite cannot be drawn.
+fn render_limit(properties: &Value, name: &str) -> Option<Value> {
+    match render_property(properties, name)? {
+        Value::Number(number) => Some(Value::Number(number.clone())),
+        Value::String(text) => match text.parse::<f64>() {
+            Ok(number) if number.is_finite() => {
+                serde_json::Number::from_f64(number).map(Value::Number)
+            }
+            Ok(_) => None,
+            Err(_) => (!text.is_empty()).then(|| Value::String(text.clone())),
+        },
+        _ => None,
     }
 }
 
@@ -626,6 +746,94 @@ mod tests {
         assert_eq!(chart.display_name(0), "Chart 1");
         chart.name = Some("Latency".into());
         assert_eq!(chart.display_name(0), "Latency");
+    }
+
+    fn render(properties: Value) -> Option<ChartOptions> {
+        ChartOptions::from_render_properties(&properties)
+    }
+
+    #[test]
+    fn render_timechart_with_a_title_as_the_service_sends_it() {
+        let options = render(json!({
+            "Visualization": "timechart", "Title": "Storm events", "XColumn": null,
+            "Series": null, "YColumns": null, "AnomalyColumns": null, "XTitle": null,
+            "YTitle": "Events", "XAxis": null, "YAxis": null, "Legend": null, "YSplit": null,
+            "Accumulate": false, "IsQuerySorted": true, "Kind": null, "Ymin": "NaN",
+            "Ymax": "NaN", "Xmin": null, "Xmax": null
+        }))
+        .unwrap();
+        let mut expected = ChartOptions::new(ChartType::TimeLine);
+        expected.title = Some("Storm events".into());
+        expected.y_title = Some("Events".into());
+        assert_eq!(options, expected);
+    }
+
+    #[test]
+    fn render_kinds_choose_the_stacked_types() {
+        let kind = |visualization: &str, kind: Value| {
+            render(json!({"Visualization": visualization, "Kind": kind}))
+                .and_then(|options| options.kind())
+        };
+        assert_eq!(kind("barchart", json!(null)), Some(ChartType::Bar));
+        assert_eq!(kind("barchart", json!("default")), Some(ChartType::Bar));
+        assert_eq!(
+            kind("barchart", json!("stacked")),
+            Some(ChartType::BarStacked)
+        );
+        assert_eq!(
+            kind("columnchart", json!("stacked100")),
+            Some(ChartType::ColumnStacked100)
+        );
+        assert_eq!(
+            kind("columnchart", json!("unstacked")),
+            Some(ChartType::Column)
+        );
+        assert_eq!(
+            kind("areachart", json!("stacked")),
+            Some(ChartType::AreaStacked)
+        );
+        assert_eq!(
+            kind("stackedareachart", json!(null)),
+            Some(ChartType::AreaStacked)
+        );
+        assert_eq!(kind("linechart", json!(null)), Some(ChartType::Line));
+        assert_eq!(kind("pivotchart", json!(null)), Some(ChartType::Line));
+        assert_eq!(kind("timepivot", json!(null)), Some(ChartType::TimePivot));
+        assert_eq!(kind("table", json!(null)), None);
+        assert_eq!(kind("", json!(null)), None);
+    }
+
+    #[test]
+    fn render_properties_map_to_options() {
+        let options = render(json!({
+            "Visualization": "linechart", "XColumn": "T", "Series": ["Region", "Tier"],
+            "YColumns": ["A", "B"], "XTitle": "when", "YAxis": "log", "XAxis": "linear",
+            "Legend": "hidden", "YSplit": "panels", "Accumulate": true,
+            "Ymin": 0, "Ymax": "100.5", "Xmin": "2026-01-01T00:00:00Z", "Xmax": "NaN"
+        }))
+        .unwrap();
+        assert_eq!(options.x_column.as_deref(), Some("T"));
+        assert_eq!(
+            options.series_columns,
+            Some(vec!["Region".into(), "Tier".into()])
+        );
+        assert_eq!(options.y_columns, Some(vec!["A".into(), "B".into()]));
+        assert_eq!(options.x_title.as_deref(), Some("when"));
+        assert_eq!(options.y_axis, Some(AxisScale::Log));
+        assert_eq!(options.x_axis, None);
+        assert_eq!(options.legend_position, Some(LegendPosition::None));
+        assert_eq!(options.y_layout, Some(YLayout::SeparatePanels));
+        assert_eq!(options.accumulate, Some(true));
+        assert_eq!(options.y_min, Some(json!(0)));
+        assert_eq!(options.y_max, Some(json!(100.5)));
+        assert_eq!(options.x_min, Some(json!("2026-01-01T00:00:00Z")));
+        assert_eq!(options.x_max, None);
+    }
+
+    #[test]
+    fn render_property_names_are_found_without_regard_to_case() {
+        let options = render(json!({"visualization": "barchart", "xtitle": "x"})).unwrap();
+        assert_eq!(options.x_title.as_deref(), Some("x"));
     }
 
     #[test]

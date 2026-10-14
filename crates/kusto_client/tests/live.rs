@@ -52,6 +52,26 @@ fn runs_a_query_on_the_help_cluster() -> Result<()> {
 
 #[test]
 #[ignore = "needs a network and an Azure CLI sign-in"]
+fn a_render_comes_back_as_a_chart_on_its_table() -> Result<()> {
+    let result = block_on(client().execute(&request(
+        "StormEvents | summarize Events=count() by bin(StartTime, 30d), EventType \
+         | render columnchart with (kind=stacked, title='Storm events', ytitle='Events')",
+    )?))?;
+    assert_eq!(result.charts.len(), 1);
+    let chart = &result.charts[0];
+    println!("{:?}", chart.options.to_map());
+    assert_eq!(chart.table_name.as_deref(), Some("PrimaryResult"));
+    assert_eq!(
+        chart.options.kind(),
+        Some(kusto_results::ChartType::ColumnStacked)
+    );
+    assert_eq!(chart.options.title.as_deref(), Some("Storm events"));
+    assert_eq!(chart.options.y_title.as_deref(), Some("Events"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs a network and an Azure CLI sign-in"]
 fn passes_values_for_declared_query_parameters() -> Result<()> {
     let mut request = request(
         "declare query_parameters(raid:string, count:long, since:datetime); print raid, count, since",

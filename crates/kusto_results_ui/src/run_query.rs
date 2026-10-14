@@ -2717,6 +2717,33 @@ pub(crate) mod tests {
         );
     }
 
+    #[gpui::test]
+    async fn a_render_in_the_answer_is_saved_as_a_chart_of_the_result(cx: &mut TestAppContext) {
+        const RENDERED: &str = r#"[
+            {"FrameType":"DataTable","TableId":0,"TableKind":"QueryProperties","TableName":"@ExtendedProperties",
+             "Columns":[{"ColumnName":"TableId","ColumnType":"int"},{"ColumnName":"Key","ColumnType":"string"},{"ColumnName":"Value","ColumnType":"dynamic"}],
+             "Rows":[[1,"Visualization","{\"Visualization\":\"columnchart\",\"Title\":\"Totals\",\"Kind\":\"stacked\"}"]]},
+            {"FrameType":"DataTable","TableId":1,"TableKind":"PrimaryResult","TableName":"PrimaryResult",
+             "Columns":[{"ColumnName":"n","ColumnType":"long"}],"Rows":[[1],[2]]},
+            {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}]"#;
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, RENDERED).await;
+        use_editor_tabs(cx);
+        run(&workspace, cx);
+        cx.run_until_parked();
+
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("a results tab");
+        let result = viewer.read_with(cx, |viewer, cx| viewer.result(cx));
+        assert_eq!(result.charts.len(), 1, "the history file keeps the chart");
+        let chart = &result.charts[0];
+        assert_eq!(chart.table_name.as_deref(), Some("PrimaryResult"));
+        assert_eq!(chart.options.chart_type, "ColumnStacked");
+        assert_eq!(chart.options.title.as_deref(), Some("Totals"));
+    }
+
     #[test]
     fn settings_ignore_blank_values() {
         let mut content = settings::SettingsContent::default();
