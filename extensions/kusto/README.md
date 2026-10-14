@@ -625,12 +625,24 @@ query), so a file runs as it is.
 The option is read when the server starts, like the others: restart the language server after changing it. A project's
 `.zed/settings.json` can set it for that project.
 
-**Cmd+T** (project symbols) lists the functions that have a file under the snapshot folder of an open project, best match
-first (the name itself, then names that start with what you typed, then names that contain it, then names that have
-its letters in that order), with the database and the function's folder beside the name, and opens the file at the
-function. It reads the folder and not the cluster, so it lists only functions that already have a file: go to a
-definition, or click **Snapshot functions**, to make the files. Zed asks only the language servers of visible projects,
-so it does nothing for a file opened on its own.
+**Cmd+T** (project symbols) finds, by name, two kinds of things in the open projects, best match first (the name
+itself, then names that start with what you typed, then names that contain it, then names that have its letters in
+that order):
+
+- **The functions that have a file under the snapshot folder**, with the database and the function's folder beside the
+  name. It reads the folder and not the cluster, so it lists only functions that already have a file: go to a
+  definition, or click **Snapshot functions**, to make the files.
+- **The queries and the `// :functions` definitions of every `.kql` file in the project**, named as in
+  [the outline](#outline) (a query by the comment above it, or its first line), with the file's path beside the name. A
+  file that is open is read from the editor, so what you have not saved is found too, and so is a file that is open
+  from outside the project, such as a query thread's. A file is read again only when its time of modification or its
+  size has changed. Folders that start with a dot, `bin`, `obj`, `node_modules` and `target`, and the snapshot folder
+  (those functions are listed above), are left out, and a project is looked at up to 5,000 files and 20,000 folders.
+  The list of files is kept for 5 seconds, so a file you made a moment ago may not be found yet.
+
+Zed filters what the server returns by the name alone, so a query is found by its label or first line and not by
+what is further down in it: for that, search the project (Cmd+Shift+F). Zed asks only the language servers of visible
+projects, so Cmd+T does nothing for a file opened on its own.
 
 ## Outline
 
