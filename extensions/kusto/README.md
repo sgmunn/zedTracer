@@ -517,7 +517,7 @@ comes straight after them, with the number of rows the result has, for example `
 run's saved result in the Results panel, or in a tab in a query thread), then **Params** for a query that declares parameters, then what the last run did, for example
 `Last run: 10:42:11, took 1.8 s`. A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
-The second line starts with **Copy**, which copies the query (see below), then says where the query runs: the connection, the schema lens, and **Copy CID** (copies the last run's client request id).
+The second line starts with **Copy**, which copies the query (see below), then says where the query runs: the connection, the schema lens, **Snapshot functions** (see [Functions as files](#functions-as-files)), and **Copy CID** (copies the last run's client request id).
 
 ### Copying a query
 
@@ -574,6 +574,56 @@ typing that prefix in a Kusto file afterwards offers the query in the completion
   one, and the comments and the other snippets stay where they are. A file that is not valid JSON is left alone, and the prompt says so.
 - The prefix is also the name of the snippet. A name the file already has is refused, and the prompt stays open for another.
 - The notice after saving has an **Open** button for `kusto.json`, to give the snippet tab stops (`$1`, `${1:StormEvents}`) or a description.
+
+## Functions as files
+
+The functions stored in a database can be kept as files in your project, one `.create-or-alter function` command
+each, so that git shows what changed on the cluster and there is a file to go to from a call. They are not
+the offline schema below, which is for completion; these are for reading and deploying functions.
+
+**Go to definition** (F12 in Zed) on the name of a function the database stores opens its file. If the project has no
+files for that database yet, the functions of the whole database are read from the cluster (`.show functions`) and
+written first, and a message in the editor says where. After that going to a definition never reaches the cluster and
+never replaces a file: what you changed in it, or committed, stays. A function a file defines itself with
+`// :functions`, and the language's own functions, have no definition to go to.
+
+**Snapshot functions**, the lens on the second line of a query, reads the functions of that query's database again and
+writes every file whatever it holds, so that `git diff` shows what the cluster has that your files do not. The message
+says how many files are new, changed and as they were, and how many files have no function on the cluster any more
+(those are reported and left in place). A file is written only when its text differs, and it is written the same way
+every time, so a difference is a difference in the function.
+
+A file looks like this, in `<folder>/<cluster>/<database>/functions/<the function's folder>/<name>.kql`
+(a function's folder, which Kusto takes as free text, becomes folders, whichever slash it uses):
+
+```kql
+// :setDefaultCluster("help.kusto.windows.net")
+// :setDefaultDb("Samples")
+.create-or-alter function with (docstring = 'States with more than a number of events.', folder = 'Utilities\\Storm')
+StatesOver(minimum:long, region:string)
+{ StormEvents | summarize n = count() by State | where n > minimum }
+```
+
+The two directives at the top mean that running the file with F5 deploys the function to the database it was read
+from, not to the window's defaults. A body with blank lines in it stays one command (a blank line inside braces does not end a
+query), so a file runs as it is.
+
+**Where the files go** is the `snapshotDirectory` initialization option of the language server, in Zed settings:
+
+```json
+{ "lsp": { "kusto-lsp": { "initialization_options": { "snapshotDirectory": "docs/kql" } } } }
+```
+
+- A **full path** (`/Users/me/kql-snapshots`, or `~/kql-snapshots`) is used as it is, with or without a project open.
+- A **relative path** (`docs/kql`) is relative to the project that holds the query, and so is the default when the
+  option is not set: `kusto-schema`. A file outside every project folder, such as a query thread's, uses the project's
+  first folder.
+- With **no project open** and no full path, nothing is written: a message says there is no project and asks for a
+  full path. The server cannot tell a project from a single file opened on its own, because Zed gives it the file's
+  folder as the project, so a lone file gets its own folder as the project. Set a full path if you open files that way.
+
+The option is read when the server starts, like the others: restart the language server after changing it. A project's
+`.zed/settings.json` can set it for that project.
 
 ## Offline schema
 
