@@ -29,6 +29,9 @@ internal static partial class QueryParameters
     [GeneratedRegex(@"\bdeclare\s+query_parameters\s*\(", RegexOptions.IgnoreCase)]
     private static partial Regex Declaration();
 
+    /// <summary>Whether a text can be the name of a parameter.</summary>
+    public static bool IsParameterName(string name) => ParameterName().IsMatch(name);
+
     /// <summary>Whether a document is a profiles file: `.kusto/parameters.yaml`, or `<name>.parameters.yaml`.</summary>
     public static bool IsProfilesFile(string documentUri)
     {
@@ -95,24 +98,37 @@ internal static partial class QueryParameters
 
     /// <summary>
     /// What the lens above a query says about its parameters, or null when the query declares
-    /// none: the active profile and the declared parameters it has no value for.
+    /// none: the active profile, the declared parameters the file gives a value with directives
+    /// (`Incident A + file: raid`), and the declared parameters nothing has a value for.
     /// </summary>
-    public static string? Describe(string query, (ParameterProfiles Profiles, string? Path, bool Unreadable) loaded)
+    public static string? Describe(
+        string query,
+        (ParameterProfiles Profiles, string? Path, bool Unreadable) loaded,
+        IReadOnlyDictionary<string, string> givenByFile)
     {
         var declared = Declared(query);
         if (declared.Count == 0)
             return null;
         if (loaded.Unreadable)
             return $"Params: cannot read {Path.GetFileName(loaded.Path)}";
-        if (loaded.Profiles.ActiveProfile is not { } active)
-            return "Params: none";
-        var missing = declared
-            .Where(parameter => !parameter.HasDefault && !active.Values.ContainsKey(parameter.Name))
+        var active = loaded.Profiles.ActiveProfile;
+        var fromFile = declared
+            .Where(parameter => givenByFile.ContainsKey(parameter.Name))
             .Select(parameter => parameter.Name)
             .ToList();
+        if (active is null && fromFile.Count == 0)
+            return "Params: none";
+        var missing = declared
+            .Where(parameter => !parameter.HasDefault
+                && !givenByFile.ContainsKey(parameter.Name)
+                && active?.Values.ContainsKey(parameter.Name) != true)
+            .Select(parameter => parameter.Name)
+            .ToList();
+        var shown = fromFile.Count == 0 ? "" : $"file: {string.Join(", ", fromFile)}";
+        var title = active is null ? shown : fromFile.Count == 0 ? active.Name : $"{active.Name} + {shown}";
         return missing.Count == 0
-            ? $"Params: {active.Name}"
-            : $"Params: {active.Name} (no value for {string.Join(", ", missing)})";
+            ? $"Params: {title}"
+            : $"Params: {title} (no value for {string.Join(", ", missing)})";
     }
 
     /// <summary>Null when the text is not a profiles file.</summary>

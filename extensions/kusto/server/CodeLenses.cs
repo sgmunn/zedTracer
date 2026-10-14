@@ -24,13 +24,13 @@ internal static class CodeLenses
         Dictionary<string, QueryRuns> runs,
         DateTimeOffset now,
         Connection defaults,
-        Func<string, string?> parameters,
+        Func<string, IReadOnlyDictionary<string, string>, string?> parameters,
         Func<Connection, SchemaStatus?> schemaOf)
     {
         var lenses = new List<object>();
         foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery))
         {
-            var connection = ConnectionDirectives.Before(document.Text, block.End, defaults);
+            var (connection, givenByFile) = ConnectionDirectives.StateBefore(document.Text, block.End, defaults);
             runs.TryGetValue(RunLog.Key(block.Text, connection.Cluster, connection.Database), out var state);
             var range = new
             {
@@ -59,7 +59,7 @@ internal static class CodeLenses
             // Next to Run, so that it stays within reach whatever the width of the editor.
             if (state?.Last is { Failure: null, ResultPath: { } path } shown)
                 Add(ResultsTitle(shown), DispatchActionCommand, "kusto::ShowResult", new { path });
-            if (parameters(block.Text) is { } parametersTitle)
+            if (parameters(block.Text, givenByFile) is { } parametersTitle)
                 Add(parametersTitle, DispatchActionCommand, "kusto::SelectParameterProfile");
             if (state?.Last is { } last)
             {

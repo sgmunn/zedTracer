@@ -785,6 +785,8 @@ class CodeLensTest(unittest.TestCase):
 
 CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "connection-directives.json"
 PARAMETER_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "query-parameters.json"
+PARAMETER_DIRECTIVE_CASES = Path(__file__).resolve().parents[3] / "fork-docs" / "samples" / "parameter-directives.json"
+DIRECTIVE_NAMES = ["clearParam", "clearParams", "setDefaultCluster", "setDefaultDb", "setParam"]
 
 
 def expected_title(connection):
@@ -888,7 +890,7 @@ class DirectiveTest(unittest.TestCase):
     def test_the_directives_are_offered_with_the_cursor_inside_the_quotes(self):
         self.start()
         items = self.directive_items("// :set", 7)
-        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        self.assertEqual(sorted(items), DIRECTIVE_NAMES)
         edit = items["setDefaultCluster"]["textEdit"]
         self.assertEqual(edit["newText"], 'setDefaultCluster("$0")')
         self.assertEqual(items["setDefaultCluster"]["insertTextFormat"], 2)
@@ -902,16 +904,24 @@ class DirectiveTest(unittest.TestCase):
         self.start()
         self.assertIn(":", self.capabilities["completionProvider"]["triggerCharacters"])
         items = self.directive_items("// :", 4)
-        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        self.assertEqual(sorted(items), DIRECTIVE_NAMES)
         self.assertEqual(
             items["setDefaultDb"]["textEdit"]["range"],
             {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 4}},
         )
 
+    def test_the_parameter_directives_are_offered_with_a_place_for_each_argument(self):
+        self.start()
+        items = self.directive_items("// :", 4)
+        self.assertEqual(items["setParam"]["textEdit"]["newText"], 'setParam("$1", "$0")')
+        self.assertEqual(items["clearParam"]["textEdit"]["newText"], 'clearParam("$0")')
+        self.assertEqual(items["clearParams"]["textEdit"]["newText"], "clearParams()")
+        self.assertTrue(all(item["insertTextFormat"] == 2 for item in items.values()))
+
     def test_the_form_without_a_space_is_still_completed(self):
         self.start()
         items = self.directive_items("//:set", 6)
-        self.assertEqual(sorted(items), ["setDefaultCluster", "setDefaultDb"])
+        self.assertEqual(sorted(items), DIRECTIVE_NAMES)
         self.assertEqual(
             items["setDefaultDb"]["textEdit"]["range"]["start"],
             {"line": 0, "character": 3},
@@ -930,10 +940,28 @@ class DirectiveTest(unittest.TestCase):
         lines = [(d["range"]["start"]["line"], d["severity"], d["code"]) for d in diagnostics]
         self.assertEqual(lines, [(0, 2, "directive"), (2, 2, "directive"), (3, 2, "directive")])
 
+    def test_a_parameter_directive_that_does_not_fit_is_warned_about(self):
+        self.start()
+        diagnostics = self.open_document(
+            '//:setParam("raid", "x")\n'
+            '//:setParam("raid")\n'
+            '//:setParam("not a name", "x")\n'
+            '//:setParam("raid", 5)\n'
+            '//:clearParam()\n'
+            '//:clearParams("raid")\n'
+            '//:clearParam("raid")\n'
+            '//:clearParams()\n'
+            '\nprint 1'
+        )
+        lines = [d["range"]["start"]["line"] for d in diagnostics if d["code"] == "directive"]
+        self.assertEqual(lines, [1, 2, 3, 4, 5])
+        self.assertIn("setParam", diagnostics[0]["message"])
+
     def test_valid_directives_and_comment_only_blocks_raise_no_diagnostics(self):
         self.start()
         diagnostics = self.open_document(
-            '// :setDefaultCluster("a")\n//:setDefaultDb("db")\n\n// a note\n\nprint 1'
+            '// :setDefaultCluster("a")\n//:setDefaultDb("db")\n//:setParam("raid", "x")\n'
+            '// :clearParam("raid")\n// :clearParams()\n\n// a note\n\nprint 1'
         )
         self.assertEqual(diagnostics, [])
 
@@ -1224,6 +1252,60 @@ class ParameterLensTest(unittest.TestCase):
         self.open_document(self.DECLARING)
         self.title()
         self.assertFalse((self.root / ".kusto").exists())
+
+    def test_a_value_the_file_gives_is_named_with_the_profile(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document('//:setParam("raid", "here")\n\n' + self.DECLARING)
+        self.assertEqual(self.title(), "Params: A + file: raid")
+
+    def test_a_value_the_file_gives_needs_no_profile(self):
+        self.open_document('//:setParam("raid", "here")\n\n' + self.DECLARING)
+        self.assertEqual(self.title(), "Params: file: raid")
+
+    def test_a_parameter_the_file_gives_is_not_missing(self):
+        self.write(self.shared, self.PROFILES.replace("active: A", "active: B"))
+        self.open_document(
+            '//:setParam("count", "7")\n\ndeclare query_parameters(raid:string, count:long, since:datetime);\nT'
+        )
+        self.assertEqual(self.title(), "Params: B + file: count (no value for since)")
+
+    def test_a_value_the_file_gives_for_a_parameter_the_query_does_not_declare_is_not_named(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document('//:setParam("other", "x")\n\n' + self.DECLARING)
+        self.assertEqual(self.title(), "Params: A")
+
+    def test_a_value_the_file_gives_stops_at_the_directive_that_clears_it(self):
+        self.write(self.shared, self.PROFILES)
+        self.open_document(
+            '//:setParam("raid", "here")\n\n' + self.DECLARING + '\n\n//:clearParam("raid")\n\n' + self.DECLARING
+        )
+        titles = [
+            lens["command"]["title"]
+            for lens in self.lenses()
+            if (lens["command"].get("arguments") or [None])[0] == "kusto::SelectParameterProfile"
+        ]
+        self.assertEqual(titles, ["Params: A + file: raid", "Params: A"])
+
+    def test_the_shared_directive_cases_give_the_parameters_the_editor_computes(self):
+        cases = json.loads(PARAMETER_DIRECTIVE_CASES.read_text())
+        self.assertTrue(cases)
+        for case in cases:
+            self.send(None, "textDocument/didClose", {"textDocument": {"uri": self.uri}})
+            self.open_document(case["text"])
+            titles = [
+                lens["command"]["title"]
+                for lens in self.lenses()
+                if (lens["command"].get("arguments") or [None])[0] == "kusto::SelectParameterProfile"
+            ]
+            expected = []
+            for query in case["queries"]:
+                given = [name for name in ("raid", "count") if name in query]
+                missing = [name for name in ("raid", "count") if name not in query]
+                title = f"Params: file: {', '.join(given)}" if given else "Params: none"
+                if given and missing:
+                    title += f" (no value for {', '.join(missing)})"
+                expected.append(title)
+            self.assertEqual(titles, expected, case["name"])
 
     def test_the_shared_cases_declare_the_same_parameters_as_the_editor_finds(self):
         cases = json.loads(PARAMETER_CASES.read_text())

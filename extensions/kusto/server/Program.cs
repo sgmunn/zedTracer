@@ -279,7 +279,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             runLog.Read(),
             DateTimeOffset.UtcNow,
             schema.Defaults,
-            query => QueryParameters.Describe(query, profiles),
+            (query, givenByFile) => QueryParameters.Describe(query, profiles, givenByFile),
             schema.StatusOf);
     }
 
@@ -570,10 +570,13 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             start = document.PositionAt(offset - typed.Groups[1].Length),
             end = document.PositionAt(offset)
         };
-        return new (string Name, string Detail)[]
+        return new (string Name, string Detail, string Arguments)[]
         {
-            (ConnectionDirectives.SetCluster, "The cluster for the queries below"),
-            (ConnectionDirectives.SetDatabase, "The database for the queries below")
+            (ConnectionDirectives.SetCluster, "The cluster for the queries below", "\"$0\""),
+            (ConnectionDirectives.SetDatabase, "The database for the queries below", "\"$0\""),
+            (ConnectionDirectives.SetParameter, "A value for a parameter the queries below declare", "\"$1\", \"$0\""),
+            (ConnectionDirectives.ClearParameter, "Take away the value one parameter was given", "\"$0\""),
+            (ConnectionDirectives.ClearParameters, "Take away the values every parameter was given", "")
         }
         .Select(directive => (object)new
         {
@@ -582,7 +585,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             detail = directive.Detail,
             filterText = directive.Name,
             insertTextFormat = 2,
-            textEdit = new { range, newText = $"{directive.Name}(\"$0\")" }
+            textEdit = new { range, newText = $"{directive.Name}({directive.Arguments})" }
         })
         .ToArray();
     }
@@ -642,7 +645,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 severity = 2,
                 code = "directive",
                 source = "Kusto",
-                message = "Not a directive the editor knows. Use // :setDefaultCluster(\"…\") or // :setDefaultDb(\"…\")."
+                message = "Not a directive the editor knows. Use // :setDefaultCluster(\"…\"), // :setDefaultDb(\"…\"), // :setParam(\"name\", \"value\"), // :clearParam(\"name\") or // :clearParams()."
             }))
             .ToArray();
 
