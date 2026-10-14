@@ -244,10 +244,11 @@ class FakeKusto:
         "CslInputSchema", "Content", "CslOutputSchema", "Properties",
     ]
 
-    def __init__(self, databases, entities=None, status=200, delay=0):
+    def __init__(self, databases, entities=None, status=200, delay=0, entity_groups=None):
         self.databases = databases
         self.delay = delay
         self.entities = entities or {}
+        self.entity_groups = entity_groups
         self.status = status
         self.commands = []
         self.authorizations = []
@@ -276,6 +277,14 @@ class FakeKusto:
                         for kind, name, doc, parameters, content, schema in outer.entities.get(body["db"], [])
                     ]
                     self.respond(200, management_response(outer.ENTITY_COLUMNS, rows))
+                elif body["csl"].startswith(".show entity_groups"):
+                    if outer.entity_groups is None:
+                        # Listing them takes more than the permission to read the schema.
+                        payload = {"error": {"message": "denied", "innererror": {"@message": "Not authorized"}}}
+                        self.respond(403, payload)
+                    else:
+                        rows = [[name, entities] for name, entities in outer.entity_groups.get(body["db"], {}).items()]
+                        self.respond(200, management_response(["Name", "Entities"], rows))
                 else:
                     rows = [[name, ""] for name in outer.databases]
                     self.respond(200, management_response(["DatabaseName", "PrettyName"], rows))
@@ -1609,14 +1618,14 @@ class SchemaRefreshTest(SchemaTest):
         moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
         self.cache.mkdir(parents=True, exist_ok=True)
         (self.cache / "Samples.json").write_text(json.dumps({
-            "version": 1,
+            "version": 2,
             "fetchedAt": moment.isoformat().replace("+00:00", "Z"),
             "entities": [{"kind": "Table", "name": "OldTable", "schema": "Id:long",
                           "parameters": "", "body": "", "description": None}],
         }))
 
-    def begin(self, cluster, text="print 1"):
-        self.start({"help": cluster}, {"cluster": "help", "database": "Samples"}, data_dir=self.data.name)
+    def begin(self, cluster, text="print 1", others=None):
+        self.start({"help": cluster, **(others or {})}, {"cluster": "help", "database": "Samples"}, data_dir=self.data.name)
         # A client says it is ready before a server may ask it anything.
         self.send(None, "initialized", {})
         self.send(
@@ -2016,6 +2025,129 @@ class SchemaDiagnosticsTest(unittest.TestCase):
         self.assertEqual(cleared, [], "the open file was checked again against the new schema")
 
 
+class EntityGroupTest(unittest.TestCase):
+    """`macro-expand` over an entity group stored in the database, whose entities are on other clusters."""
+
+    GROUP = "cluster('away').database('Logs')"
+    CACHE_VERSION = 2
+    AWAY_ENTITIES = {"Logs": [("Table", "Requests", "", "", "", "RequestId:guid, DurationMs:real")]}
+    SUBQUERY = "macro-expand AllRegions as Region (Region.Requests | where "
+
+    def setUp(self):
+        self.clusters = []
+        self.process = None
+        self.data = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data.cleanup)
+        self.next_request = 20
+
+    tearDown = SchemaDiagnosticsTest.tearDown
+    fake = SchemaTest.fake
+    start = SchemaTest.start
+
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+    receive_where = CodeLensTest.receive_where
+    begin = SchemaRefreshTest.begin
+    labels = SchemaRefreshTest.labels
+    labels_include = SchemaRefreshTest.labels_include
+    wait_for_diagnostics = SchemaDiagnosticsTest.wait_for_diagnostics
+
+    def home(self, entities=None, **keywords):
+        group = ("EntityGroup", "AllRegions", "", "", self.GROUP, "")
+        return self.fake(["Samples"], {"Samples": STORM_ENTITIES["Samples"] + (entities or [group])}, **keywords)
+
+    def away(self, **keywords):
+        return self.fake(["Logs"], self.AWAY_ENTITIES, **keywords)
+
+    def write_cache(self, host, database, entities):
+        directory = Path(self.data.name) / "kusto" / "schema" / host
+        directory.mkdir(parents=True, exist_ok=True)
+        moment = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        (directory / f"{database}.json").write_text(json.dumps({
+            "version": self.CACHE_VERSION, "fetchedAt": moment, "entities": entities,
+        }))
+
+    def test_the_tables_and_columns_of_a_stored_entity_group_are_completed(self):
+        home = self.home()
+        self.begin(home, others={"away": self.away()})
+
+        self.assertIn("AllRegions", self.labels_include("macro-expand ", "AllRegions"))
+        self.assertIn("Requests", self.labels_include("macro-expand AllRegions as Region (Region.", "Requests"))
+        self.assertIn("DurationMs", self.labels_include(self.SUBQUERY + "Dur", "DurationMs"))
+        self.assertTrue(
+            any("'EntityGroup'" in command for _, command in home.commands),
+            "the entities of the database are asked for entity groups too",
+        )
+
+    def test_a_name_in_the_subquery_is_checked_when_the_schema_of_the_group_arrives_without_a_keystroke(self):
+        away = self.away()
+        # The group has to arrive after the file was opened, or opening it already asks for the other cluster.
+        self.begin(self.home(delay=1), self.SUBQUERY + "Duration > 5 or DurationMs > 5)", others={"away": away})
+
+        found = self.wait_for_diagnostics(lambda found: len(found) == 1)
+        self.assertIsNotNone(found, "the file is checked again once the cluster of the group has answered")
+        self.assertIn("'Duration'", found[0]["message"])
+        self.assertTrue(any(command.startswith(".show databases entities") for _, command in away.commands))
+
+    def test_a_group_with_no_definition_in_the_entities_is_read_with_show_entity_groups(self):
+        home = self.home(
+            [("EntityGroup", "AllRegions", "", "", "", "")],
+            entity_groups={"Samples": {"AllRegions": [self.GROUP]}},
+        )
+        self.begin(home, others={"away": self.away()})
+
+        self.assertIn("Requests", self.labels_include("macro-expand AllRegions as Region (Region.", "Requests"))
+        self.assertTrue(any(command.startswith(".show entity_groups") for _, command in home.commands))
+
+    def test_a_group_whose_definition_cannot_be_read_leaves_the_rest_of_the_schema_in_place(self):
+        home = self.home([("EntityGroup", "AllRegions", "", "", "", "")])
+        self.begin(home)
+
+        self.assertIn("StormEvents", self.labels_include("Storm", "StormEvents"))
+        self.assertTrue(any(command.startswith(".show entity_groups") for _, command in home.commands))
+
+    def test_the_definition_is_read_however_the_cluster_writes_it(self):
+        written = {
+            "Bare": self.GROUP,
+            "Bracketed": f"[{self.GROUP}]",
+            "Wrapped": f"entity_group [{self.GROUP}]",
+            "Listed": json.dumps([self.GROUP, "cluster('away').database('Logs2')"]),
+        }
+        requests = [("Table", "Requests", "", "", "", "RequestId:guid, DurationMs:real")]
+        away = self.fake(["Logs", "Logs2"], {"Logs": requests, "Logs2": requests})
+        home = self.home([("EntityGroup", name, "", "", content, "") for name, content in written.items()])
+        self.begin(home, others={"away": away})
+
+        for name in written:
+            with self.subTest(name=name):
+                self.assertIn("Requests", self.labels_include(f"macro-expand {name} as Region (Region.", "Requests"))
+        deadline = time.time() + 10
+        while not any(database == "Logs2" for database, _ in away.commands) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertIn("Logs2", [database for database, _ in away.commands], "both elements of the list were read")
+
+    def test_a_group_written_in_the_query_loads_its_clusters_like_any_reference(self):
+        self.begin(self.home(), others={"away": self.away()})
+
+        inline = "macro-expand entity_group [cluster('away').database('Logs')] as Region (Region.Req"
+        self.assertIn("Requests", self.labels_include(inline, "Requests"))
+        variable = "let Everywhere = entity_group [cluster('away').database('Logs')]; macro-expand Everywhere as Region (Region.Req"
+        self.assertIn("Requests", self.labels_include(variable, "Requests"))
+
+    def test_cached_groups_complete_without_the_cluster(self):
+        self.write_cache("help.kusto.windows.net", "Samples", [{
+            "kind": "EntityGroup", "name": "AllRegions", "schema": "", "parameters": "",
+            "body": self.GROUP, "description": None,
+        }])
+        self.write_cache("away.kusto.windows.net", "Logs", [{
+            "kind": "Table", "name": "Requests", "schema": "RequestId:guid, DurationMs:real",
+            "parameters": "", "body": "", "description": None,
+        }])
+        self.begin(self.home(status=401), others={"away": self.away(status=401)})
+
+        self.assertIn("Requests", self.labels_include("macro-expand AllRegions as Region (Region.", "Requests"))
+
+
 class PortableQueryTest(unittest.TestCase):
     """A copy of a query that finds its tables and functions wherever it is run."""
 
@@ -2148,7 +2280,7 @@ class SchemaCacheTest(SchemaTest):
         moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
         return moment.isoformat().replace("+00:00", "Z")
 
-    def write_database(self, tables, hours_ago=0, version=1, name="Samples"):
+    def write_database(self, tables, hours_ago=0, version=2, name="Samples"):
         entities = [
             {"kind": "Table", "name": table, "schema": "Id:long, Label:string",
              "parameters": "", "body": "", "description": None}
@@ -2162,7 +2294,7 @@ class SchemaCacheTest(SchemaTest):
     def write_cluster(self, databases=("Samples",), hours_ago=0):
         self.cache.mkdir(parents=True, exist_ok=True)
         (self.cache / "@databases.json").write_text(json.dumps({
-            "version": 1,
+            "version": 2,
             "fetchedAt": self.timestamp(hours_ago),
             "databases": [{"name": name, "alternate": ""} for name in databases],
         }))
@@ -2200,7 +2332,7 @@ class SchemaCacheTest(SchemaTest):
 
         self.assertTrue(self.wait_until(lambda: self.database_file().exists()))
         stored = json.loads(self.database_file().read_text())
-        self.assertEqual(stored["version"], 1)
+        self.assertEqual(stored["version"], 2)
         self.assertEqual(
             sorted(entity["name"] for entity in stored["entities"]),
             ["StatesOver", "StormEvents"],
@@ -2262,7 +2394,7 @@ class SchemaCacheTest(SchemaTest):
 
         self.assertIn("StormEvents", self.completions_include("Sto", "StormEvents"))
         self.assertTrue(self.wait_until(
-            lambda: self.database_file().read_text().startswith('{"version":1')
+            lambda: self.database_file().read_text().startswith('{"version":2')
         ))
 
     def test_a_cache_written_by_another_version_is_ignored(self):

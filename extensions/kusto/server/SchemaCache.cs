@@ -7,8 +7,12 @@ using System.Text.Json;
 /// </summary>
 internal sealed class SchemaCache
 {
-    /// <summary>Entries written by another version of the format are not read.</summary>
-    public const int FormatVersion = 1;
+    /// <summary>
+    /// Entries written by another version of the format are not read. The version went up when entity
+    /// groups were added, so that a schema cached without them is fetched again instead of being used
+    /// for as long as it stays fresh.
+    /// </summary>
+    public const int FormatVersion = 2;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -91,7 +95,7 @@ internal sealed class SchemaCache
     }
 }
 
-/// <summary>One table, function or view as the cluster described it.</summary>
+/// <summary>One table, function, view or entity group as the cluster described it.</summary>
 internal sealed record CachedEntity(
     string Kind,
     string Name,

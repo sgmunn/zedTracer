@@ -617,6 +617,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             try
             {
                 await PublishDiagnosticsAsync(uri, document);
+                // The entity groups of a database name the clusters and databases a `macro-expand` runs over,
+                // which nothing could ask for before the database's schema arrived.
+                LoadReferencedSchema(document);
             }
             catch (Exception exception) when (exception is IOException or ObjectDisposedException)
             {

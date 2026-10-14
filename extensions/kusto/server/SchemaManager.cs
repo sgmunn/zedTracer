@@ -12,6 +12,8 @@ internal sealed class SchemaManager
 {
     private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromSeconds(60);
 
+    private const string EntityGroupKind = "EntityGroup";
+
     private readonly KustoRestClient client;
     private readonly SchemaCache cache;
     private readonly object gate = new();
@@ -268,7 +270,7 @@ internal sealed class SchemaManager
 
             var command = ".show databases entities with (showObfuscatedStrings=false)"
                 + $" | where DatabaseName == {KustoFacts.GetStringLiteral(database)}"
-                + " | where EntityType in ('Table', 'ExternalTable', 'MaterializedView', 'Function')";
+                + " | where EntityType in ('Table', 'ExternalTable', 'MaterializedView', 'Function', 'EntityGroup')";
             var rows = await client.ExecuteManagementAsync(host, database, command, cancellationToken);
 
             var entities = rows
@@ -280,6 +282,7 @@ internal sealed class SchemaManager
                     Text(row, "Content"),
                     NullIfEmpty(Text(row, "DocString"))))
                 .ToList();
+            entities = await WithEntityGroupDefinitionsAsync(host, database, entities, cancellationToken);
             ApplyDatabase(host, database, BuildMembers(entities));
             cache.WriteDatabase(host, database, entities);
             UpdateStatus(host, database, status => { status.LoadedAt = DateTimeOffset.UtcNow; status.Failed = false; });
@@ -293,6 +296,44 @@ internal sealed class SchemaManager
         {
             UpdateStatus(host, database, status => status.InFlight--);
         }
+    }
+
+    /// <summary>
+    /// The listing of a database's entities is not documented to say what an entity group holds, so a
+    /// group it gives no definition for is read with `.show entity_groups`. That command needs more
+    /// than the permission to read the schema, so a refusal leaves the group without entities, which
+    /// the analysis does not hold against a query, instead of failing the load of the whole database.
+    /// </summary>
+    private async Task<List<CachedEntity>> WithEntityGroupDefinitionsAsync(
+        string host, string database, List<CachedEntity> entities, CancellationToken cancellationToken)
+    {
+        if (!entities.Any(entity => entity.Kind == EntityGroupKind && entity.Body.Length == 0))
+            return entities;
+
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            var rows = await client.ExecuteManagementAsync(host, database, ".show entity_groups", cancellationToken);
+            foreach (var row in rows)
+            {
+                if (row.TryGetValue("Entities", out var listed))
+                    definitions[Text(row, "Name")] = listed.ValueKind == JsonValueKind.String
+                        ? listed.GetString() ?? ""
+                        : listed.GetRawText();
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+        {
+            Console.Error.WriteLine($"Could not read the entity groups of {host}/{database}: {exception.Message}");
+            return entities;
+        }
+
+        return entities
+            .Select(entity => entity.Kind == EntityGroupKind && entity.Body.Length == 0
+                && definitions.TryGetValue(entity.Name, out var definition)
+                    ? entity with { Body = definition }
+                    : entity)
+            .ToList();
     }
 
     private static List<Symbol> BuildMembers(IEnumerable<CachedEntity> entities)
@@ -313,6 +354,9 @@ internal sealed class SchemaManager
                     break;
                 case "Function":
                     members.Add(new FunctionSymbol(entity.Name, entity.Parameters, entity.Body, entity.Description));
+                    break;
+                case EntityGroupKind:
+                    members.Add(new EntityGroupSymbol(entity.Name, entity.Body, entity.Description));
                     break;
             }
         }
