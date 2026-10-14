@@ -625,6 +625,28 @@ query), so a file runs as it is.
 The option is read when the server starts, like the others: restart the language server after changing it. A project's
 `.zed/settings.json` can set it for that project.
 
+**Cmd+T** (project symbols) lists the functions that have a file under the snapshot folder of an open project, best match
+first (the name itself, then names that start with what you typed, then names that contain it, then names that have
+its letters in that order), with the database and the function's folder beside the name, and opens the file at the
+function. It reads the folder and not the cluster, so it lists only functions that already have a file: go to a
+definition, or click **Snapshot functions**, to make the files. Zed asks only the language servers of visible projects,
+so it does nothing for a file opened on its own.
+
+## Outline
+
+**Cmd+Shift+O** (the outline), the breadcrumbs and the outline panel list what a file holds, in the order written, from
+the language server (the language setting `"document_symbols": "on"`, which Zed's default settings have for Kusto):
+
+- **A query**, called by the first comment above its code, or by its first line of code when there is none. A directive,
+  a line of dashes and an empty comment are not names, and a comment after the code has started (a line commented out of
+  the query) is not either. A long first line is cut at 100 characters.
+- **A definition in a `// :functions` block**, each function or value with its own entry.
+- **A command that defines a function** (`.create-or-alter function`, so every file of the snapshot), called by the
+  function's name.
+
+A block of only comments or directives has no entry.
+
+
 ## Offline schema
 
 For offline table and column completion, put a `.kusto-schema.json` file in the
