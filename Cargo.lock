@@ -16978,6 +16978,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_lenient",
+ "settings_json",
  "snippet",
  "util",
 ]
