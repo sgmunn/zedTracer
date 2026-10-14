@@ -13,6 +13,7 @@ internal static class CodeLenses
     public const string NoopCommand = "kusto.noop";
     public const string ConnectionCommand = "kusto.connection";
     public const string RefreshSchemaCommand = "kusto.refreshSchema";
+    public const string SnapshotFunctionsCommand = "kusto.snapshotFunctions";
 
     /// <summary>Braille spinner frames, one per refresh while a query runs.</summary>
     private const string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -21,6 +22,7 @@ internal static class CodeLenses
 
     public static object[] For(
         DocumentSnapshot document,
+        string? documentUri,
         Dictionary<string, QueryRuns> runs,
         DateTimeOffset now,
         Connection defaults,
@@ -81,6 +83,8 @@ internal static class CodeLenses
             {
                 // Zed asks the server to run this one, since it is not an action of the editor.
                 Add(SchemaTitle(schema, now), RefreshSchemaCommand, connection.Cluster ?? "", connection.Database ?? "");
+                // The document says which project's folder the files go to.
+                Add("Snapshot functions", SnapshotFunctionsCommand, connection.Cluster ?? "", connection.Database ?? "", documentUri ?? "");
             }
             if (state?.Last is { } lastRun)
                 Add("Copy CID", DispatchActionCommand, "kusto::CopyClientRequestId", new { id = lastRun.RunId });

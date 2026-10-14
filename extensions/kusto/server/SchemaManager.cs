@@ -115,6 +115,26 @@ internal sealed class SchemaManager
         }
     }
 
+    /// <summary>
+    /// Every function of a database as the cluster has it now, with the folder and docstring that the
+    /// cached schema does not keep. Nothing is cached or applied: the snapshot of the functions is
+    /// written from what this returns.
+    /// </summary>
+    public async Task<List<StoredFunction>> ReadFunctionsAsync(
+        string host, string database, CancellationToken cancellationToken)
+    {
+        var rows = await client.ExecuteManagementAsync(host, database, ".show functions", cancellationToken);
+        return rows
+            .Select(row => new StoredFunction(
+                Text(row, "Name"),
+                Text(row, "Parameters"),
+                Text(row, "Body"),
+                NullIfEmpty(Text(row, "Folder")),
+                NullIfEmpty(Text(row, "DocString"))))
+            .Where(function => function.Name.Length > 0)
+            .ToList();
+    }
+
     private bool IsFresh(DateTimeOffset fetchedAt) =>
         CacheMinutes > 0 && DateTimeOffset.UtcNow - fetchedAt < TimeSpan.FromMinutes(CacheMinutes);
 

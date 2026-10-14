@@ -43,6 +43,12 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         return;
 
                     var parameters = root.TryGetProperty("params", out var value) ? value : default;
+                    if (method == "textDocument/definition" && hasId)
+                    {
+                        // Answered when ready: the functions of a database may have to be fetched first.
+                        _ = AnswerDefinitionAsync(id.Clone(), parameters.Clone());
+                        continue;
+                    }
                     var result = await HandleAsync(method, parameters);
                     if (hasId)
                         await SendAsync(new { jsonrpc = "2.0", id, result });
@@ -93,8 +99,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         completionProvider = new { triggerCharacters = new[] { "|", ".", "(", ":" } },
                         signatureHelpProvider = new { triggerCharacters = new[] { "(", "," } },
                         codeLensProvider = new { resolveProvider = false },
-                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand, PortableQuery.Command } },
+                        executeCommandProvider = new { commands = new[] { CodeLenses.NoopCommand, CodeLenses.ConnectionCommand, CodeLenses.RefreshSchemaCommand, CodeLenses.SnapshotFunctionsCommand, PortableQuery.Command } },
                         hoverProvider = true,
+                        definitionProvider = true,
                         semanticTokensProvider = new
                         {
                             legend = new { tokenTypes = SemanticTokens.Legend, tokenModifiers = Array.Empty<string>() },
@@ -175,26 +182,36 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             case "textDocument/semanticTokens/full":
                 return GetSemanticTokens(parameters);
             case "workspace/executeCommand":
-                if (parameters.TryGetProperty("command", out var portable)
-                    && portable.GetString() == PortableQuery.Command)
-                    return QualifyQuery(parameters);
-                // The lenses that only show text name a command so that Zed treats them as clickable.
-                if (parameters.TryGetProperty("command", out var command)
-                    && command.GetString() == CodeLenses.RefreshSchemaCommand)
-                {
-                    var arguments = parameters.TryGetProperty("arguments", out var list) ? list : default;
-                    string? Argument(int index) =>
-                        arguments.ValueKind == JsonValueKind.Array && arguments.GetArrayLength() > index
-                        && arguments[index].ValueKind == JsonValueKind.String
-                            ? arguments[index].GetString()
-                            : null;
-                    // The request must not wait for the network, or completion would wait for it too.
-                    _ = RefreshSchemaAsync(Argument(0), Argument(1));
-                }
-                return null;
+                return ExecuteCommand(parameters);
             default:
                 return null;
         }
+    }
+
+    private object? ExecuteCommand(JsonElement parameters)
+    {
+        var command = parameters.TryGetProperty("command", out var name) ? name.GetString() : null;
+        if (command == PortableQuery.Command)
+            return QualifyQuery(parameters);
+
+        var arguments = parameters.TryGetProperty("arguments", out var list) ? list : default;
+        string? Argument(int index) =>
+            arguments.ValueKind == JsonValueKind.Array && arguments.GetArrayLength() > index
+            && arguments[index].ValueKind == JsonValueKind.String
+                ? arguments[index].GetString()
+                : null;
+        // The lenses that only show text name a command so that Zed treats them as clickable. The
+        // request must not wait for the network, or completion would wait for it too.
+        switch (command)
+        {
+            case CodeLenses.RefreshSchemaCommand:
+                _ = RefreshSchemaAsync(Argument(0), Argument(1));
+                break;
+            case CodeLenses.SnapshotFunctionsCommand:
+                _ = SnapshotFunctionsAsync(Argument(0), Argument(1), Argument(2));
+                break;
+        }
+        return null;
     }
 
     private object[] Complete(JsonElement parameters)
@@ -340,6 +357,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         var profiles = QueryParameters.Load(QueryParameters.FilesFor(uri, workspaceFolders));
         return CodeLenses.For(
             document,
+            uri,
             runLog.Read(),
             DateTimeOffset.UtcNow,
             schema.Defaults,
@@ -596,6 +614,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         if (options.TryGetProperty("schemaDiagnostics", out var checkNames)
             && checkNames.ValueKind is JsonValueKind.True or JsonValueKind.False)
             schemaDiagnostics = checkNames.GetBoolean();
+        snapshotDirectory = Text("snapshotDirectory");
         schema.SetDefaults(Text("cluster"), Text("database"));
     }
 

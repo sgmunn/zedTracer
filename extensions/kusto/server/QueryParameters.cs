@@ -62,18 +62,24 @@ internal static partial class QueryParameters
         var path = uri.LocalPath;
         if (path.EndsWith(".kql", StringComparison.Ordinal))
             files.Add(path[..^".kql".Length] + ".parameters.yaml");
-        var folder = workspaceFolders
-            .Where(folder => path.StartsWith(folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
-                StringComparison.Ordinal))
-            .OrderByDescending(folder => folder.Length)
-            .FirstOrDefault()
-            // A file outside every folder, such as a query thread's, is still served for the project,
-            // and the editor takes the profiles of the project's first folder for it too.
-            ?? workspaceFolders.FirstOrDefault();
-        if (folder is not null)
+        if (FolderOf(path, workspaceFolders) is { } folder)
             files.Add(Path.Combine(folder, ".kusto", "parameters.yaml"));
         return files;
     }
+
+    /// <summary>
+    /// The workspace folder that holds a document, or the first when none does: a file outside every
+    /// folder, such as a query thread's, is still served for the project, and the editor takes the
+    /// project's first folder for it too. Null when there is no project at all.
+    /// </summary>
+    public static string? FolderOf(string? documentPath, IReadOnlyList<string> workspaceFolders) =>
+        workspaceFolders
+            .Where(folder => documentPath is not null
+                && documentPath.StartsWith(folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                    StringComparison.Ordinal))
+            .OrderByDescending(folder => folder.Length)
+            .FirstOrDefault()
+        ?? workspaceFolders.FirstOrDefault();
 
     /// <summary>
     /// The profiles that apply: from the first of `files` that exists, with that file's name. A

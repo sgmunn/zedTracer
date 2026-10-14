@@ -264,11 +264,14 @@ class FakeKusto:
         "CslInputSchema", "Content", "CslOutputSchema", "Properties",
     ]
 
-    def __init__(self, databases, entities=None, status=200, delay=0, entity_groups=None):
+    FUNCTION_COLUMNS = ["Name", "Parameters", "Body", "Folder", "DocString"]
+
+    def __init__(self, databases, entities=None, status=200, delay=0, entity_groups=None, functions=None):
         self.databases = databases
         self.delay = delay
         self.entities = entities or {}
         self.entity_groups = entity_groups
+        self.functions = functions
         self.status = status
         self.commands = []
         self.authorizations = []
@@ -297,6 +300,12 @@ class FakeKusto:
                         for kind, name, doc, parameters, content, schema in outer.entities.get(body["db"], [])
                     ]
                     self.respond(200, management_response(outer.ENTITY_COLUMNS, rows))
+                elif body["csl"].strip() == ".show functions":
+                    if outer.functions is None:
+                        payload = {"error": {"message": "denied", "innererror": {"@message": "Not authorized"}}}
+                        self.respond(403, payload)
+                    else:
+                        self.respond(200, management_response(outer.FUNCTION_COLUMNS, outer.functions.get(body["db"], [])))
                 elif body["csl"].startswith(".show entity_groups"):
                     if outer.entity_groups is None:
                         # Listing them takes more than the permission to read the schema.
@@ -572,7 +581,7 @@ class CodeLensTest(unittest.TestCase):
             lens["command"]["title"]
             for lens in lenses
             if lens["range"]["start"]["line"] == line
-            and lens["command"]["command"] not in ("kusto.connection", "kusto.refreshSchema")
+            and lens["command"]["command"] not in ("kusto.connection", "kusto.refreshSchema", "kusto.snapshotFunctions")
             and lens["command"]["arguments"] != ["kusto::CopyQuery"]
         ]
 
@@ -628,7 +637,7 @@ class CodeLensTest(unittest.TestCase):
         second = titles_on(1)
         self.assertEqual(second[:2], ["Copy", "help.kusto.windows.net / Samples"])
         self.assertTrue(second[2].startswith("↻ Schema: "), second)
-        self.assertEqual(second[3:], ["Copy CID"])
+        self.assertEqual(second[3:], ["Snapshot functions", "Copy CID"])
         copy = next(lens for lens in lenses if lens["command"]["title"] == "Copy")["command"]
         self.assertEqual(copy["command"], "zed.dispatchAction")
         self.assertEqual(copy["arguments"], ["kusto::CopyQuery"])
@@ -793,8 +802,8 @@ class CodeLensTest(unittest.TestCase):
     def test_without_a_log_there_are_only_run_lenses_and_the_connection(self):
         self.assertFalse(self.log.exists())
         lenses = self.lenses()
-        # Each of the two queries has a Run, a Copy, a connection and a schema lens.
-        self.assertEqual(len(lenses), 8)
+        # Each of the two queries has a Run, a Copy, a connection, a schema and a snapshot lens.
+        self.assertEqual(len(lenses), 10)
         self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
 
     def test_the_noop_command_is_accepted(self):
@@ -885,6 +894,318 @@ class QueryBlockTest(unittest.TestCase):
         diagnostics = self.open_document("print (1\n\nprint 2")
         self.assertTrue(diagnostics)
         self.assertEqual({item["range"]["start"]["line"] for item in diagnostics}, {0})
+
+
+SNAPSHOT_ENTITIES = {
+    "Samples": [
+        ("Function", "StatesOver", "States with more than a number of events.", "(minimum:long, region:string)",
+         "{ StormEvents | summarize n = count() by State | where n > minimum }", ""),
+        ("Function", "Plain", "", "()", "{ print 1 }", ""),
+    ]
+}
+
+SNAPSHOT_FUNCTIONS = {
+    "Samples": [
+        [
+            "StatesOver", "(minimum:long, region:string)",
+            "{ StormEvents | summarize n = count() by State | where n > minimum }",
+            "Utilities\\Storm", "States with more than a number of events.",
+        ],
+        ["Plain", "()", "{\r\n    print 1\r\n\r\n}  ", None, None],
+    ]
+}
+
+STATES_OVER_FILE = (
+    '// :setDefaultCluster("help.kusto.windows.net")\n'
+    '// :setDefaultDb("Samples")\n'
+    ".create-or-alter function with (docstring = 'States with more than a number of events.', folder = 'Utilities\\\\Storm')\n"
+    "StatesOver(minimum:long, region:string)\n"
+    "{ StormEvents | summarize n = count() by State | where n > minimum }\n"
+)
+
+PLAIN_FILE = (
+    '// :setDefaultCluster("help.kusto.windows.net")\n'
+    '// :setDefaultDb("Samples")\n'
+    ".create-or-alter function\n"
+    "Plain()\n"
+    "{\n    print 1\n\n}\n"
+)
+
+
+class SnapshotTest(unittest.TestCase):
+    """Go to definition on a stored function opens its file in the snapshot of the database's functions."""
+
+    setUp = SchemaTest.setUp
+    tearDown = SchemaTest.tearDown
+    fake = SchemaTest.fake
+    send = LanguageServerTest.send
+    receive = LanguageServerTest.receive
+
+    def stop_server(self):
+        self.process.terminate()
+        self.process.communicate(timeout=5)
+        self.process = None
+
+    def directory(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        return Path(folder.name)
+
+    def start(self, cluster, options=None, root=None, home=None):
+        self.messages = []
+        self.request_id = 100
+        environment = {
+            "KUSTO_LSP_TEST_TOKEN": "test-token",
+            "KUSTO_LSP_TEST_ENDPOINTS": json.dumps({"help.kusto.windows.net": cluster.url}),
+        }
+        if home is not None:
+            environment["HOME"] = str(home)
+        LanguageServerTest.start_server(
+            self,
+            root.as_uri() if root else None,
+            {"cluster": "help", "database": "Samples", **(options or {})},
+            environment,
+        )
+
+    def open(self, text, path):
+        self.send(
+            None,
+            "textDocument/didOpen",
+            {"textDocument": {"uri": path.as_uri(), "languageId": "kusto", "version": 1, "text": text}},
+        )
+        self.uri = path.as_uri()
+
+    def request(self, method, parameters):
+        self.request_id += 1
+        self.send(self.request_id, method, parameters)
+        while True:
+            message = self.receive()
+            if message.get("id") == self.request_id and "method" not in message:
+                return message
+            if message.get("method") == "window/showMessage":
+                self.messages.append(message["params"])
+
+    def definition(self, line, character):
+        return self.request(
+            "textDocument/definition",
+            {"textDocument": {"uri": self.uri}, "position": {"line": line, "character": character}},
+        )
+
+    def definition_once_loaded(self, line, character, timeout=10):
+        """The schema is fetched in the background, and until it has arrived a name is no function."""
+        deadline = time.time() + timeout
+        while True:
+            result = self.definition(line, character)["result"]
+            if result or time.time() > deadline:
+                return result
+            time.sleep(0.1)
+
+    def snapshot_path(self, root, *parts):
+        return root.joinpath("help.kusto.windows.net", "Samples", "functions", *parts)
+
+    def test_a_function_opens_its_file_in_the_snapshot_in_the_project(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')", root / "queries" / "q.kql")
+
+        [location] = self.definition_once_loaded(0, 10)
+        file = self.snapshot_path(root / "kusto-schema", "Utilities", "Storm", "StatesOver.kql")
+        self.assertEqual(location["uri"], file.as_uri())
+        self.assertEqual(location["range"]["start"]["line"], 3, "the line of the function's name")
+        self.assertEqual(file.read_text(), STATES_OVER_FILE)
+        self.assertEqual(
+            self.snapshot_path(root / "kusto-schema", "Plain.kql").read_text(),
+            PLAIN_FILE,
+            "every function of the database is written, not only the one asked for",
+        )
+        self.assertTrue(any("2 new" in message["message"] for message in self.messages), self.messages)
+
+    def test_a_folder_in_the_option_is_relative_to_the_project(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, {"snapshotDirectory": "docs/kql"}, root=root)
+        self.open("print Plain()", root / "q.kql")
+
+        [location] = self.definition_once_loaded(0, 8)
+        file = self.snapshot_path(root / "docs" / "kql", "Plain.kql")
+        self.assertEqual(location["uri"], file.as_uri())
+        self.assertTrue(file.exists())
+
+    def test_a_full_path_in_the_option_is_used_whether_or_not_a_project_is_open(self):
+        for project in (True, False):
+            with self.subTest(project=project):
+                root = self.directory()
+                elsewhere = self.directory() / "snapshots"
+                cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+                self.start(cluster, {"snapshotDirectory": str(elsewhere)}, root=root if project else None)
+                self.open("print Plain()", (root if project else self.directory()) / "q.kql")
+
+                [location] = self.definition_once_loaded(0, 8)
+                self.assertEqual(location["uri"], self.snapshot_path(elsewhere, "Plain.kql").as_uri())
+                self.assertFalse((root / "kusto-schema").exists())
+                self.stop_server()
+
+    def test_the_home_folder_is_expanded_in_the_option(self):
+        home = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, {"snapshotDirectory": "~/snapshots"}, home=home)
+        self.open("print Plain()", self.directory() / "q.kql")
+
+        [location] = self.definition_once_loaded(0, 8)
+        self.assertEqual(location["uri"], self.snapshot_path(home / "snapshots", "Plain.kql").as_uri())
+
+    def test_without_a_project_or_a_full_path_the_user_is_told_and_nothing_is_written(self):
+        for options in ({}, {"snapshotDirectory": "relative/folder"}):
+            with self.subTest(options=options):
+                cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+                self.start(cluster, options)
+                self.open("print Plain()", self.directory() / "q.kql")
+                # Until the schema has arrived the name is no function and there is nothing to tell.
+                deadline = time.time() + 10
+                while not self.messages and time.time() < deadline:
+                    self.assertIsNone(self.definition(0, 8)["result"])
+                    time.sleep(0.1)
+
+                self.assertEqual([message["type"] for message in self.messages[:1]], [2])
+                self.assertIn("no project", self.messages[0]["message"])
+                self.assertIn("snapshotDirectory", self.messages[0]["message"])
+                self.assertEqual([csl for _, csl in cluster.commands if csl == ".show functions"], [])
+                self.stop_server()
+
+    def test_going_to_a_definition_does_not_replace_a_file_that_is_there(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')\n\nprint Plain()", root / "q.kql")
+        self.definition_once_loaded(0, 10)
+
+        plain = self.snapshot_path(root / "kusto-schema", "Plain.kql")
+        plain.write_text("// my change\n")
+        fetches = len([csl for _, csl in cluster.commands if csl == ".show functions"])
+        [location] = self.definition(2, 8)["result"]
+
+        self.assertEqual(location["uri"], plain.as_uri())
+        self.assertEqual(plain.read_text(), "// my change\n")
+        self.assertEqual(
+            len([csl for _, csl in cluster.commands if csl == ".show functions"]),
+            fetches,
+            "a function that has its file is not asked for again",
+        )
+
+    def test_a_function_dropped_from_the_snapshot_is_written_again_without_touching_the_others(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')\n\nprint Plain()", root / "q.kql")
+        self.definition_once_loaded(0, 10)
+        states_over = self.snapshot_path(root / "kusto-schema", "Utilities", "Storm", "StatesOver.kql")
+        plain = self.snapshot_path(root / "kusto-schema", "Plain.kql")
+        states_over.write_text("// my change\n")
+        plain.unlink()
+
+        self.definition(2, 8)
+
+        self.assertEqual(plain.read_text(), PLAIN_FILE)
+        self.assertEqual(states_over.read_text(), "// my change\n")
+
+    def lens_command(self, name):
+        lenses = self.request("textDocument/codeLens", {"textDocument": {"uri": self.uri}})["result"]
+        [found] = [lens["command"] for lens in lenses if lens["command"]["command"] == name]
+        return found
+
+    def wait_for_message(self, containing, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for message in self.messages:
+                if containing in message["message"]:
+                    return message
+            # Any request lets the messages that came in be read.
+            self.request("workspace/executeCommand", {"command": "kusto.noop"})
+            time.sleep(0.1)
+        self.fail(f"no message with {containing!r} in {self.messages}")
+
+    def test_the_lens_writes_the_functions_again_and_says_what_changed(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')", root / "queries" / "q.kql")
+        self.definition_once_loaded(0, 10)
+        states_over = self.snapshot_path(root / "kusto-schema", "Utilities", "Storm", "StatesOver.kql")
+        plain = self.snapshot_path(root / "kusto-schema", "Plain.kql")
+        states_over.write_text("// my change\n")
+        stale = self.snapshot_path(root / "kusto-schema", "Gone.kql")
+        stale.write_text("// a function that was dropped\n")
+        self.messages.clear()
+
+        command = self.lens_command("kusto.snapshotFunctions")
+        self.assertEqual(command["title"], "Snapshot functions")
+        self.assertEqual(command["arguments"], ["help", "Samples", self.uri])
+        self.request("workspace/executeCommand", {"command": command["command"], "arguments": command["arguments"]})
+        message = self.wait_for_message("0 new, 1 changed, 1 as they were")
+
+        self.assertEqual(message["type"], 3)
+        self.assertIn("1 file has no function on the cluster", message["message"])
+        self.assertEqual(states_over.read_text(), STATES_OVER_FILE, "a file is taken back to what the cluster has")
+        self.assertEqual(plain.read_text(), PLAIN_FILE)
+        self.assertTrue(stale.exists(), "a file with no function is reported and left")
+
+    def test_the_lens_without_a_project_or_a_full_path_tells_the_user(self):
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster)
+        self.open("print Plain()", self.directory() / "q.kql")
+        self.definition_once_loaded(0, 8, timeout=1)  # the lens comes with the schema
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            lenses = self.request("textDocument/codeLens", {"textDocument": {"uri": self.uri}})["result"]
+            if any(lens["command"]["command"] == "kusto.snapshotFunctions" for lens in lenses):
+                break
+        command = self.lens_command("kusto.snapshotFunctions")
+        self.request("workspace/executeCommand", {"command": command["command"], "arguments": command["arguments"]})
+
+        message = self.wait_for_message("no project")
+        self.assertEqual(message["type"], 2)
+        self.assertEqual([csl for _, csl in cluster.commands if csl == ".show functions"], [])
+
+    def test_names_that_are_not_stored_functions_have_no_definition(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print StatesOver(1, 'WA')", root / "q.kql")
+        self.definition_once_loaded(0, 10)
+        fetches = len([csl for _, csl in cluster.commands if csl == ".show functions"])
+
+        for text, character in (
+            ("print strlen('a')", 8),
+            ("print StormEvents", 10),
+            ("// :functions\nlet StatesOver = (a:long, b:string) { 1 };\n\nprint StatesOver(1, 'a')", 3),
+        ):
+            self.open(text, root / "q.kql")
+            line = text.count("\n") if "\n\n" in text else 0
+            self.assertIsNone(self.definition(line, character if line == 0 else 10)["result"], text)
+
+        self.assertEqual(len([csl for _, csl in cluster.commands if csl == ".show functions"]), fetches)
+
+    def test_a_cursor_just_after_the_name_is_on_the_name(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=SNAPSHOT_FUNCTIONS)
+        self.start(cluster, root=root)
+        self.open("print Plain()", root / "q.kql")
+        self.assertTrue(self.definition_once_loaded(0, len("print Plain")))
+
+    def test_a_cluster_that_refuses_the_functions_is_reported_and_nothing_is_written(self):
+        root = self.directory()
+        cluster = self.fake(["Samples"], SNAPSHOT_ENTITIES, functions=None)
+        self.start(cluster, root=root)
+        self.open("print Plain()", root / "q.kql")
+        deadline = time.time() + 10
+        while not self.messages and time.time() < deadline:
+            self.assertIsNone(self.definition(0, 8)["result"])
+            time.sleep(0.1)
+
+        self.assertEqual(self.messages[0]["type"], 1)
+        self.assertIn("Could not write the snapshot", self.messages[0]["message"])
+        self.assertFalse((root / "kusto-schema").exists())
 
 
 class DirectiveTest(unittest.TestCase):
