@@ -468,6 +468,13 @@ function names only.
 A file holds several queries separated by blank lines, and each is analysed on its own: a query
 never continues into the next one, and a `let` in one is not visible in the next.
 
+A blank line inside parentheses or braces that are still open does not end the query, so a function with a gap
+in its body, or a call written over several lines with a gap in it, stays one query with one set of lenses above its
+first line. Brackets in comments and strings do not count, and a multi-line string (```` ``` ```` or `~~~`) holds a
+blank line too. Brackets that are never closed do not hold the queries below them: the query ends at its first blank
+line, as it does for a query with no brackets. The editor and the server read the file the same way
+(`fork-docs/samples/query-blocks.json` is tested on both).
+
 #### Diagnostics
 
 Syntax errors are always shown. Once the schema of the database a query runs on has arrived (from the cache or
@@ -503,7 +510,7 @@ Turn code lenses on in Zed settings (they are off by default):
 { "code_lens": "on" }
 ```
 
-Above each query (a run of non-blank lines) the lenses are on two lines. The first line is what to do. It starts with **▶ Run**, which runs that query. While the
+Above each query (a run of non-blank lines, or more where a bracket stays open across a blank line) the lenses are on two lines. The first line is what to do. It starts with **▶ Run**, which runs that query. While the
 query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second
 until nothing is running) and **Cancel** instead. Once the query has been run and left a result, **Results**
 comes straight after them, with the number of rows the result has, for example `Results (1,240 rows)` (it shows that
