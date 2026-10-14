@@ -440,7 +440,6 @@ impl Render for RowDetailsPanel {
 mod tests {
     use fs::FakeFs;
     use gpui::TestAppContext;
-    use investigation::InvestigationPanel;
     use kusto_code::CodeRefKind;
     use kusto_results::{Cell, Column, Table};
     use project::Project;
@@ -468,10 +467,9 @@ mod tests {
         })
     }
 
-    /// S6: the panel docks on the right beside the Investigation panel, each can be shown in
-    /// turn, and it follows the selection published by a grid.
+    /// S6: the panel docks on the right, can be shown there, and follows the selection published by a grid.
     #[gpui::test]
-    async fn shares_the_right_dock_and_follows_the_selection(cx: &mut TestAppContext) {
+    async fn docks_on_the_right_and_follows_the_selection(cx: &mut TestAppContext) {
         cx.update(|cx| {
             AppState::test(cx);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
@@ -487,43 +485,29 @@ mod tests {
                 RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
             })
         });
-        let window_cx = cx.update(|window, cx| window.to_async(cx));
-        let investigation = InvestigationPanel::load(workspace.downgrade(), window_cx)
-            .await
-            .expect("the investigation panel loads");
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.add_panel(details.clone(), window, cx);
-            workspace.add_panel(investigation.clone(), window, cx);
         });
 
         workspace.read_with(cx, |workspace, cx| {
             let dock = workspace.right_dock().read(cx);
-            assert_eq!(dock.panels_len(), 2);
+            assert_eq!(dock.panels_len(), 1);
             assert!(dock.panel::<RowDetailsPanel>().is_some());
-            assert!(dock.panel::<InvestigationPanel>().is_some());
         });
 
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.focus_panel::<RowDetailsPanel>(window, cx);
         });
-        let visible = |cx: &mut gpui::VisualTestContext| {
-            workspace.read_with(cx, |workspace, cx| {
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
                 workspace
                     .right_dock()
                     .read(cx)
                     .visible_panel()
-                    .map(|panel| panel.persistent_name())
-            })
-        };
-        assert_eq!(visible(cx), Some("Row Details Panel"));
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.focus_panel::<InvestigationPanel>(window, cx);
+                    .map(|panel| panel.persistent_name()),
+                Some("Row Details Panel")
+            );
         });
-        assert_eq!(visible(cx), Some("Investigation Panel"));
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.focus_panel::<RowDetailsPanel>(window, cx);
-        });
-        assert_eq!(visible(cx), Some("Row Details Panel"));
 
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         let headline = |cx: &mut gpui::VisualTestContext| {

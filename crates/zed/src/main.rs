@@ -730,7 +730,6 @@ fn main() {
 
         editor::init(cx);
         image_viewer::init(cx);
-        investigation::init(cx);
         kusto_results_ui::init(cx);
         repl::notebook::init(cx);
         diagnostics::init(cx);
