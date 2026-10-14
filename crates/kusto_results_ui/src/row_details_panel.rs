@@ -341,7 +341,7 @@ impl Panel for RowDetailsPanel {
     }
 
     fn icon(&self, _: &Window, _: &App) -> Option<IconName> {
-        Some(IconName::ListTree)
+        Some(IconName::RowDetails)
     }
 
     fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {

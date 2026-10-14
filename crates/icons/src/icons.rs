@@ -229,6 +229,7 @@ pub enum IconName {
     Return,
     RotateCcw,
     RotateCw,
+    RowDetails,
     Scissors,
     Screen,
     SelectAll,
@@ -323,6 +324,12 @@ mod tests {
     use strum::{IntoEnumIterator as _, ParseError};
 
     use crate::IconName;
+
+    #[test]
+    fn row_details_uses_the_standard_asset_path() {
+        assert_eq!(&*IconName::RowDetails.path(), "icons/row_details.svg");
+        assert_eq!("row_details".parse::<IconName>(), Ok(IconName::RowDetails));
+    }
 
     #[test]
     fn test_all_icons_exist() {
