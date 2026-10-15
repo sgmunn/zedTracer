@@ -331,6 +331,103 @@ impl Aggregation {
     }
 }
 
+/// Which way a reference line runs on the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineOrientation {
+    /// Across the chart, at a value of the vertical (Y) axis.
+    Horizontal,
+    /// Up the chart, at a value of the horizontal (X) axis.
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineStyle {
+    Dashed,
+    Solid,
+}
+
+/// The colour of a reference line, named, so that it follows the theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineColor {
+    Grey,
+    Red,
+    Orange,
+    Green,
+    Blue,
+}
+
+impl LineColor {
+    pub const ALL: [LineColor; 5] = [
+        LineColor::Grey,
+        LineColor::Red,
+        LineColor::Orange,
+        LineColor::Green,
+        LineColor::Blue,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LineColor::Grey => "Grey",
+            LineColor::Red => "Red",
+            LineColor::Orange => "Orange",
+            LineColor::Green => "Green",
+            LineColor::Blue => "Blue",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|color| *color == self)
+            .unwrap_or_default()
+    }
+}
+
+/// A line across the chart at a value of one axis, such as a threshold or a moment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceLine {
+    pub orientation: LineOrientation,
+    /// A number, or for a time axis the text of a time.
+    pub value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Dashed unless it says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<LineStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<LineColor>,
+    /// Properties of the line this crate does not know.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl ReferenceLine {
+    pub fn new(orientation: LineOrientation, value: Value) -> Self {
+        Self {
+            orientation,
+            value,
+            label: None,
+            style: None,
+            color: None,
+            extra: Map::new(),
+        }
+    }
+
+    /// The value as it is typed: a number, or the text of a time.
+    pub fn value_text(&self) -> String {
+        match &self.value {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn is_dashed(&self) -> bool {
+        self.style != Some(LineStyle::Solid)
+    }
+}
+
 /// The options of one chart. Anything not listed here is in `extra`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChartOptions {
@@ -370,6 +467,9 @@ pub struct ChartOptions {
     /// Combines the rows of a series that have the same X. Without it each row is a point, and
     /// a line goes up and down where several rows share an X.
     pub aggregation: Option<Aggregation>,
+    /// Lines across the chart at values the user chose. Not a VS Code option: it keeps no
+    /// property it does not know, so a file it saves loses them.
+    pub reference_lines: Option<Vec<ReferenceLine>>,
     pub extra: Map<String, Value>,
 }
 
@@ -443,6 +543,7 @@ impl ChartOptions {
             max_series: take(&mut map, "maxSeries"),
             show_markers: take(&mut map, "showMarkers"),
             aggregation: take(&mut map, "aggregation"),
+            reference_lines: take(&mut map, "referenceLines"),
             extra: map,
         }
     }
@@ -558,6 +659,7 @@ impl ChartOptions {
         put(&mut map, "maxSeries", &self.max_series);
         put(&mut map, "showMarkers", &self.show_markers);
         put(&mut map, "aggregation", &self.aggregation);
+        put(&mut map, "referenceLines", &self.reference_lines);
         for (key, value) in &self.extra {
             // A typed field wins over a stale unreadable value left under the same key.
             map.entry(key.clone()).or_insert_with(|| value.clone());
@@ -889,6 +991,31 @@ mod tests {
         explicit.x_show_grid = Some(true);
         explicit.y_show_grid = Some(false);
         assert!(explicit.grid_shown(true) && !explicit.grid_shown(false));
+    }
+
+    #[test]
+    fn reference_lines_are_read_written_and_keep_what_they_do_not_know() {
+        let source = json!({"options": {"type": "Line", "referenceLines": [
+            {"orientation": "Horizontal", "value": 5000, "label": "target", "style": "Solid", "color": "Green", "future": 1},
+            {"orientation": "Vertical", "value": "2026-10-06T00:00:00Z"}
+        ]}});
+        let chart = Chart::from_value(source.clone()).unwrap();
+        let lines = chart.options.reference_lines.clone().unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].orientation, LineOrientation::Horizontal);
+        assert_eq!(lines[0].value_text(), "5000");
+        assert_eq!(lines[0].label.as_deref(), Some("target"));
+        assert!(!lines[0].is_dashed());
+        assert_eq!(lines[0].color, Some(LineColor::Green));
+        assert_eq!(lines[1].value_text(), "2026-10-06T00:00:00Z");
+        assert!(lines[1].is_dashed(), "dashed unless it says solid");
+        assert_eq!(Value::Object(chart.to_map()), source);
+
+        // A list with an entry that cannot be read is left alone, not dropped.
+        let broken = json!({"options": {"type": "Line", "referenceLines": [{"orientation": "Diagonal", "value": 1}]}});
+        let chart = Chart::from_value(broken.clone()).unwrap();
+        assert!(chart.options.reference_lines.is_none());
+        assert_eq!(Value::Object(chart.to_map()), broken);
     }
 
     #[test]

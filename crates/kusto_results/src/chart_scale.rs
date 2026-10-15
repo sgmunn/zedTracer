@@ -372,6 +372,34 @@ pub fn format_time(milliseconds: f64) -> String {
     }
 }
 
+/// A timespan in the form Kusto writes it, `[-][d.]hh:mm:ss[.fff]`, which `parse_timespan_text`
+/// reads back.
+pub fn format_timespan(milliseconds: f64) -> String {
+    if !milliseconds.is_finite() {
+        return milliseconds.to_string();
+    }
+    let sign = if milliseconds < 0.0 { "-" } else { "" };
+    let whole = milliseconds.abs().round() as i64;
+    let (days, hours, minutes, seconds, millis) = (
+        whole / DAY,
+        whole % DAY / HOUR,
+        whole % HOUR / MINUTE,
+        whole % MINUTE / SECOND,
+        whole % SECOND,
+    );
+    let days = if days > 0 {
+        format!("{days}.")
+    } else {
+        String::new()
+    };
+    let fraction = if millis > 0 {
+        format!(".{millis:03}")
+    } else {
+        String::new()
+    };
+    format!("{sign}{days}{hours:02}:{minutes:02}:{seconds:02}{fraction}")
+}
+
 /// A time as the label of a bar: the date, and the time only when some label has one.
 pub fn format_time_label(milliseconds: f64, with_time: bool) -> String {
     let Some(date) = to_date(milliseconds.round() as i64) else {
@@ -664,6 +692,20 @@ mod tests {
             format_time_label(at("2007-01-01T06:30:00Z"), true),
             "2007-01-01 06:30"
         );
+    }
+
+    #[test]
+    fn a_timespan_is_written_in_the_form_kusto_reads() {
+        assert_eq!(format_timespan(0.0), "00:00:00");
+        assert_eq!(format_timespan(1500.0), "00:00:01.500");
+        assert_eq!(format_timespan(93_784_000.0), "1.02:03:04");
+        assert_eq!(format_timespan(-60_000.0), "-00:01:00");
+        for milliseconds in [0.0, 1500.0, 93_784_000.0, -60_000.0, 3_600_000.0] {
+            assert_eq!(
+                crate::chart_data::parse_timespan_text(&format_timespan(milliseconds)),
+                Some(milliseconds)
+            );
+        }
     }
 
     #[test]

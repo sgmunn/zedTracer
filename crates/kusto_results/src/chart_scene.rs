@@ -12,7 +12,9 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::chart::{AxisScale, ChartOptions, LegendPosition, TextSize};
+use crate::chart::{
+    AxisScale, ChartOptions, LegendPosition, LineColor, LineOrientation, ReferenceLine, TextSize,
+};
 use crate::chart_data::{ChartData, Series, XKind, limit_number};
 use crate::chart_scale::{self, Tick};
 
@@ -86,6 +88,8 @@ pub enum Role {
     Axis,
     /// The colour of the series with this `color_index`.
     Series(usize),
+    /// The colour of a line the user drew across the chart.
+    Reference(LineColor),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +109,13 @@ pub enum VerticalAnchor {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Segment {
+        from: (f32, f32),
+        to: (f32, f32),
+        role: Role,
+        width: f32,
+    },
+    /// A segment drawn in dashes, as a reference line is by default.
+    DashedSegment {
         from: (f32, f32),
         to: (f32, f32),
         role: Role,
@@ -237,6 +248,32 @@ pub struct ChartScene {
     pub chrome: Vec<Item>,
     pub legend: Vec<LegendEntry>,
     hover: HoverModel,
+    /// What the layout was drawn from, to say what the pointer is over in the data.
+    pointer: PointerModel,
+}
+
+#[derive(Debug, Clone)]
+struct PointerModel {
+    axes: Axes,
+    projection: Projection,
+    x_kind: XKind,
+    horizontal_chart: bool,
+}
+
+/// A value of an axis, as text that can be typed into a line's value and read back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AxisValue {
+    pub text: String,
+}
+
+/// The values of the two axes at a point of the plot. An axis of categories gives the label of
+/// the category the point is in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointerPosition {
+    /// On the horizontal axis.
+    pub x: Option<AxisValue>,
+    /// On the vertical axis.
+    pub y: Option<AxisValue>,
 }
 
 const PADDING: f32 = 12.0;
@@ -285,6 +322,16 @@ struct Continuous {
 }
 
 impl Continuous {
+    /// The value a fraction of the way along the axis stands for: the inverse of `fraction`.
+    fn value_at(&self, fraction: f64) -> f64 {
+        if self.logarithmic {
+            let (low, high) = (self.low.log10(), self.high.log10());
+            10f64.powf(low + fraction * (high - low))
+        } else {
+            self.low + fraction * (self.high - self.low)
+        }
+    }
+
     fn fraction(&self, value: f64) -> f64 {
         if self.logarithmic {
             let (low, high) = (self.low.log10(), self.high.log10());
@@ -311,12 +358,13 @@ impl CategoryAxis {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Axes {
     category: CategoryAxis,
     value: Continuous,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Projection {
     plot: Rect,
     /// Categories run down the screen and values across it.
@@ -416,6 +464,46 @@ fn axis_options(
     }
 }
 
+/// A value of an axis as text for a line's value: rounded to what the pointer can tell apart on
+/// this axis, and in a form `limit_number` reads back.
+fn axis_value_text(value: f64, axis: &Continuous, kind: Option<XKind>) -> String {
+    let span = (axis.high - axis.low).abs().max(f64::MIN_POSITIVE);
+    match kind {
+        Some(XKind::Time) => {
+            const SECOND: f64 = 1000.0;
+            const MINUTE: f64 = 60.0 * SECOND;
+            const HOUR: f64 = 60.0 * MINUTE;
+            const DAY: f64 = 24.0 * HOUR;
+            let unit = if span < 2.0 * MINUTE {
+                SECOND
+            } else if span < 2.0 * HOUR {
+                MINUTE
+            } else if span < 2.0 * DAY {
+                HOUR
+            } else {
+                DAY
+            };
+            chart_scale::format_time((value / unit).round() * unit)
+        }
+        Some(XKind::Duration) => chart_scale::format_timespan(value.round()),
+        _ if axis.logarithmic => format!("{value:.3e}")
+            .parse::<f64>()
+            .map_or_else(|_| value.to_string(), |rounded| rounded.to_string()),
+        _ => {
+            // Three digits at the scale of the axis: 5,000 on an axis of 0 to 10,000.
+            let step = 10f64.powf(span.log10().floor() - 2.0);
+            let rounded = (value / step).round() * step;
+            let decimals = (-step.log10()).ceil().max(0.0) as usize;
+            let text = format!("{rounded:.decimals$}");
+            if text.contains('.') {
+                text.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                text
+            }
+        }
+    }
+}
+
 /// `text` cut to fit `limit` pixels, ending in an ellipsis when it was cut.
 fn truncate(text: &str, size: f32, limit: f32, measure: &dyn TextMeasure) -> String {
     let characters: Vec<char> = text.chars().take(MAXIMUM_LABEL_CHARACTERS).collect();
@@ -493,7 +581,33 @@ impl<'a> Layout<'a> {
     }
 
     /// The smallest and largest value to draw, before the axis rounds them. Bars start at zero.
+    fn lines(&self) -> &[ReferenceLine] {
+        self.options.reference_lines.as_deref().unwrap_or_default()
+    }
+
+    /// Whether a reference line is at a value of the axis of the values (else of the category
+    /// axis). A horizontal line is at a value of the vertical axis, which holds the values unless
+    /// the chart is of horizontal bars.
+    fn on_value_axis(&self, line: &ReferenceLine) -> bool {
+        (line.orientation == LineOrientation::Horizontal) != self.horizontal
+    }
+
+    /// The smallest and largest value to draw, with the lines the user drew in view too.
     fn value_extent(&self) -> (f64, f64) {
+        let logarithmic = self.value_options().logarithmic;
+        let (mut low, mut high) = self.data_value_extent();
+        for line in self.lines().iter().filter(|line| self.on_value_axis(line)) {
+            if let Some(value) =
+                limit_number(&line.value, None).filter(|value| !logarithmic || *value > 0.0)
+            {
+                low = low.min(value);
+                high = high.max(value);
+            }
+        }
+        (low, high)
+    }
+
+    fn data_value_extent(&self) -> (f64, f64) {
         let logarithmic = self.value_options().logarithmic;
         let drawable = |value: f64| !logarithmic || value > 0.0;
         if self.stacking == Stacking::Full {
@@ -628,6 +742,13 @@ impl<'a> Layout<'a> {
             for point in &series.points {
                 low = low.min(point.x);
                 high = high.max(point.x);
+            }
+        }
+        // A line the user drew is in view, as far as the limits they set allow.
+        for line in self.lines().iter().filter(|line| !self.on_value_axis(line)) {
+            if let Some(value) = limit_number(&line.value, Some(x_kind)) {
+                low = low.min(value);
+                high = high.max(value);
             }
         }
         let given_low = options
@@ -1007,8 +1128,15 @@ impl ChartScene {
             chrome: Vec::new(),
             legend: Vec::new(),
             hover: HoverModel::Bars(Vec::new()),
+            pointer: PointerModel {
+                axes: axes.clone(),
+                projection,
+                x_kind: data.x_kind,
+                horizontal_chart: layout.horizontal,
+            },
         };
         scene.draw_axes(&layout, &axes, projection);
+        scene.draw_reference_lines(&layout, &axes, projection);
         if data.kind.is_bars() {
             scene.draw_bars(&layout, &axes, projection);
         } else {
@@ -1440,6 +1568,175 @@ impl ChartScene {
         self.hover = HoverModel::Bars(hits);
     }
 
+    /// The lines the user drew, under the series so that the data stays in front, with their
+    /// labels above everything.
+    fn draw_reference_lines(&mut self, layout: &Layout, axes: &Axes, projection: Projection) {
+        let plot = self.plot;
+        let size = layout.sizes.text * 0.9;
+        for line in layout.lines() {
+            // The vertical axis positions a horizontal line, and the horizontal one a vertical line.
+            let on_vertical_axis = line.orientation == LineOrientation::Horizontal;
+            let position = if layout.on_value_axis(line) {
+                let value = limit_number(&line.value, None);
+                value
+                    .filter(|value| !axes.value.logarithmic || *value > 0.0)
+                    .map(|value| projection.along_values(axes.value.fraction(value)))
+            } else {
+                match &axes.category {
+                    CategoryAxis::Continuous(axis) => {
+                        limit_number(&line.value, Some(layout.data.x_kind))
+                            .filter(|value| !axis.logarithmic || *value > 0.0)
+                            .map(|value| projection.along_categories(axis.fraction(value)))
+                    }
+                    CategoryAxis::Bands(labels) => {
+                        let text = line.value_text();
+                        labels.iter().position(|label| *label == text).map(|index| {
+                            projection.along_categories((index as f64 + 0.5) / labels.len() as f64)
+                        })
+                    }
+                }
+            };
+            let Some(position) = position.filter(|position| position.is_finite()) else {
+                continue;
+            };
+            let position = Self::snap(position);
+            let (from, to) = if on_vertical_axis {
+                ((plot.left, position), (plot.right(), position))
+            } else {
+                ((position, plot.top), (position, plot.bottom()))
+            };
+            let role = Role::Reference(line.color.unwrap_or(LineColor::Grey));
+            self.plot_items.push(if line.is_dashed() {
+                Item::DashedSegment {
+                    from,
+                    to,
+                    role,
+                    width: 1.5,
+                }
+            } else {
+                Item::Segment {
+                    from,
+                    to,
+                    role,
+                    width: 1.5,
+                }
+            });
+
+            let Some(label) = line.label.as_ref().filter(|label| !label.is_empty()) else {
+                continue;
+            };
+            let inside = if on_vertical_axis {
+                position >= plot.top && position <= plot.bottom()
+            } else {
+                position >= plot.left && position <= plot.right()
+            };
+            if !inside {
+                continue;
+            }
+            let label = truncate(label, size, plot.width * 0.5, layout.measure);
+            let width = layout.measure.width(&label, size);
+            let (at, horizontal, vertical) = if on_vertical_axis {
+                // At the right end, above the line, or below it when there is no room above.
+                if position - Sizes::line(size) >= plot.top {
+                    (
+                        (plot.right() - 4.0, position - 3.0),
+                        Anchor::End,
+                        VerticalAnchor::Bottom,
+                    )
+                } else {
+                    (
+                        (plot.right() - 4.0, position + 3.0),
+                        Anchor::End,
+                        VerticalAnchor::Top,
+                    )
+                }
+            } else if position + 4.0 + width <= plot.right() {
+                // At the top, to the right of the line, or to its left when there is no room.
+                (
+                    (position + 4.0, plot.top + 3.0),
+                    Anchor::Start,
+                    VerticalAnchor::Top,
+                )
+            } else {
+                (
+                    (position - 4.0, plot.top + 3.0),
+                    Anchor::End,
+                    VerticalAnchor::Top,
+                )
+            };
+            self.chrome.push(Item::Text {
+                text: label,
+                at,
+                size,
+                horizontal,
+                vertical,
+                role,
+                bold: false,
+            });
+        }
+    }
+
+    /// The values of the axes at a point of the chart, for a line to be put there. `None` outside
+    /// the plot.
+    pub fn pointer_position(&self, x: f32, y: f32) -> Option<PointerPosition> {
+        if !self.plot.contains(x, y) {
+            return None;
+        }
+        let model = &self.pointer;
+        let projection = model.projection;
+        let plot = self.plot;
+        // The fraction of the way along an axis, from its start, as the projection spreads it.
+        let along_categories = |position: f32, start: f32, length: f32| {
+            let inset = projection.category_inset;
+            f64::from((position - start - inset) / (length - 2.0 * inset))
+        };
+        let (category_position, category_start, category_length) = if model.horizontal_chart {
+            (y, plot.top, plot.height)
+        } else {
+            (x, plot.left, plot.width)
+        };
+        let category = match &model.axes.category {
+            CategoryAxis::Continuous(axis) => {
+                let fraction = along_categories(category_position, category_start, category_length);
+                let kind = Some(model.x_kind);
+                Some(AxisValue {
+                    text: axis_value_text(axis.value_at(fraction), axis, kind),
+                })
+            }
+            CategoryAxis::Bands(labels) => {
+                let fraction = f64::from((category_position - category_start) / category_length);
+                let index = (fraction * labels.len() as f64).floor().max(0.0) as usize;
+                labels.get(index).map(|label| AxisValue {
+                    text: label.clone(),
+                })
+            }
+        };
+        let value_fraction = if model.horizontal_chart {
+            f64::from((x - plot.left) / plot.width)
+        } else {
+            f64::from((plot.bottom() - y) / plot.height)
+        };
+        let value = AxisValue {
+            text: axis_value_text(
+                model.axes.value.value_at(value_fraction),
+                &model.axes.value,
+                None,
+            ),
+        };
+        // The category axis is the vertical one for horizontal bars.
+        if model.horizontal_chart {
+            Some(PointerPosition {
+                x: Some(value),
+                y: category,
+            })
+        } else {
+            Some(PointerPosition {
+                x: category,
+                y: Some(value),
+            })
+        }
+    }
+
     fn draw_legend(&mut self, layout: &Layout, plan: LegendPlan) {
         let size = layout.sizes.text;
         let row_height = Sizes::line(size) + 2.0;
@@ -1614,6 +1911,8 @@ pub struct SvgStyle {
     pub axis: String,
     /// By `color_index`, which wraps around when there are more series than style.
     pub series: Vec<String>,
+    /// The colours of reference lines, in the order of `LineColor::ALL`.
+    pub reference: Vec<String>,
     /// A CSS font family list. The layout measured text with a guess, so a font of about the
     /// width of Helvetica is the one the picture was laid out for.
     pub font_family: String,
@@ -1633,6 +1932,9 @@ impl SvgStyle {
             ]
             .map(String::from)
             .to_vec(),
+            reference: ["#6b7280", "#d1242f", "#c4610f", "#2c8a3d", "#1f6fd1"]
+                .map(String::from)
+                .to_vec(),
             font_family: "Helvetica, Arial, sans-serif".into(),
         }
     }
@@ -1650,6 +1952,9 @@ impl SvgStyle {
             ]
             .map(String::from)
             .to_vec(),
+            reference: ["#9aa3ad", "#f47067", "#e0883b", "#57ab5a", "#539bf5"]
+                .map(String::from)
+                .to_vec(),
             font_family: "Helvetica, Arial, sans-serif".into(),
         }
     }
@@ -1664,6 +1969,10 @@ impl SvgStyle {
                 .series
                 .get(index % self.series.len().max(1))
                 .map_or(self.text.as_str(), String::as_str),
+            Role::Reference(color) => self
+                .reference
+                .get(color.index())
+                .map_or(self.muted.as_str(), String::as_str),
         }
     }
 }
@@ -1695,6 +2004,22 @@ fn svg_item(item: &Item, style: &SvgStyle, out: &mut String) {
             let _ = writeln!(
                 out,
                 r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="{width}"/>"#,
+                from.0,
+                from.1,
+                to.0,
+                to.1,
+                style.of(*role)
+            );
+        }
+        Item::DashedSegment {
+            from,
+            to,
+            role,
+            width,
+        } => {
+            let _ = writeln!(
+                out,
+                r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="{width}" stroke-dasharray="6 4"/>"#,
                 from.0,
                 from.1,
                 to.0,
@@ -1912,7 +2237,9 @@ mod tests {
             .chain(&scene.plot_items)
             .chain(&scene.chrome)
             .all(|item| match item {
-                Item::Segment { from, to, .. } => finite(*from) && finite(*to),
+                Item::Segment { from, to, .. } | Item::DashedSegment { from, to, .. } => {
+                    finite(*from) && finite(*to)
+                }
                 Item::Polyline { points, .. } => points.iter().copied().all(finite),
                 Item::Rect { rect, .. } => [rect.left, rect.top, rect.width, rect.height]
                     .iter()
@@ -2523,6 +2850,291 @@ mod tests {
             })
             .count();
         assert!(ticks_left >= 3, "ticks at the value labels: {ticks_left}");
+    }
+
+    /// The reference lines of a scene: `(from, to, dashed, role)`.
+    fn reference_lines(scene: &ChartScene) -> Vec<((f32, f32), (f32, f32), bool, Role)> {
+        scene
+            .plot_items
+            .iter()
+            .filter_map(|item| match item {
+                Item::DashedSegment {
+                    from,
+                    to,
+                    role: role @ Role::Reference(_),
+                    ..
+                } => Some((*from, *to, true, *role)),
+                Item::Segment {
+                    from,
+                    to,
+                    role: role @ Role::Reference(_),
+                    ..
+                } => Some((*from, *to, false, *role)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_horizontal_line_is_dashed_at_its_value_and_a_vertical_one_is_at_its_time() {
+        let (_, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yMin": 0, "yMax": 100, "referenceLines": [
+                {"orientation": "Horizontal", "value": 50},
+                {"orientation": "Vertical", "value": "2007-01-05T00:00:00Z"}
+            ]}),
+        );
+        let lines = reference_lines(&scene);
+        assert_eq!(lines.len(), 2);
+        let (from, to, dashed, role) = lines[0];
+        assert!(dashed, "dashed unless it says solid");
+        assert_eq!(role, Role::Reference(LineColor::Grey));
+        assert_eq!(
+            (from.0, to.0),
+            (scene.plot.left, scene.plot.right()),
+            "across the plot"
+        );
+        assert!(
+            (from.1 - (scene.plot.top + scene.plot.height / 2.0)).abs() < 1.0,
+            "half way up"
+        );
+        let (from, to, ..) = lines[1];
+        assert_eq!(
+            (from.1, to.1),
+            (scene.plot.top, scene.plot.bottom()),
+            "up the plot"
+        );
+        // Day 5 of ten days, inset from the ends like the data.
+        let expected =
+            scene.plot.left + DATA_INSET + (scene.plot.width - 2.0 * DATA_INSET) * 4.0 / 9.0;
+        assert!(
+            (from.0 - expected).abs() < 1.0,
+            "{} against {expected}",
+            from.0
+        );
+    }
+
+    #[test]
+    fn a_line_can_be_solid_and_coloured_and_have_a_label() {
+        let (_, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "referenceLines": [
+                {"orientation": "Horizontal", "value": 50, "style": "Solid", "color": "Green", "label": "target"}
+            ]}),
+        );
+        let lines = reference_lines(&scene);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].2, "solid");
+        assert_eq!(lines[0].3, Role::Reference(LineColor::Green));
+        let label = scene.chrome.iter().find_map(|item| match item {
+            Item::Text { text, role, at, .. } if text == "target" => Some((*role, *at)),
+            _ => None,
+        });
+        let (role, at) = label.expect("the label is drawn");
+        assert_eq!(role, Role::Reference(LineColor::Green));
+        assert!(
+            scene.plot.contains(at.0 - 1.0, at.1),
+            "inside the plot, at its right end"
+        );
+    }
+
+    #[test]
+    fn the_axes_grow_to_hold_a_line_unless_the_limits_say_otherwise() {
+        let line = |value: i64| json!([{"orientation": "Horizontal", "value": value}]);
+        let (_, grown) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "referenceLines": line(1000)}),
+        );
+        assert!(
+            texts(&grown.chrome).contains(&"1k".to_string())
+                || texts(&grown.chrome).contains(&"1000".to_string()),
+            "{:?}",
+            texts(&grown.chrome)
+        );
+        let inside = reference_lines(&grown)[0].0.1;
+        assert!(
+            inside >= grown.plot.top && inside <= grown.plot.bottom(),
+            "in view"
+        );
+
+        let (_, limited) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yMin": 0, "yMax": 100, "referenceLines": line(1000)}),
+        );
+        let outside = reference_lines(&limited)[0].0.1;
+        assert!(
+            outside < limited.plot.top,
+            "past the limit it is cut by the plot, not drawn inside"
+        );
+        assert!(
+            !limited.chrome.iter().any(|item| matches!(
+                item,
+                Item::Text {
+                    role: Role::Reference(_),
+                    ..
+                }
+            )),
+            "and has no label there"
+        );
+
+        // A vertical line past the last time moves the time axis out to it.
+        let (_, later) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "referenceLines": [{"orientation": "Vertical", "value": "2007-03-01T00:00:00Z"}]}),
+        );
+        let x = reference_lines(&later)[0].0.0;
+        assert!(
+            x <= later.plot.right() && x > later.plot.left + later.plot.width * 0.9,
+            "{x}"
+        );
+    }
+
+    #[test]
+    fn on_a_chart_of_categories_a_line_is_at_a_category_or_a_value() {
+        let (_, column) = scene_of(
+            &states(),
+            json!({"type": "Column", "referenceLines": [
+                {"orientation": "Vertical", "value": "CA"},
+                {"orientation": "Horizontal", "value": 15},
+                {"orientation": "Vertical", "value": "no such state"}
+            ]}),
+        );
+        let lines = reference_lines(&column);
+        assert_eq!(lines.len(), 2, "a category that is not there gets no line");
+        let band = column.plot.width / 3.0;
+        assert!(
+            (lines[0].0.0 - (column.plot.left + band * 1.5)).abs() < 1.0,
+            "the middle of CA's band"
+        );
+
+        // In horizontal bars the values run across and the categories down.
+        let (_, bars) = scene_of(
+            &states(),
+            json!({"type": "Bar", "referenceLines": [
+                {"orientation": "Vertical", "value": 20},
+                {"orientation": "Horizontal", "value": "NY"}
+            ]}),
+        );
+        let lines = reference_lines(&bars);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            (lines[0].0.1, lines[0].1.1),
+            (bars.plot.top, bars.plot.bottom()),
+            "vertical at a value"
+        );
+        let band = bars.plot.height / 3.0;
+        assert!(
+            (lines[1].0.1 - (bars.plot.top + band * 2.5)).abs() < 1.0,
+            "horizontal at NY's band"
+        );
+    }
+
+    #[test]
+    fn a_line_that_cannot_sit_on_a_log_axis_or_has_no_number_is_not_drawn() {
+        let (_, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yAxis": "Log", "referenceLines": [
+                {"orientation": "Horizontal", "value": 0},
+                {"orientation": "Horizontal", "value": -5},
+                {"orientation": "Horizontal", "value": "soon"},
+                {"orientation": "Horizontal", "value": 20}
+            ]}),
+        );
+        assert_eq!(reference_lines(&scene).len(), 1);
+        assert!(all_coordinates_are_finite(&scene));
+    }
+
+    #[test]
+    fn the_pointer_says_what_value_it_is_over_in_words_a_line_can_use() {
+        let options = options(json!({"type": "TimeLine", "yMin": 0, "yMax": 100}));
+        let (_, scene) = scene(&two_series_over_time(), &options, &ViewState::default());
+        let point = scene
+            .plot_items
+            .iter()
+            .find_map(|item| match item {
+                Item::Polyline { points, .. } => Some(points[4]),
+                _ => None,
+            })
+            .expect("a line");
+        // Series a at day 5 is worth 50.
+        let position = scene
+            .pointer_position(point.0, point.1)
+            .expect("inside the plot");
+        assert_eq!(
+            position.x.as_ref().map(|value| value.text.as_str()),
+            Some("2007-01-05T00:00:00Z")
+        );
+        assert_eq!(
+            position.y.as_ref().map(|value| value.text.as_str()),
+            Some("50")
+        );
+        assert!(
+            scene.pointer_position(1.0, 1.0).is_none(),
+            "outside the plot"
+        );
+
+        // Those words, put in a line, draw it where the pointer was.
+        let with_lines = {
+            let mut options = options;
+            options.reference_lines = Some(vec![
+                ReferenceLine::new(
+                    LineOrientation::Horizontal,
+                    json!(position.y.unwrap().text.parse::<f64>().unwrap()),
+                ),
+                ReferenceLine::new(LineOrientation::Vertical, json!(position.x.unwrap().text)),
+            ]);
+            options
+        };
+        let (_, again) = scene_with_options(&two_series_over_time(), &with_lines);
+        let lines = reference_lines(&again);
+        assert!((lines[0].0.1 - point.1).abs() < 1.0);
+        assert!((lines[1].0.0 - point.0).abs() < 1.0);
+
+        // Categories are named, and a duration reads back.
+        let (_, column) = scene_of(&states(), json!({"type": "Column"}));
+        let second = column.plot.left + column.plot.width / 3.0 * 1.5;
+        let position = column
+            .pointer_position(second, column.plot.top + 5.0)
+            .unwrap();
+        assert_eq!(position.x.unwrap().text, "CA");
+        let (_, bars) = scene_of(&states(), json!({"type": "Bar"}));
+        let position = bars
+            .pointer_position(
+                bars.plot.left + 10.0,
+                bars.plot.top + bars.plot.height / 3.0 * 2.5,
+            )
+            .unwrap();
+        assert_eq!(
+            position.y.unwrap().text,
+            "NY",
+            "the vertical axis names the category of a bar chart"
+        );
+        assert!(position.x.is_some());
+    }
+
+    fn scene_with_options(table: &Table, options: &ChartOptions) -> (ChartData, ChartScene) {
+        scene(table, options, &ViewState::default())
+    }
+
+    #[test]
+    fn a_dashed_line_is_written_dashed_in_the_svg_with_its_colour() {
+        let (_, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "referenceLines": [
+                {"orientation": "Horizontal", "value": 50, "color": "Red"},
+                {"orientation": "Horizontal", "value": 60, "style": "Solid", "color": "Blue"}
+            ]}),
+        );
+        let svg = scene.to_svg(&SvgStyle::light());
+        assert_eq!(svg.matches("stroke-dasharray").count(), 1);
+        assert!(svg.contains(&format!(
+            r#"stroke="{}""#,
+            SvgStyle::light().reference[LineColor::Red.index()]
+        )));
+        assert!(svg.contains(&format!(
+            r#"stroke="{}""#,
+            SvgStyle::light().reference[LineColor::Blue.index()]
+        )));
     }
 
     #[test]
