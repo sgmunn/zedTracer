@@ -183,14 +183,6 @@ impl Painted {
                     };
                     paint_item(&crosshair, origin, &colours, &font, window, cx);
                 }
-                for (x, y, color_index) in &hover.marks {
-                    let mark = Item::Circle {
-                        center: (*x, *y),
-                        radius: 4.0,
-                        role: Role::Series(*color_index),
-                    };
-                    paint_item(&mark, origin, &colours, &font, window, cx);
-                }
                 if let Some(bar) = hover.bar {
                     window.paint_quad(outline(
                         to_bounds(bar, origin),
@@ -200,6 +192,21 @@ impl Painted {
                 }
             }
         });
+        // The marks of the hovered points are not clipped to the plot, so that one at an edge is
+        // whole; a point outside the plot (above an axis limit) gets none.
+        if let Some(hover) = &self.hover {
+            for (x, y, color_index) in &hover.marks {
+                if !scene.plot.contains(*x, *y) {
+                    continue;
+                }
+                let mark = Item::Circle {
+                    center: (*x, *y),
+                    radius: 4.0,
+                    role: Role::Series(*color_index),
+                };
+                paint_item(&mark, origin, &colours, &font, window, cx);
+            }
+        }
         for item in &scene.chrome {
             paint_item(item, origin, &colours, &font, window, cx);
         }

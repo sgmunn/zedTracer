@@ -249,8 +249,7 @@ const LEGEND_ROWS_BELOW: usize = 3;
 const MAXIMUM_LABEL_CHARACTERS: usize = 28;
 const MAXIMUM_HOVER_ENTRIES: usize = 12;
 const LINE_WIDTH: f32 = 1.5;
-/// How far a line chart keeps its data from the edges of the plot, so that the marker of a point
-/// at an end is not cut by the edge.
+/// How far a line chart keeps its first and last points from the ends of its category axis.
 const DATA_INSET: f32 = 8.0;
 
 #[derive(Clone, Copy)]
@@ -322,9 +321,9 @@ struct Projection {
     plot: Rect,
     /// Categories run down the screen and values across it.
     horizontal: bool,
-    /// How far in from the ends of the plot the first and last position along each axis are.
+    /// How far in from the ends of the plot the first and last position along the categories
+    /// are. The values are not inset: a line may touch the top, and the base is the axis.
     category_inset: f32,
-    value_inset: f32,
 }
 
 impl Projection {
@@ -338,11 +337,10 @@ impl Projection {
     }
 
     fn along_values(&self, fraction: f64) -> f32 {
-        let inset = self.value_inset;
         if self.horizontal {
-            self.plot.left + inset + fraction as f32 * (self.plot.width - 2.0 * inset)
+            self.plot.left + fraction as f32 * self.plot.width
         } else {
-            self.plot.bottom() - inset - fraction as f32 * (self.plot.height - 2.0 * inset)
+            self.plot.bottom() - fraction as f32 * self.plot.height
         }
     }
 
@@ -381,8 +379,14 @@ struct AxisOptions {
     show_grid: bool,
 }
 
-/// The options of the axis on the screen: the horizontal one or the vertical one.
-fn axis_options(options: &ChartOptions, screen_horizontal: bool) -> AxisOptions {
+/// The options of the axis on the screen: the horizontal one or the vertical one. Unless the
+/// options say, the gridlines go across the axis of the values and the tick marks are on the axis
+/// the data runs along.
+fn axis_options(
+    options: &ChartOptions,
+    screen_horizontal: bool,
+    is_value_axis: bool,
+) -> AxisOptions {
     let (scale, low, high, title, ticks, grid) = if screen_horizontal {
         (
             options.x_axis,
@@ -407,8 +411,8 @@ fn axis_options(options: &ChartOptions, screen_horizontal: bool) -> AxisOptions 
         minimum: low.clone(),
         maximum: high.clone(),
         title: title.clone().filter(|title| !title.is_empty()),
-        show_ticks: ticks == Some(true),
-        show_grid: grid != Some(false),
+        show_ticks: ticks.unwrap_or(!is_value_axis),
+        show_grid: grid.unwrap_or(is_value_axis),
     }
 }
 
@@ -966,8 +970,8 @@ impl ChartScene {
                 Stacking::Grouped
             },
             measure,
-            horizontal_axis: axis_options(options, true),
-            vertical_axis: axis_options(options, false),
+            horizontal_axis: axis_options(options, true, data.kind.is_bar()),
+            vertical_axis: axis_options(options, false, !data.kind.is_bar()),
         };
         let legend = layout.legend();
 
@@ -980,17 +984,18 @@ impl ChartScene {
         }
         let plot = margins.plot(width, height);
         let axes = layout.axes(plot);
-        // Lines are kept in from the edges; bars stand on the axis and fill their bands.
-        let inset = if data.kind.is_bars() { 0.0 } else { DATA_INSET };
+        // A line is kept in from the ends of its axis, so that the marker of a point at an end is
+        // not cut off; bars fill their bands.
         let projection = Projection {
             plot,
             horizontal: layout.horizontal,
-            category_inset: if matches!(axes.category, CategoryAxis::Continuous(_)) {
-                inset
+            category_inset: if !data.kind.is_bars()
+                && matches!(axes.category, CategoryAxis::Continuous(_))
+            {
+                DATA_INSET
             } else {
                 0.0
             },
-            value_inset: inset,
         };
 
         let mut scene = ChartScene {
@@ -1179,7 +1184,8 @@ impl ChartScene {
             }
         }
 
-        // A line at zero where the values cross it, then the two edges.
+        // A line at zero where the values cross it, then the one axis the data stands on or runs
+        // along; the other edge is left to the gridlines and the labels.
         if !axes.value.logarithmic && axes.value.low < 0.0 && axes.value.high > 0.0 {
             let position = Self::snap(projection.along_values(axes.value.fraction(0.0)));
             let (from, to) = if layout.horizontal {
@@ -1194,15 +1200,20 @@ impl ChartScene {
                 width: 1.0,
             });
         }
+        let (from, to) = if layout.horizontal {
+            (
+                (Self::snap(plot.left), plot.top),
+                (Self::snap(plot.left), plot.bottom()),
+            )
+        } else {
+            (
+                (plot.left, Self::snap(plot.bottom())),
+                (plot.right(), Self::snap(plot.bottom())),
+            )
+        };
         self.chrome.push(Item::Segment {
-            from: (Self::snap(plot.left), plot.top),
-            to: (Self::snap(plot.left), plot.bottom()),
-            role: Role::Axis,
-            width: 1.0,
-        });
-        self.chrome.push(Item::Segment {
-            from: (plot.left, Self::snap(plot.bottom())),
-            to: (plot.right(), Self::snap(plot.bottom())),
+            from,
+            to,
             role: Role::Axis,
             width: 1.0,
         });
@@ -2389,7 +2400,7 @@ mod tests {
                     "{kind}: x {x}"
                 );
                 assert!(
-                    y - MARKER >= scene.plot.top && y + MARKER <= scene.plot.bottom(),
+                    y >= scene.plot.top && y <= scene.plot.bottom(),
                     "{kind}: y {y}"
                 );
             }
@@ -2408,6 +2419,110 @@ mod tests {
                 .iter()
                 .all(|(x, _, _)| *x + MARKER <= limited.plot.right())
         );
+    }
+
+    /// The segments drawn in the colour of the axis, as `(horizontal, vertical)` counts.
+    fn axis_segments(scene: &ChartScene) -> (usize, usize) {
+        let mut counts = (0, 0);
+        for item in &scene.chrome {
+            if let Item::Segment {
+                from,
+                to,
+                role: Role::Axis,
+                ..
+            } = item
+            {
+                if from.1 == to.1 && (to.0 - from.0).abs() > 20.0 {
+                    counts.0 += 1;
+                } else if from.0 == to.0 && (to.1 - from.1).abs() > 20.0 {
+                    counts.1 += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    fn grid_segments(scene: &ChartScene) -> (usize, usize) {
+        let mut counts = (0, 0);
+        for item in &scene.grid {
+            if let Item::Segment { from, to, .. } = item {
+                if from.1 == to.1 {
+                    counts.0 += 1;
+                } else {
+                    counts.1 += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn a_line_chart_has_one_axis_line_gridlines_across_the_values_and_ticks_under_the_labels() {
+        let (_, scene) = scene_of(&two_series_over_time(), json!({"type": "TimeLine"}));
+        assert_eq!(
+            axis_segments(&scene),
+            (1, 0),
+            "only the axis along the bottom"
+        );
+        let (across, up) = grid_segments(&scene);
+        assert!(
+            across >= 3 && up == 0,
+            "gridlines across the values only: {across} and {up}"
+        );
+        let ticks = scene
+            .chrome
+            .iter()
+            .filter(|item| {
+                matches!(item, Item::Segment { from, to, role: Role::Axis, .. }
+                    if from.0 == to.0 && (to.1 - from.1).abs() < 10.0)
+            })
+            .count();
+        assert!(ticks >= 3, "a tick under each label: {ticks}");
+        // The lowest gridline is the axis line, not a line of its own above it.
+        let lowest = scene
+            .grid
+            .iter()
+            .filter_map(|item| match item {
+                Item::Segment { from, to, .. } if from.1 == to.1 => Some(from.1),
+                _ => None,
+            })
+            .fold(f32::MIN, f32::max);
+        assert!(
+            (lowest - scene.plot.bottom()).abs() < 1.0,
+            "{lowest} against {}",
+            scene.plot.bottom()
+        );
+    }
+
+    #[test]
+    fn a_horizontal_bar_chart_has_its_axis_line_at_the_left_and_gridlines_across_its_values() {
+        let (_, scene) = scene_of(&states(), json!({"type": "Bar"}));
+        assert_eq!(
+            axis_segments(&scene),
+            (0, 1),
+            "the categories stand on the left"
+        );
+        let (across, up) = grid_segments(&scene);
+        assert!(up >= 3 && across == 0, "{across} and {up}");
+    }
+
+    #[test]
+    fn ticks_and_gridlines_can_be_set_for_either_axis() {
+        let (_, scene) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "xShowGrid": true, "yShowGrid": false, "xShowTicks": false, "yShowTicks": true}),
+        );
+        let (across, up) = grid_segments(&scene);
+        assert!(across == 0 && up >= 3, "{across} and {up}");
+        let ticks_left = scene
+            .chrome
+            .iter()
+            .filter(|item| {
+                matches!(item, Item::Segment { from, to, role: Role::Axis, .. }
+                    if from.1 == to.1 && (to.0 - from.0).abs() < 10.0)
+            })
+            .count();
+        assert!(ticks_left >= 3, "ticks at the value labels: {ticks_left}");
     }
 
     #[test]
@@ -2449,7 +2564,7 @@ mod tests {
             .map(|point| point.1)
             .fold(f32::INFINITY, f32::min);
         assert!(
-            (highest - (scene.plot.top + DATA_INSET)).abs() < 2.0,
+            (highest - scene.plot.top).abs() < 2.0,
             "the spike reaches the top of the plot"
         );
     }

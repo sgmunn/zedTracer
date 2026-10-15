@@ -804,9 +804,9 @@ impl Render for ChartEditor {
             Self::option_switch(
                 "chart-x-grid",
                 "X gridlines",
-                options.x_show_grid != Some(false),
+                options.grid_shown(true),
                 &editor,
-                |chart, on| chart.options.x_show_grid = (!on).then_some(false),
+                |chart, on| chart.options.x_show_grid = Some(on),
             )
             .into_any_element(),
         );
@@ -814,9 +814,9 @@ impl Render for ChartEditor {
             Self::option_switch(
                 "chart-y-grid",
                 "Y gridlines",
-                options.y_show_grid != Some(false),
+                options.grid_shown(false),
                 &editor,
-                |chart, on| chart.options.y_show_grid = (!on).then_some(false),
+                |chart, on| chart.options.y_show_grid = Some(on),
             )
             .into_any_element(),
         );

@@ -24,7 +24,7 @@ pub mod typed;
 pub mod view;
 pub mod waterfall;
 
-pub use chart::{Chart, ChartDefaults, ChartOptions, ChartType};
+pub use chart::{Chart, ChartDefaults, ChartOptions, ChartType, Gridlines};
 pub use result::{
     Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, NoResultData, ResultSet, Table,
     TableView,

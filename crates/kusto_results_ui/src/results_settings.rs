@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::{Hsla, Rgba};
 use kusto_results::chart::{AspectRatio, LegendPosition, TextSize};
-use kusto_results::{ChartDefaults, Table};
+use kusto_results::{ChartDefaults, Gridlines, Table};
 use kusto_results::sequence::SequenceOptions;
 use kusto_results::timeline::TimelineOptions;
 use kusto_results::waterfall::WaterfallOptions;
@@ -115,8 +115,11 @@ fn chart_defaults(content: &settings::SettingsContent) -> ChartDefaults {
             settings::KustoChartLegend::None => LegendPosition::None,
         }),
         show_values: chart.show_values,
-        x_show_grid: chart.show_gridlines,
-        y_show_grid: chart.show_gridlines,
+        gridlines: chart.gridlines.map(|gridlines| match gridlines {
+            settings::KustoChartGridlines::Values => Gridlines::Values,
+            settings::KustoChartGridlines::Both => Gridlines::Both,
+            settings::KustoChartGridlines::None => Gridlines::None,
+        }),
         text_size: chart.text_size.map(|size| match size {
             settings::KustoChartTextSize::Auto => TextSize::Auto,
             settings::KustoChartTextSize::ExtraSmall => TextSize::ExtraSmall,
@@ -402,14 +405,14 @@ mod tests {
             assert!(defaults.open_on_chart, "a chart is what the user came for");
             assert_eq!(defaults.chart.legend_position, Some(LegendPosition::Auto));
             assert_eq!(defaults.chart.show_values, Some(false));
-            assert_eq!(defaults.chart.x_show_grid, Some(true));
+            assert_eq!(defaults.chart.gridlines, Some(Gridlines::Values));
 
             cx.update_global::<SettingsStore, _>(|store, cx| {
                 store
                     .set_user_settings(
                         r#"{ "kusto_results": { "chart": {
                             "open_on_chart": false, "legend": "bottom", "show_values": true,
-                            "show_gridlines": false, "text_size": "extra_large", "aspect_ratio": "16:9"
+                            "gridlines": "both", "text_size": "extra_large", "aspect_ratio": "16:9"
                         } } }"#,
                         cx,
                     )
@@ -419,8 +422,7 @@ mod tests {
             assert!(!changed.open_on_chart);
             assert_eq!(changed.chart.legend_position, Some(LegendPosition::Bottom));
             assert_eq!(changed.chart.show_values, Some(true));
-            assert_eq!(changed.chart.x_show_grid, Some(false));
-            assert_eq!(changed.chart.y_show_grid, Some(false));
+            assert_eq!(changed.chart.gridlines, Some(Gridlines::Both));
             assert_eq!(changed.chart.text_size, Some(TextSize::ExtraLarge));
             assert_eq!(changed.chart.aspect_ratio, Some(AspectRatio::Wide));
         });

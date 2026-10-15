@@ -308,6 +308,8 @@ and columns for a name and a number, and adds the chart for the table of the tab
 of another type that a result file holds (area, pie, scatter, graph, …) is kept exactly as it is, and its tab says it cannot
 be drawn here.
 
+**How it looks.** A chart has light gridlines across the axis of its values, one axis line along the base the data stands on or runs along (the bottom, or the left side of a horizontal bar chart), and tick marks under the labels of a time or number axis. Nothing is drawn up the other side. The **X gridlines**, **Y gridlines** and tick choices of the pane, and the `gridlines` setting, change that. A line chart keeps its first and last points a few pixels in from the ends of its axis so the marker you hover is whole, and a line past a limit you set on the value axis is cut at the edge of the plot.
+
 **Reading a chart.** The X column is the first datetime column for a time chart, otherwise the first column; the values
 are the numeric columns; and the rows are split into series by the first text column. The options of a chart can name any of
 them, and the pane below changes them. Times are in UTC. Move the pointer over a line chart and a tooltip with a crosshair
@@ -339,7 +341,7 @@ asks for.
 the clipboard, in the colours of the theme, or light or dark if the chart's `mode` says so.
 
 **Settings.** `kusto_results.chart` sets how a chart looks where it does not say itself: `legend`, `show_values`,
-`show_gridlines`, `text_size`, `aspect_ratio` and `open_on_chart`. What a chart saves wins, and a default is never written
+`gridlines` (`values`, `both` or `none`), `text_size`, `aspect_ratio` and `open_on_chart`. What a chart saves wins, and a default is never written
 into a file.
 
 **Not built yet.** Zooming into a range, panels or a second axis for several value columns (`ysplit`), binning in the

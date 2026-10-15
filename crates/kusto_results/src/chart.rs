@@ -389,6 +389,17 @@ impl ChartOptions {
         self.chart_type = chart_type.name().to_string();
     }
 
+    /// Whether the gridlines at the ticks of the axis on the screen (the horizontal one, or the
+    /// vertical one) are drawn: as the options say, else across the axis of the values only.
+    pub fn grid_shown(&self, screen_horizontal: bool) -> bool {
+        let explicit = if screen_horizontal {
+            self.x_show_grid
+        } else {
+            self.y_show_grid
+        };
+        explicit.unwrap_or(screen_horizontal == self.kind().is_some_and(ChartType::is_bar))
+    }
+
     /// Reads the options from a JSON object. Keys that are unknown, or whose value has the
     /// wrong type, stay in `extra`.
     pub fn from_map(mut map: Map<String, Value>) -> Self {
@@ -625,13 +636,21 @@ fn put<T: Serialize>(map: &mut Map<String, Value>, key: &str, value: &Option<T>)
     }
 }
 
+/// Which gridlines a chart draws when its own options say nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gridlines {
+    /// Lines across the axis of the values only.
+    Values,
+    Both,
+    None,
+}
+
 /// What a chart looks like when its own options say nothing, from the user's settings.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChartDefaults {
     pub legend_position: Option<LegendPosition>,
     pub show_values: Option<bool>,
-    pub x_show_grid: Option<bool>,
-    pub y_show_grid: Option<bool>,
+    pub gridlines: Option<Gridlines>,
     pub text_size: Option<TextSize>,
     pub aspect_ratio: Option<AspectRatio>,
 }
@@ -640,11 +659,19 @@ impl ChartOptions {
     /// The options with the defaults filled in where this chart has none of its own. What the
     /// chart saves is not changed: a default is not written to the file.
     pub fn with_defaults(&self, defaults: &ChartDefaults) -> ChartOptions {
+        // The axis of the values is the horizontal one for bars and the vertical one otherwise.
+        let values_are_across = self.kind().is_some_and(ChartType::is_bar);
+        let default_grid = |screen_horizontal: bool| match defaults.gridlines {
+            Some(Gridlines::Values) => Some(screen_horizontal == values_are_across),
+            Some(Gridlines::Both) => Some(true),
+            Some(Gridlines::None) => Some(false),
+            None => None,
+        };
         ChartOptions {
             legend_position: self.legend_position.or(defaults.legend_position),
             show_values: self.show_values.or(defaults.show_values),
-            x_show_grid: self.x_show_grid.or(defaults.x_show_grid),
-            y_show_grid: self.y_show_grid.or(defaults.y_show_grid),
+            x_show_grid: self.x_show_grid.or(default_grid(true)),
+            y_show_grid: self.y_show_grid.or(default_grid(false)),
             text_size: self.text_size.or(defaults.text_size),
             aspect_ratio: self.aspect_ratio.or(defaults.aspect_ratio),
             ..self.clone()
@@ -805,12 +832,13 @@ mod tests {
         let defaults = ChartDefaults {
             legend_position: Some(LegendPosition::Bottom),
             show_values: Some(true),
-            x_show_grid: Some(false),
+            gridlines: Some(Gridlines::None),
             text_size: Some(TextSize::Large),
             ..ChartDefaults::default()
         };
         let mut options = ChartOptions::new(ChartType::Column);
         options.legend_position = Some(LegendPosition::None);
+        options.y_show_grid = Some(true);
         let effective = options.with_defaults(&defaults);
         assert_eq!(
             effective.legend_position,
@@ -819,13 +847,48 @@ mod tests {
         );
         assert_eq!(effective.show_values, Some(true));
         assert_eq!(effective.x_show_grid, Some(false));
-        assert_eq!(effective.y_show_grid, None);
+        assert_eq!(effective.y_show_grid, Some(true), "the chart's own wins");
         assert_eq!(effective.text_size, Some(TextSize::Large));
         assert_eq!(
             options.show_values, None,
             "the original is untouched, so nothing is saved"
         );
         assert_eq!(effective.chart_type, "Column");
+    }
+
+    #[test]
+    fn the_gridlines_of_a_chart_follow_its_axis_of_values_unless_it_says_otherwise() {
+        let values = ChartDefaults {
+            gridlines: Some(Gridlines::Values),
+            ..ChartDefaults::default()
+        };
+        let column = ChartOptions::new(ChartType::Column).with_defaults(&values);
+        assert_eq!(
+            (column.x_show_grid, column.y_show_grid),
+            (Some(false), Some(true))
+        );
+        let bar = ChartOptions::new(ChartType::Bar).with_defaults(&values);
+        assert_eq!(
+            (bar.x_show_grid, bar.y_show_grid),
+            (Some(true), Some(false))
+        );
+        let both = ChartOptions::new(ChartType::Line).with_defaults(&ChartDefaults {
+            gridlines: Some(Gridlines::Both),
+            ..ChartDefaults::default()
+        });
+        assert_eq!(
+            (both.x_show_grid, both.y_show_grid),
+            (Some(true), Some(true))
+        );
+        // With no setting the chart's own options, or what its type draws, decide.
+        let line = ChartOptions::new(ChartType::TimeLine);
+        assert!(!line.grid_shown(true) && line.grid_shown(false));
+        let bar = ChartOptions::new(ChartType::Bar);
+        assert!(bar.grid_shown(true) && !bar.grid_shown(false));
+        let mut explicit = ChartOptions::new(ChartType::TimeLine);
+        explicit.x_show_grid = Some(true);
+        explicit.y_show_grid = Some(false);
+        assert!(explicit.grid_shown(true) && !explicit.grid_shown(false));
     }
 
     #[test]

@@ -1488,10 +1488,11 @@ pub struct KustoChartSettingsContent {
     /// Default: false
     pub show_values: Option<bool>,
 
-    /// Whether the gridlines are drawn.
+    /// Which gridlines are drawn: "values" draws lines across the axis of the values, "both"
+    /// adds lines at the other axis's labels, and "none" draws none.
     ///
-    /// Default: true
-    pub show_gridlines: Option<bool>,
+    /// Default: "values"
+    pub gridlines: Option<KustoChartGridlines>,
 
     /// The size of the text of a chart: "auto" follows the size of the chart.
     ///
@@ -1524,6 +1525,27 @@ pub enum KustoChartLegend {
     Auto,
     Right,
     Bottom,
+    None,
+}
+
+/// Which gridlines of a chart are drawn.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KustoChartGridlines {
+    Values,
+    Both,
     None,
 }
 
