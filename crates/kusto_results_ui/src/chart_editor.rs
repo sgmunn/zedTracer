@@ -6,8 +6,8 @@
 
 use editor::{Editor, EditorEvent};
 use gpui::{
-    Anchor, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
-    Subscription, WeakEntity, Window, div, px,
+    Anchor, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    ScrollHandle, SharedString, Subscription, WeakEntity, Window, actions, div, px,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::chart::{
@@ -15,11 +15,25 @@ use kusto_results::chart::{
 };
 use kusto_results::{Chart, ChartType};
 use serde_json::{Number, Value};
-use ui::{Button, Checkbox, ContextMenu, DropdownMenu, PopoverMenuHandle, ToggleState, prelude::*};
+use ui::{
+    Button, ContextMenu, DropdownMenu, PopoverMenuHandle, SwitchField, ToggleState, prelude::*,
+};
+
+actions!(
+    chart_editor,
+    [
+        /// Moves to the next field of the chart editor.
+        FocusNextField,
+        /// Moves to the previous field of the chart editor.
+        FocusPreviousField,
+    ]
+);
 
 pub(crate) enum ChartEditorEvent {
     Changed(Chart),
     Remove,
+    /// The user asked to put the editor away.
+    Close,
 }
 
 /// A column of the table the chart reads.
@@ -45,11 +59,17 @@ struct Dropdown {
 
 struct Input {
     editor: Entity<Editor>,
+    /// The editor's own focus handle, made a tab stop, so Tab reaches the field.
+    focus: FocusHandle,
     _subscription: Subscription,
 }
 
 pub(crate) struct ChartEditor {
     focus_handle: FocusHandle,
+    scroll_handle: ScrollHandle,
+    /// One for each row of the pane, so the row that takes focus can be scrolled into view.
+    row_handles: Vec<FocusHandle>,
+    _row_subscriptions: Vec<Subscription>,
     chart: Chart,
     columns: Vec<ColumnInfo>,
     effective: Effective,
@@ -323,6 +343,9 @@ impl ChartEditor {
 
         Self {
             focus_handle: cx.focus_handle(),
+            scroll_handle: ScrollHandle::new(),
+            row_handles: Vec::new(),
+            _row_subscriptions: Vec::new(),
             chart,
             columns,
             effective,
@@ -398,9 +421,30 @@ impl ChartEditor {
                 this.changed(cx);
             }
         });
+        let focus = editor.focus_handle(cx).tab_stop(true);
         Input {
             editor,
+            focus,
             _subscription,
+        }
+    }
+
+    /// Puts the cursor in the first field, so the pane can be used without the mouse.
+    pub(crate) fn focus_first(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.name.focus, cx);
+    }
+
+    /// Makes a handle, and a subscription that scrolls the pane to its row, for each row up to
+    /// `count`.
+    fn ensure_rows(&mut self, count: usize, window: &mut Window, cx: &mut Context<Self>) {
+        while self.row_handles.len() < count {
+            let index = self.row_handles.len();
+            let handle = cx.focus_handle();
+            self._row_subscriptions
+                .push(cx.on_focus_in(&handle, window, move |this, _, _| {
+                    this.scroll_handle.scroll_to_item(index)
+                }));
+            self.row_handles.push(handle);
         }
     }
 
@@ -408,6 +452,16 @@ impl ChartEditor {
     pub(crate) fn edit(&mut self, change: impl FnOnce(&mut Chart), cx: &mut Context<Self>) {
         change(&mut self.chart);
         self.changed(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn y_max_editor(&self) -> Entity<Editor> {
+        self.y_max.editor.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn name_focus(&self) -> FocusHandle {
+        self.name.focus.clone()
     }
 
     #[cfg(test)]
@@ -446,7 +500,7 @@ impl ChartEditor {
         self.changed(cx);
     }
 
-    fn row(label: &'static str, control: impl IntoElement) -> impl IntoElement {
+    fn row(label: &'static str, control: impl IntoElement) -> Div {
         h_flex()
             .justify_between()
             .items_center()
@@ -455,10 +509,12 @@ impl ChartEditor {
             .child(control)
     }
 
-    fn section(title: &'static str) -> impl IntoElement {
-        Label::new(title)
-            .size(LabelSize::Small)
-            .weight(gpui::FontWeight::BOLD)
+    fn section(title: &'static str) -> Div {
+        div().pt_1().child(
+            Label::new(title)
+                .size(LabelSize::Small)
+                .weight(gpui::FontWeight::BOLD),
+        )
     }
 
     fn dropdown_button(
@@ -469,9 +525,16 @@ impl ChartEditor {
         DropdownMenu::new(id, label, dropdown.menu.clone())
             .handle(dropdown.handle.clone())
             .attach(Anchor::BottomLeft)
+            .tab_index(0)
     }
 
-    fn input_box(input: &Input, border: gpui::Hsla) -> Div {
+    fn input_box(input: &Input, window: &Window, cx: &App) -> Div {
+        let colors = cx.theme().colors();
+        let border = if input.focus.contains_focused(window, cx) {
+            colors.border_focused
+        } else {
+            colors.border
+        };
         div()
             .w(px(150.))
             .px_2()
@@ -479,48 +542,49 @@ impl ChartEditor {
             .border_1()
             .border_color(border)
             .rounded_sm()
+            .track_focus(&input.focus)
             .child(input.editor.clone())
     }
 
-    fn checkbox(
+    fn switch(
+        id: impl Into<gpui::ElementId>,
+        label: impl Into<SharedString>,
+        on: bool,
+        editor: &WeakEntity<Self>,
+        apply: impl Fn(&mut Self, bool, &mut Context<Self>) + 'static,
+    ) -> SwitchField {
+        let editor = editor.clone();
+        SwitchField::new(id, Some(label), None, state(on), move |new_state, _, cx| {
+            let on = matches!(new_state, ToggleState::Selected);
+            editor.update(cx, |this, cx| apply(this, on, cx)).log_err();
+        })
+        .tab_index(0)
+    }
+
+    fn option_switch(
         id: &'static str,
         label: &'static str,
         on: bool,
         editor: &WeakEntity<Self>,
         apply: impl Fn(&mut Chart, bool) + 'static,
-    ) -> Checkbox {
-        let editor = editor.clone();
-        Checkbox::new(id, state(on))
-            .label(label)
-            .label_size(LabelSize::Small)
-            .on_click(move |new_state, _, cx| {
-                let on = matches!(new_state, ToggleState::Selected);
-                editor
-                    .update(cx, |this, cx| {
-                        apply(&mut this.chart, on);
-                        this.changed(cx);
-                    })
-                    .log_err();
-            })
+    ) -> SwitchField {
+        Self::switch(id, label, on, editor, move |this, on, cx| {
+            apply(&mut this.chart, on);
+            this.changed(cx);
+        })
     }
 
-    fn column_checkbox(
+    fn column_switch(
         id: (&'static str, usize),
         name: &SharedString,
         on: bool,
         editor: &WeakEntity<Self>,
         toggle: fn(&mut Self, &str, &mut Context<Self>),
-    ) -> Checkbox {
-        let editor = editor.clone();
+    ) -> SwitchField {
         let column = name.clone();
-        Checkbox::new(id, state(on))
-            .label(name.clone())
-            .label_size(LabelSize::Small)
-            .on_click(move |_, _, cx| {
-                editor
-                    .update(cx, |this, cx| toggle(this, &column, cx))
-                    .log_err();
-            })
+        Self::switch(id, name.clone(), on, editor, move |this, _, cx| {
+            toggle(this, &column, cx)
+        })
     }
 }
 
@@ -573,7 +637,7 @@ fn text_size_label(size: Option<TextSize>) -> &'static str {
 }
 
 impl Render for ChartEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let options = self.chart.options.clone();
         let border = cx.theme().colors().border;
         let editor = cx.weak_entity();
@@ -586,7 +650,12 @@ impl Render for ChartEditor {
             (None, Some(effective)) => format!("Auto ({effective})"),
             (None, None) => "Auto".to_string(),
         };
-        let value_columns: Vec<_> =
+        let selected = |chosen: &Option<Vec<String>>, effective: &[String], name: &str| match chosen
+        {
+            Some(names) if !names.is_empty() => names.iter().any(|chosen| chosen == name),
+            _ => effective.iter().any(|chosen| chosen == name),
+        };
+        let value_switches: Vec<_> =
             self.columns
                 .iter()
                 .enumerate()
@@ -596,107 +665,107 @@ impl Render for ChartEditor {
                             names.iter().any(|name| name == column.name.as_ref())
                         })
                 })
-                .map(|(index, column)| (index, column.name.clone()))
+                .map(|(index, column)| {
+                    Self::column_switch(
+                        ("chart-value-column", index),
+                        &column.name,
+                        selected(&options.y_columns, &self.effective.values, &column.name),
+                        &editor,
+                        Self::toggle_value_column,
+                    )
+                })
                 .collect();
-        let value_checkboxes: Vec<_> = value_columns
-            .iter()
-            .map(|(index, name)| {
-                let on = match &options.y_columns {
-                    Some(names) if !names.is_empty() => names.iter().any(|n| n == name.as_ref()),
-                    _ => self.effective.values.iter().any(|n| n == name.as_ref()),
-                };
-                Self::column_checkbox(
-                    ("chart-value-column", *index),
-                    name,
-                    on,
-                    &editor,
-                    Self::toggle_value_column,
-                )
-            })
-            .collect();
-        let series_checkboxes: Vec<_> = self
+        let series_switches: Vec<_> = self
             .columns
             .iter()
             .enumerate()
             .map(|(index, column)| {
-                let on = match &options.series_columns {
-                    Some(names) if !names.is_empty() => {
-                        names.iter().any(|n| n == column.name.as_ref())
-                    }
-                    _ => self
-                        .effective
-                        .series
-                        .iter()
-                        .any(|n| n == column.name.as_ref()),
-                };
-                Self::column_checkbox(
+                Self::column_switch(
                     ("chart-series-column", index),
                     &column.name,
-                    on,
+                    selected(
+                        &options.series_columns,
+                        &self.effective.series,
+                        &column.name,
+                    ),
                     &editor,
                     Self::toggle_series_column,
                 )
             })
             .collect();
         let table_label = self.chart.table_name.clone().unwrap_or_default();
+        let input = |input: &Input| Self::input_box(input, window, cx);
 
-        v_flex()
-            .id("chart-editor")
-            .debug_selector(|| "chart-editor".to_string())
-            .track_focus(&self.focus_handle)
-            .w(px(300.))
-            .h_full()
-            .flex_none()
-            .overflow_y_scroll()
-            .gap_2()
-            .p_2()
-            .border_l_1()
-            .border_color(border)
-            .child(Self::section("Chart"))
-            .child(Self::row("Name", Self::input_box(&self.name, border)))
-            .child(Self::row(
+        // The rows, in the order they are on the screen, which is the order Tab goes in.
+        let mut rows: Vec<AnyElement> = Vec::new();
+        rows.push(Self::section("Chart").into_any_element());
+        rows.push(Self::row("Name", input(&self.name)).into_any_element());
+        rows.push(
+            Self::row(
                 "Type",
                 Self::dropdown_button("chart-type", type_label, &self.chart_type),
-            ))
-            .children(self.table.as_ref().map(|table| {
+            )
+            .into_any_element(),
+        );
+        if let Some(table) = &self.table {
+            rows.push(
                 Self::row(
                     "Table",
                     Self::dropdown_button("chart-table", table_label, table),
                 )
-            }))
-            .child(Self::section("Data"))
-            .child(Self::row(
-                "X",
+                .into_any_element(),
+            );
+        }
+        rows.push(Self::section("Data").into_any_element());
+        rows.push(
+            Self::row(
+                "X column",
                 Self::dropdown_button("chart-x-column", x_label, &self.x_column),
-            ))
-            .child(
-                Label::new("Values")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
             )
-            .children(value_checkboxes)
-            .child(
-                Label::new("Split into series by")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            )
-            .children(series_checkboxes)
-            .child(Self::row(
-                "Most series",
-                Self::input_box(&self.max_series, border),
-            ))
-            .child(Self::checkbox(
+            .into_any_element(),
+        );
+        rows.push(
+            Label::new("Values (Y)")
+                .size(LabelSize::Small)
+                .color(Color::Muted)
+                .into_any_element(),
+        );
+        rows.extend(
+            value_switches
+                .into_iter()
+                .map(IntoElement::into_any_element),
+        );
+        rows.push(
+            Label::new("Split into series by")
+                .size(LabelSize::Small)
+                .color(Color::Muted)
+                .into_any_element(),
+        );
+        rows.extend(
+            series_switches
+                .into_iter()
+                .map(IntoElement::into_any_element),
+        );
+        rows.push(Self::row("Most series", input(&self.max_series)).into_any_element());
+        rows.push(
+            Self::option_switch(
                 "chart-accumulate",
                 "Running total",
                 options.accumulate == Some(true),
                 &editor,
                 |chart, on| chart.options.accumulate = on.then_some(true),
-            ))
-            .child(Self::row(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::row(
                 "Sort",
                 Self::dropdown_button("chart-sort", sort_label(options.sort), &self.sort),
-            ))
-            .child(Self::row(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::row(
                 "Rows at the same X",
                 Self::dropdown_button(
                     "chart-aggregation",
@@ -705,100 +774,146 @@ impl Render for ChartEditor {
                         .map_or("Not combined", Aggregation::label),
                     &self.aggregation,
                 ),
-            ))
-            .child(Self::section("Titles"))
-            .child(Self::row("Title", Self::input_box(&self.title, border)))
-            .child(Self::row(
-                "Horizontal axis",
-                Self::input_box(&self.x_title, border),
-            ))
-            .child(Self::row(
-                "Vertical axis",
-                Self::input_box(&self.y_title, border),
-            ))
-            .child(Self::section("Axes"))
-            .child(Self::row(
-                "Horizontal scale",
+            )
+            .into_any_element(),
+        );
+        rows.push(Self::section("Titles").into_any_element());
+        rows.push(Self::row("Title", input(&self.title)).into_any_element());
+        rows.push(Self::row("X axis", input(&self.x_title)).into_any_element());
+        rows.push(Self::row("Y axis", input(&self.y_title)).into_any_element());
+        rows.push(Self::section("Axes").into_any_element());
+        rows.push(
+            Self::row(
+                "X scale",
                 Self::dropdown_button("chart-x-scale", scale_label(options.x_axis), &self.x_scale),
-            ))
-            .child(Self::row(
-                "Horizontal from",
-                Self::input_box(&self.x_min, border),
-            ))
-            .child(Self::row(
-                "Horizontal to",
-                Self::input_box(&self.x_max, border),
-            ))
-            .child(Self::row(
-                "Vertical scale",
+            )
+            .into_any_element(),
+        );
+        rows.push(Self::row("X from", input(&self.x_min)).into_any_element());
+        rows.push(Self::row("X to", input(&self.x_max)).into_any_element());
+        rows.push(
+            Self::row(
+                "Y scale",
                 Self::dropdown_button("chart-y-scale", scale_label(options.y_axis), &self.y_scale),
-            ))
-            .child(Self::row(
-                "Vertical from",
-                Self::input_box(&self.y_min, border),
-            ))
-            .child(Self::row(
-                "Vertical to",
-                Self::input_box(&self.y_max, border),
-            ))
-            .child(Self::checkbox(
+            )
+            .into_any_element(),
+        );
+        rows.push(Self::row("Y from", input(&self.y_min)).into_any_element());
+        rows.push(Self::row("Y to", input(&self.y_max)).into_any_element());
+        rows.push(
+            Self::option_switch(
                 "chart-x-grid",
-                "Vertical gridlines",
+                "X gridlines",
                 options.x_show_grid != Some(false),
                 &editor,
                 |chart, on| chart.options.x_show_grid = (!on).then_some(false),
-            ))
-            .child(Self::checkbox(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::option_switch(
                 "chart-y-grid",
-                "Horizontal gridlines",
+                "Y gridlines",
                 options.y_show_grid != Some(false),
                 &editor,
                 |chart, on| chart.options.y_show_grid = (!on).then_some(false),
-            ))
-            .child(Self::section("Look"))
-            .child(Self::row(
+            )
+            .into_any_element(),
+        );
+        rows.push(Self::section("Look").into_any_element());
+        rows.push(
+            Self::row(
                 "Legend",
                 Self::dropdown_button(
                     "chart-legend",
                     legend_label(options.legend_position),
                     &self.legend,
                 ),
-            ))
-            .child(Self::checkbox(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::option_switch(
                 "chart-show-values",
                 "Show values on bars",
                 options.show_values == Some(true),
                 &editor,
                 |chart, on| chart.options.show_values = on.then_some(true),
-            ))
-            .child(Self::checkbox(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::option_switch(
                 "chart-show-markers",
                 "Mark the points of a line",
                 options.show_markers == Some(true),
                 &editor,
                 |chart, on| chart.options.show_markers = on.then_some(true),
-            ))
-            .child(Self::row(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::row(
                 "Aspect ratio",
                 Self::dropdown_button(
                     "chart-aspect",
                     aspect_label(options.aspect_ratio),
                     &self.aspect_ratio,
                 ),
-            ))
-            .child(Self::row(
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            Self::row(
                 "Text size",
                 Self::dropdown_button(
                     "chart-text-size",
                     text_size_label(options.text_size),
                     &self.text_size,
                 ),
-            ))
-            .child(
-                div().pt_2().child(
-                    Button::new("chart-remove", "Remove chart")
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ChartEditorEvent::Remove))),
-                ),
             )
+            .into_any_element(),
+        );
+        rows.push(
+            div()
+                .pt_2()
+                .child(
+                    Button::new("chart-remove", "Remove chart")
+                        .tab_index(0i16)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ChartEditorEvent::Remove))),
+                )
+                .into_any_element(),
+        );
+
+        self.ensure_rows(rows.len(), window, cx);
+        let rows: Vec<_> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                div()
+                    .id(("chart-editor-row", index))
+                    .track_focus(&self.row_handles[index])
+                    .child(row)
+            })
+            .collect();
+
+        v_flex()
+            .id("chart-editor")
+            .debug_selector(|| "chart-editor".to_string())
+            .key_context("ChartEditor")
+            .track_focus(&self.focus_handle)
+            .track_scroll(&self.scroll_handle)
+            .on_action(cx.listener(|_, _: &FocusNextField, window, cx| window.focus_next(cx)))
+            .on_action(cx.listener(|_, _: &FocusPreviousField, window, cx| window.focus_prev(cx)))
+            .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| cx.emit(ChartEditorEvent::Close)))
+            .w(px(300.))
+            .h_full()
+            .flex_none()
+            .overflow_y_scroll()
+            .gap_2()
+            .p_2()
+            .border_l_1()
+            .border_color(border)
+            .children(rows)
     }
 }

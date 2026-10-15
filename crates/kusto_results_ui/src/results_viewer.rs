@@ -2893,6 +2893,134 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn an_axis_limit_typed_into_the_pane_changes_the_axis_with_or_without_its_partner(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "ColumnStacked100", "xColumn": "EventType", "yColumns": ["Events"] } }])),
+        )
+        .await;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = chart_view(&viewer, cx);
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        assert!(
+            view.read_with(cx, |view, _| view.scene_texts())
+                .contains(&"100%".to_string())
+        );
+
+        // Only the top limit is typed.
+        let to = editor.read_with(cx, |editor, _| editor.y_max_editor());
+        to.update_in(cx, |to, window, cx| to.set_text("50", window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let texts = view.read_with(cx, |view, _| view.scene_texts());
+        assert!(texts.contains(&"50%".to_string()), "{texts:?}");
+        assert!(!texts.contains(&"100%".to_string()), "{texts:?}");
+
+        // Clearing it puts the axis back.
+        to.update_in(cx, |to, window, cx| to.set_text("", window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            view.read_with(cx, |view, _| view.scene_texts())
+                .contains(&"100%".to_string())
+        );
+
+        to.update_in(cx, |to, window, cx| to.set_text("80", window, cx));
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert_eq!(
+            reread.charts[0]
+                .options
+                .y_max
+                .as_ref()
+                .and_then(|limit| limit.as_f64()),
+            Some(80.0)
+        );
+    }
+
+    #[gpui::test]
+    async fn the_pane_can_be_used_from_the_keyboard(cx: &mut TestAppContext) {
+        let (viewer, _fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+        )
+        .await;
+        cx.update(|_, cx| {
+            let bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+                "keymaps/default-macos.json",
+                cx,
+            )
+            .expect("the default keymap loads");
+            cx.bind_keys(bindings);
+        });
+        let view = chart_view(&viewer, cx);
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        let name = editor.read_with(cx, |editor, _| editor.name_focus());
+        let pane = editor.read_with(cx, |editor, cx| editor.focus_handle(cx));
+        let focused = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "opening the pane puts the cursor in its first field"
+        );
+
+        // Tab goes through every control in turn and comes back to the first, from inside a text
+        // field as well as from a dropdown or a switch.
+        let first = focused(cx);
+        let mut visited = vec![first.clone()];
+        for _ in 0..60 {
+            cx.simulate_keystrokes("tab");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let now = focused(cx);
+            assert!(
+                cx.update(|window, cx| pane.contains_focused(window, cx)),
+                "focus stays in the pane"
+            );
+            if now == first {
+                break;
+            }
+            visited.push(now);
+        }
+        assert!(
+            visited.len() >= 25,
+            "{} stops: the name, the type, the columns, the options and the button",
+            visited.len()
+        );
+        let repeats = visited
+            .iter()
+            .enumerate()
+            .filter(|(index, stop)| visited[..*index].contains(stop))
+            .count();
+        assert_eq!(repeats, 0, "no control is visited twice in a round");
+        assert_eq!(focused(cx), first, "a full round ends where it started");
+
+        // Shift-Tab goes the other way, to the last control.
+        cx.simulate_keystrokes("shift-tab");
+        let last = visited.last().expect("some stops").clone();
+        assert_eq!(focused(cx), last);
+
+        // Escape puts the pane away and the focus goes back to the chart.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |view, _| view.is_editing()));
+        let chart_focus = view.read_with(cx, |view, cx| view.focus_handle(cx));
+        assert!(cx.update(|window, _| chart_focus.is_focused(window)));
+    }
+
+    #[gpui::test]
     async fn an_edit_leaves_the_other_charts_exactly_as_they_were(cx: &mut TestAppContext) {
         let sankey = json!({
             "name": "Flow", "options": { "type": "Sankey", "nodesTable": "nodes", "futureOption": [1, 2] },

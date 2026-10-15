@@ -111,7 +111,7 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | --- | --- | --- |
 | CVW-1 | P0 | Types: **Line**, **TimeLine** (a line with a datetime axis), **Bar** (horizontal bars), **Column** (vertical bars). Grouped by default. |
 | CVW-2 | P1 | `BarStacked`, `BarStacked100`, `ColumnStacked`, `ColumnStacked100`, `Area`, `AreaStacked`, `AreaStacked100`. |
-| CVW-3 | P0 | Axes: linear and log scale; fixed min and max (both must be set, as VS Code requires); titles; tick marks and grid lines each on or off; tick label angle; labels that would overlap are thinned or rotated, never overprinted. |
+| CVW-3 | P0 | Axes: linear and log scale; fixed min and max, either of which can be set alone (the other end fits the data; VS Code requires both, but using the chart showed one at a time is what is wanted), and on bars over times or numbers the rows outside the X range are left out; titles; tick marks and grid lines each on or off; tick label angle; labels that would overlap are thinned or rotated, never overprinted. |
 | CVW-4 | P0 | Datetime axis ticks land on calendar boundaries (seconds to years) with labels that drop the shared part (a date once, then times). Times are shown in UTC by default, matching the grid (GRD-4); a setting may switch to local (CST-1). |
 | CVW-5 | P0 | Legend: `Auto`, `Right`, `Bottom`, `None`; entries show the series colour and name; a long list scrolls or truncates with a count. |
 | CVW-6 | P0 | `showValues` writes the value on bars. `sort` orders categories by total. |

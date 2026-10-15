@@ -1771,6 +1771,22 @@
     },
   },
   {
+    "context": "ChartEditor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "tab": "chart_editor::FocusNextField",
+      "shift-tab": "chart_editor::FocusPreviousField",
+    },
+  },
+  {
+    "context": "ChartEditor > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "tab": "chart_editor::FocusNextField",
+      "shift-tab": "chart_editor::FocusPreviousField",
+    },
+  },
+  {
     "context": "TableView",
     "use_key_equivalents": true,
     "bindings": {

@@ -316,9 +316,18 @@ on; the axes fit what is left. When several rows of a series have the same X (a 
 so a spike is not lost.
 
 **Editing.** **Edit chart** opens a pane beside the chart: the type, the table, the X column, the value and series columns,
-the sort, running totals, how rows at the same X are combined, the titles, the scale (linear or log) and limits of each axis, the legend, values on bars,
-gridlines, aspect ratio and text size, and a name for the tab. A change draws the chart at once. Only the options shown there
-can be changed; any other option a chart has is kept as it is. **Remove chart** is at the bottom of the pane.
+the sort, running totals, how rows at the same X are combined, the titles, the scale (linear or log) and the **From** and **To**
+of each axis, the legend, values on bars, gridlines, aspect ratio and text size, and a name for the tab. X is the axis along the
+bottom of the chart and Y the one up its side, for a horizontal bar chart too. A change draws the chart at once. Only the
+options shown there can be changed; any other option a chart has is kept as it is. **Remove chart** is at the bottom of the pane.
+
+From and To can be set one at a time: the end you leave empty fits the data. On the X axis of a time or number chart they cut the
+axis, and on bars over dates or numbers they leave out the bars outside the range; a text axis has no range, so they do nothing
+there. A time limit is written like `2026-10-06T12:00:00Z`.
+
+The pane works from the keyboard: opening it puts the cursor in its first field, **Tab** and **Shift-Tab** move through every field
+in the order they are on the screen (also from inside a text field), **Space** or **Enter** changes the field you are on, and
+**Escape** closes the pane and returns to the chart.
 
 **Saving.** Every change is written to the result's file a moment after you stop, as a column layout is, and only the
 `charts` of the file change. In the Results panel that file is the run's history file, so a chart you edit there is kept

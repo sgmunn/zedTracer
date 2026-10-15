@@ -1678,6 +1678,20 @@
     },
   },
   {
+    "context": "ChartEditor",
+    "bindings": {
+      "tab": "chart_editor::FocusNextField",
+      "shift-tab": "chart_editor::FocusPreviousField",
+    },
+  },
+  {
+    "context": "ChartEditor > Editor",
+    "bindings": {
+      "tab": "chart_editor::FocusNextField",
+      "shift-tab": "chart_editor::FocusPreviousField",
+    },
+  },
+  {
     "context": "TableView",
     "bindings": {
       "up": ["tabular_data::MoveFocusedCell", { "direction": "up" }],

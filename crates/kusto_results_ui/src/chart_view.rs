@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext as _, BorderStyle, Bounds, ClipboardItem, ContentMask, Context,
-    Entity, EventEmitter, Font, FontWeight, Hsla, Image, ImageFormat, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels, Point, Render, SharedString, Subscription,
-    Task, TextAlign, TextRun, Window, canvas, div, fill, outline, point, px, size,
+    Entity, EventEmitter, FocusHandle, Focusable, Font, FontWeight, Hsla, Image, ImageFormat,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels, Point, Render,
+    SharedString, Subscription, Task, TextAlign, TextRun, Window, canvas, div, fill, outline,
+    point, px, size,
 };
 use gpui_util::ResultExt as _;
 use kusto_results::chart::{Aggregation, ColorMode, SortOrder};
@@ -447,12 +448,19 @@ pub(crate) struct ChartView {
     /// What the user's settings say for the options the chart leaves open.
     defaults: ChartDefaults,
     _settings_subscription: Subscription,
+    focus_handle: FocusHandle,
     editing: bool,
     editor: Option<Entity<ChartEditor>>,
     _editor_subscription: Option<Subscription>,
 }
 
 impl EventEmitter<ChartViewEvent> for ChartView {}
+
+impl Focusable for ChartView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
 impl ChartView {
     pub(crate) fn new(
@@ -483,6 +491,7 @@ impl ChartView {
             defaults,
             _settings_subscription: cx
                 .observe_global::<SettingsStore>(|this, cx| this.settings_changed(cx)),
+            focus_handle: cx.focus_handle(),
             editing: false,
             editor: None,
             _editor_subscription: None,
@@ -599,10 +608,25 @@ impl ChartView {
 
     /// Shows or hides the pane that edits the chart.
     pub(crate) fn toggle_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.editing = !self.editing;
-        if self.editing && self.editor.is_none() {
+        if self.editing {
+            self.close_editor(window, cx);
+            return;
+        }
+        self.editing = true;
+        if self.editor.is_none() {
             self.open_editor(window, cx);
         }
+        // Opening it puts the cursor in its first field, so it can be used from the keyboard.
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.focus_first(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Puts the pane away and gives the focus back to the chart.
+    fn close_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing = false;
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 
@@ -639,6 +663,7 @@ impl ChartView {
             |this, _, event: &ChartEditorEvent, window, cx| match event {
                 ChartEditorEvent::Changed(chart) => this.apply_chart(chart.clone(), window, cx),
                 ChartEditorEvent::Remove => cx.emit(ChartViewEvent::Remove),
+                ChartEditorEvent::Close => this.close_editor(window, cx),
             },
         ));
         self.editor = Some(editor);
@@ -798,6 +823,11 @@ impl ChartView {
     }
 
     #[cfg(test)]
+    pub(crate) fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    #[cfg(test)]
     pub(crate) fn hover(&self) -> Option<Hover> {
         self.painted.borrow().hover.clone()
     }
@@ -873,6 +903,7 @@ impl Render for ChartView {
         let editor = self.editor.clone().filter(|_| editing);
         v_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
             .child(
                 h_flex()
                     .px_2()
