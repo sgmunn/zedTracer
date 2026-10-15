@@ -85,6 +85,10 @@ pub(crate) fn themed_style(series_count: usize, cx: &App) -> SvgStyle {
         .into_iter()
         .map(hex)
         .collect();
+    style.reference = crate::chart_view::reference_colours(cx)
+        .into_iter()
+        .map(hex)
+        .collect();
     style
 }
 

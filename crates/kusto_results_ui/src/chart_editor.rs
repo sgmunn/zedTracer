@@ -13,6 +13,7 @@ use gpui_util::ResultExt as _;
 use kusto_results::chart::{
     Aggregation, AspectRatio, AxisScale, LegendPosition, SortOrder, TextSize,
 };
+use kusto_results::chart::{LineColor, LineOrientation, LineStyle, ReferenceLine};
 use kusto_results::{Chart, ChartType};
 use serde_json::{Number, Value};
 use ui::{
@@ -57,6 +58,15 @@ struct Dropdown {
     handle: PopoverMenuHandle<ContextMenu>,
 }
 
+/// The fields of one reference line.
+struct LineControls {
+    orientation: Dropdown,
+    style: Dropdown,
+    color: Dropdown,
+    value: Input,
+    label: Input,
+}
+
 struct Input {
     editor: Entity<Editor>,
     /// The editor's own focus handle, made a tab stop, so Tab reaches the field.
@@ -70,6 +80,7 @@ pub(crate) struct ChartEditor {
     /// One for each row of the pane, so the row that takes focus can be scrolled into view.
     row_handles: Vec<FocusHandle>,
     _row_subscriptions: Vec<Subscription>,
+    lines: Vec<LineControls>,
     chart: Chart,
     columns: Vec<ColumnInfo>,
     effective: Effective,
@@ -116,6 +127,12 @@ fn limit_from_text(text: &str) -> Option<Value> {
         Ok(number) => Number::from_f64(number).map(Value::Number),
         Err(_) => Some(Value::String(text.to_string())),
     }
+}
+
+/// The value of a reference line as typed: a number, the text of a time or a category, or nothing
+/// yet, which draws no line.
+pub(crate) fn line_value(text: &str) -> Value {
+    limit_from_text(text).unwrap_or(Value::Null)
 }
 
 fn limit_text(limit: &Option<Value>) -> String {
@@ -341,11 +358,13 @@ impl ChartEditor {
             cx,
         );
 
+        let lines = Self::line_controls(&chart, window, cx);
         Self {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             row_handles: Vec::new(),
             _row_subscriptions: Vec::new(),
+            lines,
             chart,
             columns,
             effective,
@@ -404,7 +423,7 @@ impl ChartEditor {
     fn input(
         initial: &str,
         placeholder: &'static str,
-        apply: fn(&mut Chart, &str),
+        apply: impl Fn(&mut Chart, &str) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Input {
@@ -427,6 +446,126 @@ impl ChartEditor {
             focus,
             _subscription,
         }
+    }
+
+    /// The fields of every reference line the chart has.
+    fn line_controls(
+        chart: &Chart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<LineControls> {
+        let lines = chart.options.reference_lines.clone().unwrap_or_default();
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                // Each edit changes the line at this position.
+                let edit = move |chart: &mut Chart, change: &dyn Fn(&mut ReferenceLine)| {
+                    if let Some(line) = chart
+                        .options
+                        .reference_lines
+                        .as_mut()
+                        .and_then(|lines| lines.get_mut(index))
+                    {
+                        change(line);
+                    }
+                };
+                LineControls {
+                    orientation: Self::dropdown(
+                        vec![
+                            (
+                                "Horizontal, at a Y value".into(),
+                                LineOrientation::Horizontal,
+                            ),
+                            ("Vertical, at an X value".into(), LineOrientation::Vertical),
+                        ],
+                        move |chart, orientation| {
+                            edit(chart, &|line| line.orientation = orientation)
+                        },
+                        window,
+                        cx,
+                    ),
+                    style: Self::dropdown(
+                        vec![
+                            ("Dashed".into(), None),
+                            ("Solid".into(), Some(LineStyle::Solid)),
+                        ],
+                        move |chart, style: Option<LineStyle>| {
+                            edit(chart, &|line| line.style = style)
+                        },
+                        window,
+                        cx,
+                    ),
+                    color: Self::dropdown(
+                        LineColor::ALL
+                            .iter()
+                            .map(|color| {
+                                let value = (*color != LineColor::Grey).then_some(*color);
+                                (SharedString::from(color.label()), value)
+                            })
+                            .collect(),
+                        move |chart, color: Option<LineColor>| {
+                            edit(chart, &|line| line.color = color)
+                        },
+                        window,
+                        cx,
+                    ),
+                    value: Self::input(
+                        &line.value_text(),
+                        "A value",
+                        move |chart, text| edit(chart, &|line| line.value = line_value(text)),
+                        window,
+                        cx,
+                    ),
+                    label: Self::input(
+                        line.label.as_deref().unwrap_or_default(),
+                        "No label",
+                        move |chart, text| edit(chart, &|line| line.label = non_empty(text)),
+                        window,
+                        cx,
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    /// Takes a chart that was changed outside the pane, such as by a line added from the chart.
+    pub(crate) fn set_chart(&mut self, chart: Chart, window: &mut Window, cx: &mut Context<Self>) {
+        self.lines = Self::line_controls(&chart, window, cx);
+        self.chart = chart;
+        cx.notify();
+    }
+
+    fn add_line(
+        &mut self,
+        orientation: LineOrientation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chart
+            .options
+            .reference_lines
+            .get_or_insert_with(Vec::new)
+            .push(ReferenceLine::new(orientation, Value::Null));
+        self.lines = Self::line_controls(&self.chart, window, cx);
+        // The cursor goes to the value of the new line, which is the one thing it needs.
+        if let Some(controls) = self.lines.last() {
+            window.focus(&controls.value.focus, cx);
+        }
+        self.changed(cx);
+    }
+
+    fn remove_line(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(lines) = self.chart.options.reference_lines.as_mut()
+            && index < lines.len()
+        {
+            lines.remove(index);
+            if lines.is_empty() {
+                self.chart.options.reference_lines = None;
+            }
+        }
+        self.lines = Self::line_controls(&self.chart, window, cx);
+        self.changed(cx);
     }
 
     /// Puts the cursor in the first field, so the pane can be used without the mouse.
@@ -457,6 +596,41 @@ impl ChartEditor {
     #[cfg(test)]
     pub(crate) fn y_max_editor(&self) -> Entity<Editor> {
         self.y_max.editor.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_line_for_test(
+        &mut self,
+        orientation: LineOrientation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_line(orientation, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_line_for_test(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_line(index, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_value_editor(&self, index: usize) -> Entity<Editor> {
+        self.lines[index].value.editor.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn line_label_editor(&self, index: usize) -> Entity<Editor> {
+        self.lines[index].label.editor.clone()
     }
 
     #[cfg(test)]
@@ -819,6 +993,93 @@ impl Render for ChartEditor {
                 |chart, on| chart.options.y_show_grid = Some(on),
             )
             .into_any_element(),
+        );
+        rows.push(Self::section("Lines").into_any_element());
+        let line_options = options.reference_lines.clone().unwrap_or_default();
+        for (index, (line, controls)) in line_options.iter().zip(&self.lines).enumerate() {
+            rows.push(
+                Label::new(format!("Line {}", index + 1))
+                    .size(LabelSize::Small)
+                    .color(Color::Muted)
+                    .into_any_element(),
+            );
+            rows.push(
+                Self::row(
+                    "Direction",
+                    DropdownMenu::new(
+                        ("chart-line-direction", index),
+                        match line.orientation {
+                            LineOrientation::Horizontal => "Horizontal, at a Y value",
+                            LineOrientation::Vertical => "Vertical, at an X value",
+                        },
+                        controls.orientation.menu.clone(),
+                    )
+                    .handle(controls.orientation.handle.clone())
+                    .attach(Anchor::BottomLeft)
+                    .tab_index(0),
+                )
+                .into_any_element(),
+            );
+            rows.push(Self::row("Value", input(&controls.value)).into_any_element());
+            rows.push(Self::row("Label", input(&controls.label)).into_any_element());
+            rows.push(
+                Self::row(
+                    "Style",
+                    DropdownMenu::new(
+                        ("chart-line-style", index),
+                        if line.is_dashed() { "Dashed" } else { "Solid" },
+                        controls.style.menu.clone(),
+                    )
+                    .handle(controls.style.handle.clone())
+                    .attach(Anchor::BottomLeft)
+                    .tab_index(0),
+                )
+                .into_any_element(),
+            );
+            rows.push(
+                Self::row(
+                    "Colour",
+                    DropdownMenu::new(
+                        ("chart-line-colour", index),
+                        line.color.unwrap_or(LineColor::Grey).label(),
+                        controls.color.menu.clone(),
+                    )
+                    .handle(controls.color.handle.clone())
+                    .attach(Anchor::BottomLeft)
+                    .tab_index(0),
+                )
+                .into_any_element(),
+            );
+            rows.push(
+                div()
+                    .child(
+                        Button::new(("chart-line-remove", index), "Remove line")
+                            .tab_index(0i16)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.remove_line(index, window, cx)
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows.push(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("chart-add-horizontal-line", "Add horizontal line")
+                        .tab_index(0i16)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_line(LineOrientation::Horizontal, window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("chart-add-vertical-line", "Add vertical line")
+                        .tab_index(0i16)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_line(LineOrientation::Vertical, window, cx)
+                        })),
+                )
+                .into_any_element(),
         );
         rows.push(Self::section("Look").into_any_element());
         rows.push(

@@ -3039,6 +3039,161 @@ mod tests {
         assert!(cx.update(|window, _| chart_focus.is_focused(window)));
     }
 
+    fn reference_lines_drawn(view: &Entity<ChartView>, cx: &gpui::VisualTestContext) -> usize {
+        view.read_with(cx, |view, _| view.scene())
+            .map_or(0, |scene| {
+                scene
+                    .plot_items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item,
+                            kusto_results::chart_scene::Item::DashedSegment { .. }
+                                | kusto_results::chart_scene::Item::Segment {
+                                    role: kusto_results::chart_scene::Role::Reference(_),
+                                    ..
+                                }
+                        )
+                    })
+                    .count()
+            })
+    }
+
+    #[gpui::test]
+    async fn a_right_click_adds_a_line_where_the_pointer_is_and_it_is_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+        )
+        .await;
+        let view = chart_view(&viewer, cx);
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        assert_eq!(editor.read_with(cx, |editor, _| editor.line_count()), 0);
+        assert_eq!(reference_lines_drawn(&view, cx), 0);
+
+        let scene = view.read_with(cx, |view, _| view.scene()).expect("drawn");
+        let origin = view.read_with(cx, |view, _| view.area().origin);
+        let over = gpui::point(
+            origin.x + gpui::px(scene.plot.left + scene.plot.width / 2.0),
+            origin.y + gpui::px(scene.plot.top + scene.plot.height / 2.0),
+        );
+        cx.simulate_mouse_down(over, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(over, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            view.read_with(cx, |view, _| view.has_context_menu()),
+            "the menu opens"
+        );
+
+        // The first entry is the horizontal line.
+        cx.dispatch_action(menu::SelectFirst);
+        cx.dispatch_action(menu::Confirm);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            !view.read_with(cx, |view, _| view.has_context_menu()),
+            "the menu closes"
+        );
+        assert_eq!(reference_lines_drawn(&view, cx), 1, "the line is drawn");
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.line_count()),
+            1,
+            "and the open pane has it"
+        );
+
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        let lines = reread.charts[0]
+            .options
+            .reference_lines
+            .clone()
+            .expect("saved");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0].orientation,
+            kusto_results::chart::LineOrientation::Horizontal
+        );
+        let value = lines[0].value.as_f64().expect("a number");
+        // Half way up an axis that runs from 0 to 60 or so.
+        assert!(value > 10.0 && value < 50.0, "{value}");
+    }
+
+    #[gpui::test]
+    async fn lines_can_be_added_typed_and_removed_in_the_pane(cx: &mut TestAppContext) {
+        let (viewer, fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+        )
+        .await;
+        let view = chart_view(&viewer, cx);
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+
+        editor.update_in(cx, |editor, window, cx| {
+            editor.add_line_for_test(kusto_results::chart::LineOrientation::Vertical, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |editor, _| editor.line_count()), 1);
+        assert_eq!(
+            reference_lines_drawn(&view, cx),
+            0,
+            "a line with no value is not drawn yet"
+        );
+
+        let value = editor.read_with(cx, |editor, _| editor.line_value_editor(0));
+        value.update_in(cx, |value, window, cx| {
+            value.set_text("2007-01-04T00:00:00Z", window, cx)
+        });
+        let label = editor.read_with(cx, |editor, _| editor.line_label_editor(0));
+        label.update_in(cx, |label, window, cx| {
+            label.set_text("release", window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(reference_lines_drawn(&view, cx), 1);
+        let texts = view.read_with(cx, |view, _| view.scene_texts());
+        assert!(texts.contains(&"release".to_string()), "{texts:?}");
+
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        let lines = reread.charts[0]
+            .options
+            .reference_lines
+            .clone()
+            .expect("saved");
+        assert_eq!(lines[0].value_text(), "2007-01-04T00:00:00Z");
+        assert_eq!(lines[0].label.as_deref(), Some("release"));
+
+        editor.update_in(cx, |editor, window, cx| {
+            editor.remove_line_for_test(0, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(reference_lines_drawn(&view, cx), 0);
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let reread = written(&fs, "storms.ktt").await;
+        assert!(
+            reread.charts[0].options.reference_lines.is_none(),
+            "none left, none written"
+        );
+    }
+
     #[gpui::test]
     async fn an_edit_leaves_the_other_charts_exactly_as_they_were(cx: &mut TestAppContext) {
         let sankey = json!({

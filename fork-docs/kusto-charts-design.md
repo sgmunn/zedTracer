@@ -118,6 +118,7 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | CVW-7 | P0 | Colours come from a categorical palette derived from the theme (like `actor_colours.rs`), stable per series name so a series keeps its colour across redraws, and readable in light and dark themes. `mode: Light`/`Dark` only affects export. |
 | CVW-8 | P1 | `yLayout`: `DualAxis`, `SeparatePanels`, `SeparateCharts`. `SharedAxis` is the P0 default. |
 | CVW-9 | P0 | `aspectRatio` (`Fill` and the fixed ratios) and `textSize` are honoured; with `Fill` the chart follows the tab size. |
+| CVW-11 | P1 (Zed addition) | Reference lines: the user can put horizontal and vertical lines across a chart at values they choose, each with an optional label, a dashed or solid style and one of a few theme colours, saved as `referenceLines` in the chart's options (VS Code drops them). They are added from the right-click menu at the pointer and from the pane, are drawn under the data, and an axis grows to hold them unless its limits are set. |
 | CVW-10 | P0 | An empty chart (no rows, no numeric column, no X) shows a one-line reason, not a blank area. |
 
 ### 5.5 Interaction (CIN)

@@ -331,6 +331,15 @@ The pane works from the keyboard: opening it puts the cursor in its first field,
 in the order they are on the screen (also from inside a text field), **Space** or **Enter** changes the field you are on, and
 **Escape** closes the pane and returns to the chart.
 
+**Lines.** A chart can have lines across it at values you choose, such as a threshold or the moment of a release. A
+horizontal line is at a value of the Y axis, and a vertical line at a value of the X axis (a date and time on a time axis, a
+category's name on a text axis). **Right-click** the chart and choose *Add horizontal line at …* or *Add vertical line at …* to put
+one where the pointer is, or use **Add horizontal line** and **Add vertical line** under *Lines* in the pane, which put the cursor in
+the new line's value. Each line can have a label, be dashed (the default) or solid, and be grey, red, orange, green or blue; its
+colour follows the theme. Lines are drawn under the data, with their label at the end of the line. A line is always in view: an
+axis grows to include it, unless you have set From and To on that axis, and then a line outside them is cut off. They are saved
+in the chart as `referenceLines`, which the VS Code extension does not know, so a file it saves drops them.
+
 **Saving.** Every change is written to the result's file a moment after you stop, as a column layout is, and only the
 `charts` of the file change. In the Results panel that file is the run's history file, so a chart you edit there is kept
 until the history prunes the run; **Save a copy…** keeps it longer. A file that cannot be written keeps your changes
@@ -346,7 +355,7 @@ into a file.
 
 **Not built yet.** Zooming into a range, panels or a second axis for several value columns (`ysplit`), binning in the
 chart (use `bin()` in the query; combining rows at the same X is built), a local-time axis, saving a picture to a file, and tilted axis labels (a label that does
-not fit is dropped instead). Area, pie, scatter and the other types are not drawn. The design and the requirement list
+not fit is dropped instead), and moving a line by dragging it. Area, pie, scatter and the other types are not drawn. The design and the requirement list
 are in `fork-docs/kusto-charts-design.md`.
 
 ## Trace columns

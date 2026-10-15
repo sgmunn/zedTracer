@@ -10,14 +10,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, BorderStyle, Bounds, ClipboardItem, ContentMask, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, Font, FontWeight, Hsla, Image, ImageFormat,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels, Point, Render,
-    SharedString, Subscription, Task, TextAlign, TextRun, Window, canvas, div, fill, outline,
-    point, px, size,
+    Anchor as MenuAnchor, AnyElement, App, AppContext as _, BorderStyle, Bounds, ClipboardItem,
+    ContentMask, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Font,
+    FontWeight, Hsla, Image, ImageFormat, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PathBuilder, Pixels, Point, Render, SharedString, Subscription, Task, TextAlign, TextRun,
+    Window, anchored, canvas, deferred, div, fill, outline, point, px, size,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::chart::{Aggregation, ColorMode, SortOrder};
+use kusto_results::chart::{Aggregation, ColorMode, LineOrientation, ReferenceLine, SortOrder};
 use kusto_results::chart_data::ChartData;
 use kusto_results::chart_scene::{
     Anchor, ChartScene, EstimatedText, Hover, Item, Rect, Role, SvgStyle, TextMeasure,
@@ -25,11 +25,11 @@ use kusto_results::chart_scene::{
 };
 use kusto_results::{Chart, ChartDefaults, ChartOptions, ResultSet};
 use settings::{Settings as _, SettingsStore};
-use ui::{Button, IconButton, IconName, IconSize, Tooltip, prelude::*};
+use ui::{Button, ContextMenu, IconButton, IconName, IconSize, Tooltip, prelude::*};
 use workspace::notifications::DetachAndPromptErr as _;
 
 use crate::actor_colours::theme_actor_palette;
-use crate::chart_editor::{ChartEditor, ChartEditorEvent, ColumnInfo, Effective};
+use crate::chart_editor::{ChartEditor, ChartEditorEvent, ColumnInfo, Effective, line_value};
 use crate::chart_export;
 use crate::results_settings::ResultsSettings;
 
@@ -260,6 +260,8 @@ struct Colours {
     grid: Hsla,
     axis: Hsla,
     series: Vec<Hsla>,
+    /// The colours of reference lines, in the order of `LineColor::ALL`.
+    reference: [Hsla; 5],
 }
 
 impl Colours {
@@ -271,6 +273,7 @@ impl Colours {
             grid: colors.border_variant,
             axis: colors.border,
             series: theme_actor_palette(series_count.max(1), cx),
+            reference: reference_colours(cx),
         }
     }
 
@@ -285,8 +288,26 @@ impl Colours {
                 .get(index % self.series.len().max(1))
                 .copied()
                 .unwrap_or(self.text),
+            Role::Reference(color) => self
+                .reference
+                .get(color.index())
+                .copied()
+                .unwrap_or(self.muted),
         }
     }
+}
+
+/// The colours of the theme that reference lines take, in the order of `LineColor::ALL`.
+pub(crate) fn reference_colours(cx: &App) -> [Hsla; 5] {
+    let theme = cx.theme();
+    let status = theme.status();
+    [
+        theme.colors().text_muted,
+        status.error,
+        status.warning,
+        status.success,
+        status.info,
+    ]
 }
 
 fn to_bounds(rect: Rect, origin: Point<Pixels>) -> Bounds<Pixels> {
@@ -309,6 +330,19 @@ fn paint_item(
     cx: &mut App,
 ) {
     match item {
+        Item::DashedSegment {
+            from,
+            to,
+            role,
+            width,
+        } => {
+            let mut builder = PathBuilder::stroke(px(*width)).dash_array(&[px(6.), px(4.)]);
+            builder.move_to(to_point(*from, origin));
+            builder.line_to(to_point(*to, origin));
+            if let Some(path) = builder.build().log_err() {
+                window.paint_path(path, colours.of_role(*role));
+            }
+        }
         Item::Segment {
             from,
             to,
@@ -456,6 +490,7 @@ pub(crate) struct ChartView {
     defaults: ChartDefaults,
     _settings_subscription: Subscription,
     focus_handle: FocusHandle,
+    context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     editing: bool,
     editor: Option<Entity<ChartEditor>>,
     _editor_subscription: Option<Subscription>,
@@ -499,6 +534,7 @@ impl ChartView {
             _settings_subscription: cx
                 .observe_global::<SettingsStore>(|this, cx| this.settings_changed(cx)),
             focus_handle: cx.focus_handle(),
+            context_menu: None,
             editing: false,
             editor: None,
             _editor_subscription: None,
@@ -611,6 +647,77 @@ impl ChartView {
         .detach_and_prompt_err("Could not copy the chart", window, cx, |error, _, _| {
             Some(error.to_string())
         });
+    }
+
+    /// Offers to put a line across the chart where a right click was: a horizontal line at the
+    /// value of the vertical axis there, and a vertical one at the value of the horizontal axis.
+    fn deploy_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pointer = {
+            let painted = self.painted.borrow();
+            let (x, y) = painted.local(position);
+            painted
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.pointer_position(x, y))
+        };
+        let Some(pointer) = pointer else {
+            return;
+        };
+        let view = cx.entity().downgrade();
+        let menu = ContextMenu::build(window, cx, move |mut menu, _, _| {
+            for (orientation, value, name) in [
+                (LineOrientation::Horizontal, pointer.y, "horizontal"),
+                (LineOrientation::Vertical, pointer.x, "vertical"),
+            ] {
+                let Some(value) = value else {
+                    continue;
+                };
+                let view = view.clone();
+                let text = value.text;
+                menu = menu.entry(
+                    format!("Add {name} line at {text}"),
+                    None,
+                    move |window, cx| {
+                        let text = text.clone();
+                        view.update(cx, |this, cx| this.add_line(orientation, &text, window, cx))
+                            .log_err();
+                    },
+                );
+            }
+            menu
+        });
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
+    }
+
+    /// Adds a line across the chart, and shows it in the editor pane if that is open.
+    fn add_line(
+        &mut self,
+        orientation: LineOrientation,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut chart = self.chart.clone();
+        chart
+            .options
+            .reference_lines
+            .get_or_insert_with(Vec::new)
+            .push(ReferenceLine::new(orientation, line_value(value)));
+        self.apply_chart(chart.clone(), window, cx);
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.set_chart(chart, window, cx));
+        }
     }
 
     /// Shows or hides the pane that edits the chart.
@@ -830,6 +937,11 @@ impl ChartView {
     }
 
     #[cfg(test)]
+    pub(crate) fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_editing(&self) -> bool {
         self.editing
     }
@@ -893,6 +1005,14 @@ impl Render for ChartView {
                             this.clicked(event.position, cx)
                         }),
                     )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            // Without this the chart takes the focus back from the menu it opens.
+                            window.prevent_default();
+                            this.deploy_context_menu(event.position, window, cx)
+                        }),
+                    )
                     .child(
                         canvas(
                             move |bounds, window, cx| {
@@ -903,6 +1023,15 @@ impl Render for ChartView {
                         .size_full(),
                     )
                     .children(self.render_tooltip(cx))
+                    .children(self.context_menu.as_ref().map(|(menu, position, _)| {
+                        deferred(
+                            anchored()
+                                .position(*position)
+                                .anchor(MenuAnchor::TopLeft)
+                                .child(menu.clone()),
+                        )
+                        .with_priority(1)
+                    }))
                     .into_any_element()
             }
         };
