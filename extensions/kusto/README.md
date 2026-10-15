@@ -274,11 +274,19 @@ understood and repeated, so it needs nothing from the history:
 
 - The **Query** tab (next to Data) shows the query the result came from, read-only and selectable, with where and when it ran and the values its parameters had.
 - **Run again** (at the right of the tabs) runs that query again on the cluster and database the file names, with
-  the parameter values the file holds, and shows the new result in the Results panel. The file itself does not
-  change.
+  the parameter values the file holds, and puts the new data **in the same file**. The charts you made, the saved
+  column layout of a table that still has the same columns, and the query, cluster, database and parameter values
+  stay as they are; the rows, the run time and the duration are the new run's. The tab shows the new data as soon as
+  the file is written. If the run fails or is cancelled, or the file cannot be written, the file is not touched and
+  you are told why. A file is refreshed by one run at a time, and a refresh is not a run of the history: it is not
+  listed there and no lens shows it.
 
 Both are shown for any result file that names its query, and Run again also needs the file to name a cluster and
 database. Files written before parameters were kept in them simply run without values.
+
+A result that is still in the history folder is a record of one run, so Run again there makes a new result (shown
+in the Results panel, or a tab) and leaves the old one alone. To keep a result you can refresh, use **Save a copy…**
+first and open the copy.
 
 ## Results with several tables
 

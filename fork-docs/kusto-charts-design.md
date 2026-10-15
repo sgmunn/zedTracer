@@ -89,7 +89,7 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | CSR-3 | P0 | The user can add a chart to any result with no `render`, choosing a type; the columns are inferred (CDM-1 to CDM-3) so the first chart appears without a form. |
 | CSR-4 | P0 | The user can remove a chart and rename it. A result can hold several charts, each its own tab. |
 | CSR-5 | P1 | A run whose query has `render` opens on the chart tab, as VS Code does for the document view. (Setting, CST-1.) |
-| CSR-6 | P2 | Decision needed: do charts survive re-running the same query (section 8, D3)? |
+| CSR-6 | P2 | Charts survive Run again in a kept result file, which is refreshed in place (section 8, D3). A run from the editor makes a new history result with the charts its `render` asks for. |
 
 ### 5.3 Turning a table into series (CDM)
 
@@ -203,7 +203,7 @@ Priorities follow the workbench spec: **P0** the first usable release, **P1** so
 | D6 | Is a hover that selects the grid row wanted (CIN-4)? | Optional; skip until asked. |
 | D7 | The VS Code `binSize`/`aggregation`/`maxSeries`/`maxPointsPerSeries` extras. | Keep them in the file; draw `maxSeries` (CDM-6); leave binning to `bin()` in the query. |
 
-**Taken:** all of D1 to D7 as recommended. D2 became a collapsible pane beside the chart; D3 is still open in practice (a re-run writes a new history file that has only the charts its own `render` asks for).
+**Taken:** all of D1 to D7 as recommended. D2 became a collapsible pane beside the chart; D3 was settled later by the file, not the query: Run again in a `.ktt` outside the history folder replaces that file's data and keeps its charts and column layouts, so nothing is keyed on the query text; a run from the editor still writes a new history file that has only the charts its own `render` asks for.
 
 ## 9. Delivery plan
 
