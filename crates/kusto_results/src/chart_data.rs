@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use chrono::DateTime;
+use serde_json::Value;
 
 use crate::chart::{Aggregation, ChartOptions, ChartType, SortOrder};
 use crate::chart_scale;
@@ -134,6 +135,22 @@ impl ChartData {
             _ => XKind::Category,
         };
 
+        // Bars over times or numbers are categories, which have no axis to cut at the limits, so
+        // the rows outside them are left out instead.
+        let (category_low, category_high) = match (x_kind, x_axis_kind(x_column.kind)) {
+            (XKind::Category, Some(kind)) => (
+                options
+                    .x_min
+                    .as_ref()
+                    .and_then(|limit| limit_number(limit, Some(kind))),
+                options
+                    .x_max
+                    .as_ref()
+                    .and_then(|limit| limit_number(limit, Some(kind))),
+            ),
+            _ => (None, None),
+        };
+
         let value_count = columns.values.len();
         let mut categories = CategoryList::new(x_column.kind);
         let mut group_ids: HashMap<String, usize> = HashMap::new();
@@ -145,10 +162,19 @@ impl ChartData {
                 continue;
             };
             let x = match x_kind {
-                XKind::Category => match categories.position(x_cell) {
-                    Some(position) => position as f64,
-                    None => continue,
-                },
+                XKind::Category => {
+                    if (category_low.is_some() || category_high.is_some())
+                        && let Some(value) = x_number(x_cell, x_column.kind)
+                        && (category_low.is_some_and(|low| value < low)
+                            || category_high.is_some_and(|high| value > high))
+                    {
+                        continue;
+                    }
+                    match categories.position(x_cell) {
+                        Some(position) => position as f64,
+                        None => continue,
+                    }
+                }
                 XKind::Time => match parse_datetime(x_cell) {
                     Some(x) => x,
                     None => continue,
@@ -631,6 +657,40 @@ fn numeric(cell: &Cell) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+/// What kind of axis a column's values would make, whatever the chart makes of it.
+fn x_axis_kind(kind: ColumnKind) -> Option<XKind> {
+    match kind {
+        ColumnKind::DateTime => Some(XKind::Time),
+        ColumnKind::TimeSpan => Some(XKind::Duration),
+        kind if kind.is_numeric() => Some(XKind::Number),
+        _ => None,
+    }
+}
+
+/// The value of an X cell as a number on its axis: milliseconds for a time or a timespan.
+fn x_number(cell: &Cell, kind: ColumnKind) -> Option<f64> {
+    match x_axis_kind(kind)? {
+        XKind::Time => parse_datetime(cell),
+        XKind::Duration => parse_timespan(cell),
+        _ => numeric(cell),
+    }
+}
+
+/// An axis limit as a number: a number, the text of one, or for a time axis the text of a time or
+/// a timespan. `None` for anything else, and for a number that is not finite.
+pub fn limit_number(limit: &Value, kind: Option<XKind>) -> Option<f64> {
+    let value = match limit {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => match kind {
+            Some(XKind::Time) => parse_datetime_text(text).or_else(|| text.trim().parse().ok()),
+            Some(XKind::Duration) => parse_timespan_text(text).or_else(|| text.trim().parse().ok()),
+            _ => text.trim().parse().ok(),
+        },
+        _ => None,
+    };
+    value.filter(|value| value.is_finite())
+}
+
 fn parse_datetime(cell: &Cell) -> Option<f64> {
     let Cell::Text(text) = cell else {
         return None;
@@ -1064,6 +1124,51 @@ mod tests {
             vec![
                 vec![text("2007-01-01T06:30:00Z"), Cell::Int(2)],
                 vec![text("2007-01-01T00:00:00Z"), Cell::Int(1)],
+            ],
+        )
+    }
+
+    #[test]
+    fn limits_on_the_x_axis_leave_out_the_bars_beyond_them() {
+        let table = table(
+            &[("When", "datetime"), ("N", "long")],
+            (1..=6)
+                .map(|number| vec![day(number), Cell::Int(i64::from(number))])
+                .collect(),
+        );
+        let build = |limits: serde_json::Value| {
+            let mut value = json!({"type": "Column"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(limits.as_object().unwrap().clone());
+            ChartData::build(&table, &options(value)).unwrap()
+        };
+        assert_eq!(build(json!({})).categories.len(), 6);
+        let both = build(json!({"xMin": "2007-01-02T00:00:00Z", "xMax": "2007-01-04T00:00:00Z"}));
+        assert_eq!(both.categories, ["2007-01-02", "2007-01-03", "2007-01-04"]);
+        assert_eq!(ys(&both.series[0]), [2.0, 3.0, 4.0]);
+        let from_only = build(json!({"xMin": "2007-01-05T00:00:00Z"}));
+        assert_eq!(from_only.categories, ["2007-01-05", "2007-01-06"]);
+        let to_only = build(json!({"xMax": "2007-01-01T12:00:00Z"}));
+        assert_eq!(to_only.categories, ["2007-01-01"]);
+
+        let words = table_of_words();
+        let data = ChartData::build(
+            &words,
+            &options(json!({"type": "Column", "xMin": "b", "xMax": "c"})),
+        )
+        .unwrap();
+        assert_eq!(data.categories.len(), 3, "text has no range to cut at");
+    }
+
+    fn table_of_words() -> Table {
+        table(
+            &[("K", "string"), ("N", "long")],
+            vec![
+                vec![text("a"), Cell::Int(1)],
+                vec![text("b"), Cell::Int(2)],
+                vec![text("c"), Cell::Int(3)],
             ],
         )
     }

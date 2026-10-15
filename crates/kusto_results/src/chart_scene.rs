@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::chart::{AxisScale, ChartOptions, LegendPosition, TextSize};
-use crate::chart_data::{ChartData, Series, XKind, parse_datetime_text, parse_timespan_text};
+use crate::chart_data::{ChartData, Series, XKind, limit_number};
 use crate::chart_scale::{self, Tick};
 
 /// How wide text is when drawn at a size, in pixels.
@@ -365,7 +365,9 @@ enum Stacking {
 /// What an axis is asked to look like by the options.
 struct AxisOptions {
     logarithmic: bool,
-    limits: Option<(Value, Value)>,
+    /// Either end can be given alone; the other is then worked out from the data.
+    minimum: Option<Value>,
+    maximum: Option<Value>,
     title: Option<String>,
     show_ticks: bool,
     show_grid: bool,
@@ -394,29 +396,12 @@ fn axis_options(options: &ChartOptions, screen_horizontal: bool) -> AxisOptions 
     };
     AxisOptions {
         logarithmic: scale == Some(AxisScale::Log),
-        limits: match (low, high) {
-            (Some(low), Some(high)) => Some((low.clone(), high.clone())),
-            _ => None,
-        },
+        minimum: low.clone(),
+        maximum: high.clone(),
         title: title.clone().filter(|title| !title.is_empty()),
         show_ticks: ticks == Some(true),
         show_grid: grid != Some(false),
     }
-}
-
-/// An axis limit as a number: a number, the text of one, or for a time axis the text of a time
-/// or a timespan.
-fn limit_value(limit: &Value, x_kind: Option<XKind>) -> Option<f64> {
-    let value = match limit {
-        Value::Number(number) => number.as_f64(),
-        Value::String(text) => match x_kind {
-            Some(XKind::Time) => parse_datetime_text(text).or_else(|| text.trim().parse().ok()),
-            Some(XKind::Duration) => parse_timespan_text(text).or_else(|| text.trim().parse().ok()),
-            _ => text.trim().parse().ok(),
-        },
-        _ => None,
-    };
-    value.filter(|value| value.is_finite())
 }
 
 /// `text` cut to fit `limit` pixels, ending in an ellipsis when it was cut.
@@ -555,39 +540,53 @@ impl<'a> Layout<'a> {
             plot.height / 45.0
         };
         let target = length.clamp(2.0, 12.0) as usize;
-        let limits = options.limits.as_ref().and_then(|(low, high)| {
-            let (low, high) = (limit_value(low, None)?, limit_value(high, None)?);
-            let usable = low < high && (!options.logarithmic || low > 0.0);
-            usable.then_some((low, high))
-        });
-        let (low, high) = self.value_extent();
-        let mut axis = if let Some((low, high)) = limits {
-            let ticks = if options.logarithmic {
-                chart_scale::log_ticks(low, high)
+        let given_low = options
+            .minimum
+            .as_ref()
+            .and_then(|limit| limit_number(limit, None));
+        let given_high = options
+            .maximum
+            .as_ref()
+            .and_then(|limit| limit_number(limit, None));
+        let (data_low, data_high) = self.value_extent();
+        // What the axis would be without limits: rounded out to whole steps, or to decades.
+        let (auto_low, auto_high) = if options.logarithmic {
+            let low = 10f64.powf(data_low.log10().floor());
+            let high = 10f64.powf(data_high.log10().ceil());
+            (low, if high <= low { low * 10.0 } else { high })
+        } else {
+            let (low, high, _) = chart_scale::nice_range(data_low, data_high, target);
+            (low, high)
+        };
+        let (low, high) = (
+            given_low.unwrap_or(auto_low),
+            given_high.unwrap_or(auto_high),
+        );
+        let limited = (given_low.is_some() || given_high.is_some())
+            && low < high
+            && (!options.logarithmic || low > 0.0);
+        let mut axis = if options.logarithmic {
+            let (low, high) = if limited {
+                (low, high)
             } else {
-                let step = chart_scale::nice_step(high - low, target);
-                chart_scale::linear_ticks(low, high, step)
+                (auto_low, auto_high)
             };
-            Continuous {
-                logarithmic: options.logarithmic,
-                low,
-                high,
-                ticks,
-            }
-        } else if options.logarithmic {
-            let low = 10f64.powf(low.log10().floor());
-            let mut high = 10f64.powf(high.log10().ceil());
-            if high <= low {
-                high = low * 10.0;
-            }
             Continuous {
                 logarithmic: true,
                 low,
                 high,
                 ticks: chart_scale::log_ticks(low, high),
             }
+        } else if limited {
+            let step = chart_scale::nice_step(high - low, target);
+            Continuous {
+                logarithmic: false,
+                low,
+                high,
+                ticks: chart_scale::linear_ticks(low, high, step),
+            }
         } else {
-            let (low, high, step) = chart_scale::nice_range(low, high, target);
+            let (low, high, step) = chart_scale::nice_range(data_low, data_high, target);
             Continuous {
                 logarithmic: false,
                 low,
@@ -619,15 +618,18 @@ impl<'a> Layout<'a> {
                 high = high.max(point.x);
             }
         }
-        if let Some((given_low, given_high)) = options.limits.as_ref().and_then(|(low, high)| {
-            Some((
-                limit_value(low, Some(x_kind))?,
-                limit_value(high, Some(x_kind))?,
-            ))
-        }) && given_low < given_high
-        {
-            low = given_low;
-            high = given_high;
+        let given_low = options
+            .minimum
+            .as_ref()
+            .and_then(|limit| limit_number(limit, Some(x_kind)));
+        let given_high = options
+            .maximum
+            .as_ref()
+            .and_then(|limit| limit_number(limit, Some(x_kind)));
+        let (limited_low, limited_high) = (given_low.unwrap_or(low), given_high.unwrap_or(high));
+        if limited_low < limited_high {
+            low = limited_low;
+            high = limited_high;
         }
         if !low.is_finite() || !high.is_finite() {
             (low, high) = (0.0, 1.0);
@@ -2300,13 +2302,52 @@ mod tests {
             "100 of 1000"
         );
 
-        let (_, one_sided) = scene_of(
+        // Either end can be set alone.
+        let (_, top_only) = scene_of(
             &two_series_over_time(),
             json!({"type": "TimeLine", "yMax": 1000}),
         );
+        let labels = texts(&top_only.chrome);
+        assert!(labels.contains(&"1000".to_string()), "{labels:?}");
         assert!(
-            !texts(&one_sided.chrome).contains(&"1000".to_string()),
-            "both limits are needed"
+            labels.contains(&"0".to_string()),
+            "the bottom stays automatic: {labels:?}"
+        );
+        let (_, bottom_only) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yMin": 40}),
+        );
+        let labels = texts(&bottom_only.chrome);
+        assert!(labels.contains(&"40".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"0".to_string()), "{labels:?}");
+        assert!(
+            labels.contains(&"100".to_string()),
+            "the top stays automatic: {labels:?}"
+        );
+        let (_, contradictory) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yMin": 500}),
+        );
+        assert!(
+            texts(&contradictory.chrome).contains(&"100".to_string()),
+            "a limit that leaves no room is ignored"
+        );
+    }
+
+    #[test]
+    fn a_stacked_to_full_chart_can_be_cut_to_a_range_of_percent() {
+        let (_, scene) = scene_of(&states(), json!({"type": "ColumnStacked100", "yMax": 50}));
+        let labels = texts(&scene.chrome);
+        assert!(labels.contains(&"50%".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"100%".to_string()), "{labels:?}");
+        // The segments are cut at the top: in each column the upper one reaches it.
+        let bars = rects(&scene.plot_items);
+        let tops: Vec<f32> = (0..3)
+            .map(|category| bars[category].top.min(bars[category + 3].top))
+            .collect();
+        assert!(
+            tops.iter().all(|top| (top - scene.plot.top).abs() < 1.0),
+            "{tops:?}"
         );
     }
 
