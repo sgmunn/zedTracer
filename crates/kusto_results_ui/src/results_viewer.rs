@@ -2379,6 +2379,25 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn the_chart_is_drawn_on_the_background_of_the_editor(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_charted(cx, json!([{ "options": { "type": "TimeLine" } }])).await;
+        let view = chart_view(&viewer, cx);
+        let area = view.read_with(cx, |view, _| view.area());
+        let editor_background: gpui::Background =
+            cx.update(|_, cx| cx.theme().colors().editor_background.into());
+        // Some quad of the frame that is as large as the chart is filled with it, rather than the
+        // chart showing whatever panel it sits in.
+        let covers = cx.update(|window, _| {
+            window.painted_quads().into_iter().any(|quad| {
+                quad.background == editor_background
+                    && quad.bounds.size.width.0 >= f32::from(area.size.width)
+                    && quad.bounds.size.height.0 >= f32::from(area.size.height)
+            })
+        });
+        assert!(covers, "the chart has the editor's background behind it");
+    }
+
+    #[gpui::test]
     async fn a_result_without_a_chart_opens_on_its_data(cx: &mut TestAppContext) {
         let (viewer, cx) = open_charted(cx, json!([])).await;
         assert_eq!(

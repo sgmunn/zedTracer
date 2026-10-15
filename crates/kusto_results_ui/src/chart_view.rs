@@ -904,6 +904,7 @@ impl Render for ChartView {
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
+            .bg(cx.theme().colors().editor_background)
             .child(
                 h_flex()
                     .px_2()

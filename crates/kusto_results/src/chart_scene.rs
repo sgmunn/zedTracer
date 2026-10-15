@@ -249,6 +249,9 @@ const LEGEND_ROWS_BELOW: usize = 3;
 const MAXIMUM_LABEL_CHARACTERS: usize = 28;
 const MAXIMUM_HOVER_ENTRIES: usize = 12;
 const LINE_WIDTH: f32 = 1.5;
+/// How far a line chart keeps its data from the edges of the plot, so that the marker of a point
+/// at an end is not cut by the edge.
+const DATA_INSET: f32 = 8.0;
 
 #[derive(Clone, Copy)]
 struct Sizes {
@@ -319,22 +322,27 @@ struct Projection {
     plot: Rect,
     /// Categories run down the screen and values across it.
     horizontal: bool,
+    /// How far in from the ends of the plot the first and last position along each axis are.
+    category_inset: f32,
+    value_inset: f32,
 }
 
 impl Projection {
     fn along_categories(&self, fraction: f64) -> f32 {
+        let inset = self.category_inset;
         if self.horizontal {
-            self.plot.top + fraction as f32 * self.plot.height
+            self.plot.top + inset + fraction as f32 * (self.plot.height - 2.0 * inset)
         } else {
-            self.plot.left + fraction as f32 * self.plot.width
+            self.plot.left + inset + fraction as f32 * (self.plot.width - 2.0 * inset)
         }
     }
 
     fn along_values(&self, fraction: f64) -> f32 {
+        let inset = self.value_inset;
         if self.horizontal {
-            self.plot.left + fraction as f32 * self.plot.width
+            self.plot.left + inset + fraction as f32 * (self.plot.width - 2.0 * inset)
         } else {
-            self.plot.bottom() - fraction as f32 * self.plot.height
+            self.plot.bottom() - inset - fraction as f32 * (self.plot.height - 2.0 * inset)
         }
     }
 
@@ -972,9 +980,17 @@ impl ChartScene {
         }
         let plot = margins.plot(width, height);
         let axes = layout.axes(plot);
+        // Lines are kept in from the edges; bars stand on the axis and fill their bands.
+        let inset = if data.kind.is_bars() { 0.0 } else { DATA_INSET };
         let projection = Projection {
             plot,
             horizontal: layout.horizontal,
+            category_inset: if matches!(axes.category, CategoryAxis::Continuous(_)) {
+                inset
+            } else {
+                0.0
+            },
+            value_inset: inset,
         };
 
         let mut scene = ChartScene {
@@ -1911,12 +1927,12 @@ mod tests {
         for line in &lines {
             assert_eq!(line.len(), 10);
             assert!(
-                (line[0].0 - scene.plot.left).abs() < 0.01,
-                "starts at the left edge"
+                (line[0].0 - (scene.plot.left + DATA_INSET)).abs() < 0.01,
+                "starts a little in from the left edge"
             );
             assert!(
-                (line[9].0 - scene.plot.right()).abs() < 0.01,
-                "ends at the right edge"
+                (line[9].0 - (scene.plot.right() - DATA_INSET)).abs() < 0.01,
+                "ends a little in from the right edge"
             );
             assert!(
                 line.iter()
@@ -2352,6 +2368,61 @@ mod tests {
     }
 
     #[test]
+    fn the_marker_of_a_point_at_an_end_is_not_cut_by_the_edge_of_the_plot() {
+        // Marker radius, and the ring drawn round it when hovering.
+        const MARKER: f32 = 5.0;
+        for kind in ["Line", "TimeLine"] {
+            let (_, scene) = scene_of(&two_series_over_time(), json!({"type": kind}));
+            let points: Vec<(f32, f32)> = scene
+                .plot_items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Polyline { points, .. } => Some(points.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            assert!(!points.is_empty());
+            for (x, y) in points {
+                assert!(
+                    x - MARKER >= scene.plot.left && x + MARKER <= scene.plot.right(),
+                    "{kind}: x {x}"
+                );
+                assert!(
+                    y - MARKER >= scene.plot.top && y + MARKER <= scene.plot.bottom(),
+                    "{kind}: y {y}"
+                );
+            }
+        }
+        // The same holds when the highest and the lowest values are the ends of the axis.
+        let (_, limited) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yMin": 5, "yMax": 100}),
+        );
+        let hover = limited
+            .hover(limited.plot.right() - 1.0, limited.plot.top + 10.0)
+            .unwrap();
+        assert!(
+            hover
+                .marks
+                .iter()
+                .all(|(x, _, _)| *x + MARKER <= limited.plot.right())
+        );
+    }
+
+    #[test]
+    fn bars_still_stand_on_the_axis_and_fill_their_bands() {
+        let (_, scene) = scene_of(&states(), json!({"type": "Column"}));
+        let bars = rects(&scene.plot_items);
+        assert!((bars[0].bottom() - scene.plot.bottom()).abs() < 1.0);
+        let first_band_left = scene.plot.left + scene.plot.width / 3.0 * 0.1;
+        assert!(
+            (bars[0].left - first_band_left).abs() < 1.0,
+            "no inset along the bands"
+        );
+    }
+
+    #[test]
     fn a_long_series_is_thinned_without_losing_a_spike() {
         let mut rows = Vec::new();
         for step in 0..20_000i64 {
@@ -2378,7 +2449,7 @@ mod tests {
             .map(|point| point.1)
             .fold(f32::INFINITY, f32::min);
         assert!(
-            (highest - scene.plot.top).abs() < 2.0,
+            (highest - (scene.plot.top + DATA_INSET)).abs() < 2.0,
             "the spike reaches the top of the plot"
         );
     }
