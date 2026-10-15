@@ -399,6 +399,13 @@ unless it should come after another). The parts are `activity_id`, `parent_activ
 column per part and the columns that must be present; the first schema that applies decides the parts it names, and the
 other parts use the listed and the built-in names. A change applies to results opened, and rows selected, afterwards.
 
+## Zooming the sequence diagram
+
+The **Sequence** tab zooms with Ctrl (Cmd on macOS) and the mouse wheel, or with a pinch on a trackpad, over the
+diagram. It goes from a tenth of the natural size, which shows the shape of a long trace, to twice it. A zoom close to
+the natural size snaps back to it, and the **Zoom** label that appears at the top right of the diagram has a button that
+resets it. The diagram scrolls in both directions at any zoom.
+
 ## Row Details
 
 Row Details shows the values of the row selected in a result. It opens by itself, in the dock on the right (the
