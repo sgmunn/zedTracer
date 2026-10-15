@@ -11,6 +11,10 @@ use ui::prelude::*;
 
 use crate::actor_colours::sequence_accents;
 
+/// A trace is drawn tall and narrow, so the markdown view's own limit (the width of the pane)
+/// would keep it from zooming out at all. A tenth of its size shows the shape of a long one.
+const MIN_ZOOM: f32 = 0.1;
+
 pub(crate) struct SequenceView {
     markdown: Entity<Markdown>,
     /// How many steps the diagram draws, so the tab can say when there are none.
@@ -34,6 +38,7 @@ impl SequenceView {
                 None,
                 MarkdownOptions {
                     render_mermaid_diagrams: true,
+                    mermaid_min_zoom: Some(MIN_ZOOM),
                     ..Default::default()
                 },
                 cx,
