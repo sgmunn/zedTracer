@@ -342,6 +342,50 @@ impl ResultSet {
             None => self.table_views.push(view),
         }
     }
+
+    /// This result with the data of a newer run of its query. What the file holds for itself
+    /// stays: the query as it was stored, where it ran, the values of its parameters, its charts
+    /// and the properties this crate does not interpret. A saved layout stays only while its
+    /// table has the columns it was made for, because a layout refers to columns by position.
+    pub fn refreshed_with(&self, run: ResultSet) -> ResultSet {
+        let table_views = self
+            .table_views
+            .iter()
+            .filter(|view| {
+                let table_name = view
+                    .name
+                    .split_once("::")
+                    .map_or(view.name.as_str(), |(table_name, _)| table_name);
+                column_names(&run.tables, table_name)
+                    .is_some_and(|fresh| column_names(&self.tables, table_name) == Some(fresh))
+            })
+            .cloned()
+            .collect();
+        ResultSet {
+            query: self.query.clone(),
+            cluster: self.cluster.clone(),
+            database: self.database.clone(),
+            parameters: self.parameters.clone(),
+            execution_started_at: run.execution_started_at,
+            execution_duration_ms: run.execution_duration_ms,
+            client_request_id: run.client_request_id,
+            tables: run.tables,
+            table_views,
+            charts: self.charts.clone(),
+            extra: self.extra.clone(),
+        }
+    }
+}
+
+fn column_names<'a>(tables: &'a [Table], table_name: &str) -> Option<Vec<&'a str>> {
+    let table = tables.iter().find(|table| table.name == table_name)?;
+    Some(
+        table
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect(),
+    )
 }
 
 impl Serialize for ResultSet {
@@ -605,6 +649,94 @@ mod tests {
         result.set_table_view(view(120));
         assert_eq!(result.table_views.len(), 1);
         assert_eq!(result.table_view("PrimaryResult"), Some(&view(120)));
+    }
+
+    const STORED: &str = r#"{
+      "query": "StormEvents | take 2",
+      "cluster": "https://help.kusto.windows.net",
+      "database": "Samples",
+      "parameters": {"raid": "abc"},
+      "tables": [{"name": "PrimaryResult",
+                  "columns": [{"name": "n", "type": "long"}, {"name": "label", "type": "string"}],
+                  "rows": [[1, "a"], [2, "b"]]}],
+      "executionStartedAt": "2026-01-01T00:00:00.000Z",
+      "executionDurationMs": 12,
+      "clientRequestId": "old",
+      "tableViews": [
+        {"name": "PrimaryResult", "gutterWidth": 64, "columns": [{"index": 1, "width": 90}]},
+        {"name": "PrimaryResult::activity-structured:0", "columns": [{"index": 0}]},
+        {"name": "Gone", "columns": [{"index": 0}]}],
+      "charts": [{"name": "kept", "options": {"type": "Line", "title": "T"}}],
+      "later": 1
+    }"#;
+
+    fn run_of(columns: &str, rows: &str) -> ResultSet {
+        ResultSet::from_json(&format!(
+            r#"{{"query": "new text", "cluster": "elsewhere", "database": "Other",
+                "tables": [{{"name": "PrimaryResult", "columns": {columns}, "rows": {rows}}}],
+                "executionStartedAt": "2026-02-02T00:00:00.000Z",
+                "executionDurationMs": 99, "clientRequestId": "new"}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_refresh_takes_the_data_and_keeps_what_the_file_owns() {
+        let stored = ResultSet::from_json(STORED).unwrap();
+        let run = run_of(
+            r#"[{"name": "n", "type": "long"}, {"name": "label", "type": "string"}]"#,
+            r#"[[7, "x"], [8, "y"], [9, "z"]]"#,
+        );
+        let refreshed = stored.refreshed_with(run);
+
+        assert_eq!(refreshed.tables[0].rows.len(), 3);
+        assert_eq!(
+            refreshed.execution_started_at.as_deref(),
+            Some("2026-02-02T00:00:00.000Z")
+        );
+        assert_eq!(refreshed.execution_duration_ms, Some(99));
+        assert_eq!(refreshed.client_request_id.as_deref(), Some("new"));
+
+        assert_eq!(
+            refreshed.query, stored.query,
+            "the stored query is the one to repeat"
+        );
+        assert_eq!(refreshed.cluster, stored.cluster);
+        assert_eq!(refreshed.database, stored.database);
+        assert_eq!(refreshed.parameters, stored.parameters);
+        assert_eq!(refreshed.charts, stored.charts);
+        assert_eq!(refreshed.extra, stored.extra);
+
+        let written = refreshed.to_json().unwrap();
+        assert_eq!(ResultSet::from_json(&written).unwrap(), refreshed);
+    }
+
+    #[test]
+    fn a_layout_stays_while_its_table_has_the_same_columns() {
+        let stored = ResultSet::from_json(STORED).unwrap();
+        let same_columns = stored.refreshed_with(run_of(
+            r#"[{"name": "n", "type": "long"}, {"name": "label", "type": "string"}]"#,
+            "[]",
+        ));
+        let names: Vec<&str> = same_columns
+            .table_views
+            .iter()
+            .map(|view| view.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["PrimaryResult", "PrimaryResult::activity-structured:0"],
+            "a view of a table the run did not return is dropped, one derived from a kept table stays"
+        );
+
+        let other_columns = stored.refreshed_with(run_of(
+            r#"[{"name": "label", "type": "string"}, {"name": "n", "type": "long"}]"#,
+            "[]",
+        ));
+        assert!(
+            other_columns.table_views.is_empty(),
+            "a layout made for other columns would put widths on the wrong ones"
+        );
     }
 
     #[test]
