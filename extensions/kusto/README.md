@@ -325,18 +325,20 @@ options shown there can be changed; any other option a chart has is kept as it i
 
 From and To can be set one at a time: the end you leave empty fits the data. On the X axis of a time or number chart they cut the
 axis, and on bars over dates or numbers they leave out the bars outside the range; a text axis has no range, so they do nothing
-there. A time limit is written like `2026-10-06T12:00:00Z`.
+there. A time, for a limit or a line, is a date like `2026-08-29`, or a time like `2026-08-29 12:30` or `2026-08-29T12:30:00Z`, or a
+`datetime(2026-08-29)` pasted from a query; without a zone it is UTC.
 
 The pane works from the keyboard: opening it puts the cursor in its first field, **Tab** and **Shift-Tab** move through every field
 in the order they are on the screen (also from inside a text field), **Space** or **Enter** changes the field you are on, and
 **Escape** closes the pane and returns to the chart.
 
 **Lines.** A chart can have lines across it at values you choose, such as a threshold or the moment of a release. A
-horizontal line is at a value of the Y axis, and a vertical line at a value of the X axis (a date and time on a time axis, a
+horizontal line is at a value of the Y axis, and a vertical line at a value of the X axis (a date or a time on a time axis, as above, or a
 category's name on a text axis). **Right-click** the chart and choose *Add horizontal line at …* or *Add vertical line at …* to put
 one where the pointer is, or use **Add horizontal line** and **Add vertical line** under *Lines* in the pane, which put the cursor in
 the new line's value. Each line can have a label, be dashed (the default) or solid, and be grey, red, orange, green or blue; its
-colour follows the theme. Lines are drawn under the data, with their label at the end of the line. A line is always in view: an
+colour follows the theme. Lines are drawn under the data, with their label at the end of the line. A line whose value cannot be read as a value of its axis is not drawn, and a note under the chart says which and what a value looks
+like. A line is always in view: an
 axis grows to include it, unless you have set From and To on that axis, and then a line outside them is cut off. They are saved
 in the chart as `referenceLines`, which the VS Code extension does not know, so a file it saves drops them.
 

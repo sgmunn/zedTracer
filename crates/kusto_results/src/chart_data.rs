@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use serde_json::Value;
 
 use crate::chart::{Aggregation, ChartOptions, ChartType, SortOrder};
@@ -698,10 +698,44 @@ fn parse_datetime(cell: &Cell) -> Option<f64> {
     parse_datetime_text(text)
 }
 
-/// Milliseconds since the epoch of an ISO 8601 time with a zone, as Kusto writes datetimes.
+/// Milliseconds since the epoch of a time. The ISO 8601 text with a zone that Kusto writes is read
+/// first; then the forms a person types, which are all taken as UTC: a date (`2026-08-29`), a
+/// date and time without a zone (`2026-08-29 12:30`, `2026-08-29T12:30:00.5`), either with a
+/// trailing `Z`, and a KQL literal (`datetime(2026-08-29)`).
 pub fn parse_datetime_text(text: &str) -> Option<f64> {
-    let date = DateTime::parse_from_rfc3339(text).ok()?;
-    Some(date.timestamp() as f64 * 1000.0 + f64::from(date.timestamp_subsec_nanos()) / 1e6)
+    let milliseconds =
+        |seconds: i64, nanoseconds: u32| seconds as f64 * 1000.0 + f64::from(nanoseconds) / 1e6;
+    if let Ok(date) = DateTime::parse_from_rfc3339(text) {
+        return Some(milliseconds(
+            date.timestamp(),
+            date.timestamp_subsec_nanos(),
+        ));
+    }
+    let text = text.trim();
+    let text = text
+        .strip_prefix("datetime(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map_or(text, str::trim);
+    let text = text.strip_suffix(['Z', 'z']).unwrap_or(text);
+    for format in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(date) = NaiveDateTime::parse_from_str(text, format) {
+            let date = date.and_utc();
+            return Some(milliseconds(
+                date.timestamp(),
+                date.timestamp_subsec_nanos(),
+            ));
+        }
+    }
+    let midnight = NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)?
+        .and_utc();
+    Some(milliseconds(midnight.timestamp(), 0))
 }
 
 fn parse_timespan(cell: &Cell) -> Option<f64> {
@@ -1248,6 +1282,26 @@ mod tests {
         );
         assert_eq!(parse_datetime_text("1970-01-01T01:00:00+01:00"), Some(0.0));
         assert_eq!(parse_datetime_text("yesterday"), None);
+        // What a person types is read as UTC.
+        let day = parse_datetime_text("2026-08-29T00:00:00Z");
+        assert!(day.is_some());
+        assert_eq!(parse_datetime_text("2026-08-29"), day);
+        assert_eq!(parse_datetime_text("2026-08-29T00:00:00"), day);
+        assert_eq!(parse_datetime_text("2026-08-29 00:00"), day);
+        assert_eq!(parse_datetime_text("  2026-08-29Z "), day);
+        assert_eq!(parse_datetime_text("datetime(2026-08-29)"), day);
+        assert_eq!(parse_datetime_text("datetime( 2026-08-29 00:00:00 )"), day);
+        assert_eq!(
+            parse_datetime_text("2026-08-29 12:30"),
+            day.map(|day| day + 12.5 * 3_600_000.0)
+        );
+        assert_eq!(
+            parse_datetime_text("2026-08-29T00:00:01.5"),
+            day.map(|day| day + 1500.0)
+        );
+        assert_eq!(parse_datetime_text("2026-13-45"), None);
+        assert_eq!(parse_datetime_text("29/08/2026"), None);
+        assert_eq!(parse_datetime_text(""), None);
         assert_eq!(parse_timespan_text("00:00:01.5000000"), Some(1500.0));
         assert_eq!(parse_timespan_text("1.02:03:04"), Some(93_784_000.0));
         assert_eq!(parse_timespan_text("-00:01:00"), Some(-60_000.0));

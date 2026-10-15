@@ -21,7 +21,7 @@ use kusto_results::chart::{Aggregation, ColorMode, LineOrientation, ReferenceLin
 use kusto_results::chart_data::ChartData;
 use kusto_results::chart_scene::{
     Anchor, ChartScene, EstimatedText, Hover, Item, Rect, Role, SvgStyle, TextMeasure,
-    VerticalAnchor, ViewState,
+    VerticalAnchor, ViewState, line_problems,
 };
 use kusto_results::{Chart, ChartDefaults, ChartOptions, ResultSet};
 use settings::{Settings as _, SettingsStore};
@@ -941,6 +941,25 @@ impl ChartView {
         self.context_menu.is_some()
     }
 
+    /// What is said under the chart: how the data was read, and the lines that could not be placed.
+    fn notes(&self) -> Vec<SharedString> {
+        let DataState::Ready(data) = &self.data else {
+            return Vec::new();
+        };
+        let problems = line_problems(data, &self.painted.borrow().options);
+        data.notes
+            .iter()
+            .cloned()
+            .chain(problems)
+            .map(SharedString::from)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shown_notes(&self) -> Vec<SharedString> {
+        self.notes()
+    }
+
     #[cfg(test)]
     pub(crate) fn is_editing(&self) -> bool {
         self.editing
@@ -967,14 +986,7 @@ impl ChartView {
 
 impl Render for ChartView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let notes: Vec<SharedString> = match &self.data {
-            DataState::Ready(data) => data
-                .notes
-                .iter()
-                .map(|note| SharedString::from(note.clone()))
-                .collect(),
-            _ => Vec::new(),
-        };
+        let notes = self.notes();
         let body = match &self.data {
             DataState::Building => div()
                 .p_4()

@@ -3195,6 +3195,56 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn a_line_whose_value_cannot_be_placed_is_explained_under_the_chart(
+        cx: &mut TestAppContext,
+    ) {
+        let (viewer, _fs, cx) = open_one(
+            cx,
+            "storms.ktt",
+            charted(json!([{ "options": { "type": "TimeLine" } }])),
+        )
+        .await;
+        let view = chart_view(&viewer, cx);
+        view.update_in(cx, |view, window, cx| view.toggle_editor(window, cx));
+        let editor = view
+            .read_with(cx, |view, _| view.editor())
+            .expect("the editor");
+        editor.update_in(cx, |editor, window, cx| {
+            editor.add_line_for_test(kusto_results::chart::LineOrientation::Vertical, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            view.read_with(cx, |view, _| view.shown_notes()).is_empty(),
+            "no value yet, nothing to say"
+        );
+
+        // A date written the way people write it is understood.
+        let value = editor.read_with(cx, |editor, _| editor.line_value_editor(0));
+        value.update_in(cx, |value, window, cx| {
+            value.set_text("2007-01-03", window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(view.read_with(cx, |view, _| view.shown_notes()).is_empty());
+        assert_eq!(reference_lines_drawn(&view, cx), 1, "and the line is drawn");
+
+        // One that is not is said not to be.
+        value.update_in(cx, |value, window, cx| {
+            value.set_text("last tuesday", window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let notes = view.read_with(cx, |view, _| view.shown_notes());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("last tuesday") && notes[0].contains("not drawn"),
+            "{}",
+            notes[0]
+        );
+        assert_eq!(reference_lines_drawn(&view, cx), 0);
+    }
+
+    #[gpui::test]
     async fn an_edit_leaves_the_other_charts_exactly_as_they_were(cx: &mut TestAppContext) {
         let sankey = json!({
             "name": "Flow", "options": { "type": "Sankey", "nodesTable": "nodes", "futureOption": [1, 2] },

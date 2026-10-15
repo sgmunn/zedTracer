@@ -464,6 +464,63 @@ fn axis_options(
     }
 }
 
+/// Why some of the lines the user drew cannot be placed on the chart, in words. A line that has
+/// no value yet is not a problem.
+pub fn line_problems(data: &ChartData, options: &ChartOptions) -> Vec<String> {
+    let horizontal_chart = data.kind.is_bar();
+    let value_axis_is_log = if horizontal_chart {
+        options.x_axis
+    } else {
+        options.y_axis
+    } == Some(AxisScale::Log);
+    let category_axis_is_log = !horizontal_chart && options.x_axis == Some(AxisScale::Log);
+    let mut problems = Vec::new();
+    for (index, line) in options.reference_lines.iter().flatten().enumerate() {
+        let text = line.value_text();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let on_value_axis = (line.orientation == LineOrientation::Horizontal) != horizontal_chart;
+        let axis = if line.orientation == LineOrientation::Horizontal {
+            "Y"
+        } else {
+            "X"
+        };
+        let (placed, hint) = if on_value_axis {
+            let placed = limit_number(&line.value, None)
+                .is_some_and(|value| !value_axis_is_log || value > 0.0);
+            (placed, " Use a number above zero.")
+        } else {
+            match data.x_kind {
+                XKind::Category => (
+                    data.categories.contains(&text),
+                    " Use the name of one of the categories, as it is written there.",
+                ),
+                XKind::Time => (
+                    limit_number(&line.value, Some(XKind::Time)).is_some(),
+                    " Use a date such as 2026-08-29, or a time such as 2026-08-29T12:30:00Z.",
+                ),
+                XKind::Duration => (
+                    limit_number(&line.value, Some(XKind::Duration)).is_some(),
+                    " Use a timespan such as 00:05:00.",
+                ),
+                XKind::Number => (
+                    limit_number(&line.value, Some(XKind::Number))
+                        .is_some_and(|value| !category_axis_is_log || value > 0.0),
+                    " Use a number.",
+                ),
+            }
+        };
+        if !placed {
+            problems.push(format!(
+                "Line {} ({text}) is not a value of the {axis} axis, so it is not drawn.{hint}",
+                index + 1
+            ));
+        }
+    }
+    problems
+}
+
 /// A value of an axis as text for a line's value: rounded to what the pointer can tell apart on
 /// this axis, and in a form `limit_number` reads back.
 fn axis_value_text(value: f64, axis: &Continuous, kind: Option<XKind>) -> String {
@@ -3042,6 +3099,87 @@ mod tests {
         );
         assert_eq!(reference_lines(&scene).len(), 1);
         assert!(all_coordinates_are_finite(&scene));
+    }
+
+    #[test]
+    fn a_date_without_a_time_places_a_line_and_a_limit_like_the_full_timestamp() {
+        let line = |value: &str| {
+            let (_, scene) = scene_of(
+                &two_series_over_time(),
+                json!({"type": "TimeLine", "referenceLines": [{"orientation": "Vertical", "value": value}]}),
+            );
+            reference_lines(&scene)[0].0.0
+        };
+        let full = line("2007-01-05T00:00:00Z");
+        assert!((line("2007-01-05") - full).abs() < 0.01);
+        assert!((line("2007-01-05 00:00") - full).abs() < 0.01);
+        assert!((line("datetime(2007-01-05)") - full).abs() < 0.01);
+
+        let (_, limited) = scene_of(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "xMin": "2007-01-03", "xMax": "2007-01-07"}),
+        );
+        assert!(
+            texts(&limited.chrome).contains(&"Jan 3".to_string()),
+            "{:?}",
+            texts(&limited.chrome)
+        );
+    }
+
+    #[test]
+    fn a_line_that_cannot_be_placed_is_explained() {
+        let problems = |table: &Table, value: serde_json::Value| {
+            let options = options(value);
+            let data = ChartData::build(table, &options).unwrap();
+            line_problems(&data, &options)
+        };
+        let time = |lines: serde_json::Value| {
+            problems(
+                &two_series_over_time(),
+                json!({"type": "TimeLine", "referenceLines": lines}),
+            )
+        };
+        assert!(time(json!([{"orientation": "Vertical", "value": "2007-01-05"}])).is_empty());
+        assert!(
+            time(json!([{"orientation": "Vertical", "value": null}])).is_empty(),
+            "not typed yet"
+        );
+        assert!(time(json!([{"orientation": "Vertical", "value": "  "}])).is_empty());
+        let wrong = time(json!([
+            {"orientation": "Horizontal", "value": 50},
+            {"orientation": "Vertical", "value": "05/01/2007"},
+            {"orientation": "Horizontal", "value": "high"}
+        ]));
+        assert_eq!(wrong.len(), 2, "{wrong:?}");
+        assert!(
+            wrong[0].starts_with("Line 2 (05/01/2007) is not a value of the X axis"),
+            "{}",
+            wrong[0]
+        );
+        assert!(
+            wrong[0].contains("2026-08-29"),
+            "it says what a date looks like"
+        );
+        assert!(
+            wrong[1].contains("Line 3") && wrong[1].contains("Y axis"),
+            "{}",
+            wrong[1]
+        );
+
+        let categories = problems(
+            &states(),
+            json!({"type": "Column", "referenceLines": [
+                {"orientation": "Vertical", "value": "CA"},
+                {"orientation": "Vertical", "value": "Texas"}
+            ]}),
+        );
+        assert_eq!(categories.len(), 1);
+        assert!(categories[0].contains("(Texas)") && categories[0].contains("categories"));
+        let log = problems(
+            &two_series_over_time(),
+            json!({"type": "TimeLine", "yAxis": "Log", "referenceLines": [{"orientation": "Horizontal", "value": 0}]}),
+        );
+        assert!(log[0].contains("above zero"), "{}", log[0]);
     }
 
     #[test]
