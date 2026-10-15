@@ -58,6 +58,9 @@ use util::ResultExt;
 use crate::parser::CodeBlockKind;
 
 const MERMAID_MAX_ZOOM: f32 = 2.0;
+/// The smallest `MarkdownOptions::mermaid_min_zoom` that is honoured: below this a diagram is
+/// too small to be told from a blank page.
+const MERMAID_LOWEST_MIN_ZOOM: f32 = 0.1;
 /// Zoom levels within this distance of 1.0 snap back to exactly 1.0 so users
 /// can easily return to the default size.
 const MERMAID_ZOOM_SNAP_TOLERANCE: f32 = 0.05;
@@ -527,6 +530,10 @@ pub struct MarkdownOptions {
     pub render_mermaid_diagrams: bool,
     pub parse_heading_slugs: bool,
     pub render_metadata_blocks: bool,
+    /// How far a Mermaid diagram can be zoomed out, as a fraction of its natural size. Without
+    /// it a diagram that fits the width is never drawn smaller than its natural size, so a tall
+    /// one cannot be zoomed out to see all of it.
+    pub mermaid_min_zoom: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -806,9 +813,20 @@ impl Markdown {
 
     /// The smallest zoom level for a diagram: the scale that makes it span
     /// the content width, capped at 1.0 so diagrams that already fit are
-    /// never zoomed out below their natural size. Falls back to 1.0 when the
-    /// diagram has no raster yet or the container hasn't been laid out.
+    /// never zoomed out below their natural size, unless the options allow
+    /// zooming out further.
     fn mermaid_min_zoom_level(&self, source_offset: usize) -> f32 {
+        let fit_to_width = self.mermaid_fit_to_width_zoom_level(source_offset);
+        match self.options.mermaid_min_zoom {
+            Some(min_zoom) => fit_to_width.min(min_zoom.clamp(MERMAID_LOWEST_MIN_ZOOM, 1.0)),
+            None => fit_to_width,
+        }
+    }
+
+    /// The scale that makes a diagram span the content width, capped at 1.0.
+    /// Falls back to 1.0 when the diagram has no raster yet or the container
+    /// hasn't been laid out.
+    fn mermaid_fit_to_width_zoom_level(&self, source_offset: usize) -> f32 {
         let Some(diagram) = self.parsed_markdown.mermaid_diagrams.get(&source_offset) else {
             return 1.0;
         };
@@ -834,10 +852,22 @@ impl Markdown {
         zoom: f32,
         cx: &mut Context<Self>,
     ) {
+        self.set_mermaid_zoom_level_with_snap(source_offset, zoom, true, cx);
+    }
+
+    /// A pinch changes the zoom by amounts smaller than the snap tolerance, so snapping each
+    /// of them would hold a diagram at 1.0; the caller snaps when the gesture ends.
+    pub(crate) fn set_mermaid_zoom_level_with_snap(
+        &mut self,
+        source_offset: usize,
+        zoom: f32,
+        snap_to_natural_size: bool,
+        cx: &mut Context<Self>,
+    ) {
         let min_zoom = self.mermaid_min_zoom_level(source_offset);
         let requested_zoom = zoom;
         let mut zoom = zoom.clamp(min_zoom, MERMAID_MAX_ZOOM);
-        if (zoom - 1.0).abs() <= MERMAID_ZOOM_SNAP_TOLERANCE {
+        if snap_to_natural_size && (zoom - 1.0).abs() <= MERMAID_ZOOM_SNAP_TOLERANCE {
             zoom = 1.0;
         }
         // The user zoomed out to (or past) the fit-to-width floor. From here

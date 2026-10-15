@@ -1,8 +1,9 @@
 use collections::HashMap;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Hsla, ImageSource,
-    ParsedSvg, RenderImage, SMOOTH_SVG_SCALE_FACTOR, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    Size, Stateful, StyledText, Task, Window, img, pulsating_between, size,
+    ParsedSvg, PinchEvent, RenderImage, SMOOTH_SVG_SCALE_FACTOR, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, Size, Stateful, StyledText, Task, TouchPhase, Window, img, pulsating_between,
+    size,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -609,6 +610,30 @@ fn on_mermaid_scroll(
     }
 }
 
+fn on_mermaid_pinch(
+    markdown: Entity<Markdown>,
+    source_offset: usize,
+    on_zoom: Option<MermaidZoomCallback>,
+) -> impl Fn(&PinchEvent, &mut Window, &mut App) + 'static {
+    move |event, window, cx| {
+        let gesture_ended = matches!(event.phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        let zoom_changed = markdown.update(cx, |markdown, cx| {
+            let current_zoom = markdown.mermaid_zoom_level(source_offset);
+            markdown.set_mermaid_zoom_level_with_snap(
+                source_offset,
+                current_zoom * (1.0 + event.delta),
+                gesture_ended,
+                cx,
+            );
+            markdown.mermaid_zoom_level(source_offset) != current_zoom
+        });
+        if zoom_changed && let Some(on_zoom) = &on_zoom {
+            on_zoom(window, cx);
+        }
+        cx.stop_propagation();
+    }
+}
+
 pub(crate) fn render_mermaid_diagram(
     parsed: &ParsedMarkdownMermaidDiagram,
     mermaid_state: &MermaidState,
@@ -802,11 +827,12 @@ fn mermaid_scroll_container(
         .overflow_x_scroll()
         .track_scroll(scroll_handle)
         .on_scroll_wheel(on_mermaid_scroll(
-            markdown,
+            markdown.clone(),
             source_offset,
             scroll_handle.clone(),
-            on_zoom,
-        ));
+            on_zoom.clone(),
+        ))
+        .on_pinch(on_mermaid_pinch(markdown, source_offset, on_zoom));
     // Without this, gpui maps vertical wheel deltas onto the x axis for
     // x-only scroll containers (see `paint_scroll_listener` in gpui's div),
     // hijacking plain vertical scrolls. Restricting to the actual axis lets
@@ -1014,8 +1040,9 @@ mod tests {
     };
     use collections::HashMap;
     use gpui::{
-        Context, Entity, IntoElement, Modifiers, Render, RenderImage, ScrollDelta, ScrollHandle,
-        ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, size,
+        Context, Entity, IntoElement, Modifiers, PinchEvent, Pixels, Render, RenderImage,
+        ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext, TouchPhase, Window, point,
+        size,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1987,5 +2014,193 @@ mod tests {
 
         wheel(ScrollDelta::Lines(point(0., -3.)), cx);
         assert!(view.offset().y < px(0.), "a vertical wheel still scrolls the view");
+    }
+
+    /// A `Markdown` that holds a diagram whose natural width is 200px, in a pane that is
+    /// `container_width` wide.
+    fn markdown_with_a_200px_diagram(
+        options: MarkdownOptions,
+        container_width: Pixels,
+        cx: &mut TestAppContext,
+    ) -> Entity<Markdown> {
+        ensure_theme_initialized(cx);
+        let markdown = cx.new(|cx| Markdown::new_with_options("".into(), None, None, options, cx));
+        let (parsed_svg, image) = markdown.update(cx, |_, cx| {
+            let svg_renderer = cx.svg_renderer();
+            let parsed_svg = Arc::new(
+                svg_renderer
+                    .parse_svg(
+                        br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"></svg>"#,
+                    )
+                    .unwrap(),
+            );
+            let image = svg_renderer.render_parsed(&parsed_svg, 1.0).unwrap();
+            (parsed_svg, image)
+        });
+        let contents = mermaid_contents("graph A");
+        markdown.update(cx, |markdown, _| {
+            markdown.parsed_markdown.mermaid_diagrams.insert(
+                0,
+                ParsedMarkdownMermaidDiagram {
+                    content_range: 0..contents.contents.len(),
+                    contents: contents.clone(),
+                },
+            );
+            markdown.mermaid_state.cache.insert(
+                contents.clone(),
+                Arc::new(CachedMermaidDiagram::new_for_test(
+                    Some(image),
+                    None,
+                    Some(parsed_svg),
+                )),
+            );
+            markdown
+                .mermaid_views
+                .entry(0)
+                .or_default()
+                .container_width_for_test = Some(container_width);
+        });
+        markdown
+    }
+
+    #[gpui::test]
+    fn test_mermaid_min_zoom_lets_a_diagram_that_fits_zoom_out(cx: &mut TestAppContext) {
+        let zoomed_out_as_far_as_possible =
+            |min_zoom: Option<f32>, container_width: f32, cx: &mut TestAppContext| {
+                let markdown = markdown_with_a_200px_diagram(
+                    MarkdownOptions {
+                        mermaid_min_zoom: min_zoom,
+                        ..Default::default()
+                    },
+                    px(container_width),
+                    cx,
+                );
+                markdown.update(cx, |markdown, cx| {
+                    markdown.set_mermaid_zoom_level(0, 0.01, cx);
+                    markdown.mermaid_zoom_level(0)
+                })
+            };
+
+        assert_eq!(
+            zoomed_out_as_far_as_possible(None, 500., cx),
+            1.0,
+            "a diagram that fits is not zoomed out below its natural size by default"
+        );
+        assert_eq!(zoomed_out_as_far_as_possible(Some(0.25), 500., cx), 0.25);
+        assert_eq!(
+            zoomed_out_as_far_as_possible(Some(0.25), 100., cx),
+            0.25,
+            "a diagram wider than the pane may go below the scale that fits it"
+        );
+        assert_eq!(
+            zoomed_out_as_far_as_possible(Some(0.25), 40., cx),
+            0.2,
+            "but not below the scale that fits it when that is smaller still"
+        );
+        assert_eq!(
+            zoomed_out_as_far_as_possible(Some(0.0), 500., cx),
+            0.1,
+            "a diagram is never made smaller than a tenth"
+        );
+        assert_eq!(
+            zoomed_out_as_far_as_possible(Some(3.0), 500., cx),
+            1.0,
+            "and a minimum above the natural size does not zoom it in"
+        );
+    }
+
+    #[gpui::test]
+    fn test_mermaid_zoomed_out_to_the_min_zoom_stays_there_when_the_pane_is_resized(
+        cx: &mut TestAppContext,
+    ) {
+        let markdown = markdown_with_a_200px_diagram(
+            MarkdownOptions {
+                mermaid_min_zoom: Some(0.25),
+                ..Default::default()
+            },
+            px(500.),
+            cx,
+        );
+        markdown.update(cx, |markdown, cx| {
+            markdown.set_mermaid_zoom_level(0, 0.01, cx);
+
+            markdown
+                .mermaid_views
+                .get_mut(&0)
+                .unwrap()
+                .container_width_for_test = Some(px(300.));
+            assert_eq!(markdown.effective_mermaid_zoom_level(0, cx), 0.25);
+
+            markdown
+                .mermaid_views
+                .get_mut(&0)
+                .unwrap()
+                .container_width_for_test = Some(px(40.));
+            assert_eq!(
+                markdown.effective_mermaid_zoom_level(0, cx),
+                0.2,
+                "a pane too narrow for the diagram at the minimum shrinks it to fit"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn a_pinch_over_a_diagram_zooms_it_and_snaps_when_it_ends(cx: &mut TestAppContext) {
+        ensure_theme_initialized(cx);
+        let (scrolling, cx) = cx.add_window_view(|_, cx| ScrollingDiagram {
+            markdown: cx.new(|cx| {
+                Markdown::new_with_options("".into(), None, None, MarkdownOptions::default(), cx)
+            }),
+            view: ScrollHandle::new(),
+            diagram: ScrollHandle::new(),
+        });
+        cx.simulate_resize(size(px(600.), px(400.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let markdown = scrolling.read_with(cx, |scrolling, _| scrolling.markdown.clone());
+
+        let over_diagram = point(px(100.), px(50.));
+        let below_diagram = point(px(100.), px(300.));
+        let pinch = |position, delta: f32, phase, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(PinchEvent {
+                position,
+                delta,
+                modifiers: Modifiers::default(),
+                phase,
+            });
+        };
+        let zoom = |cx: &mut gpui::VisualTestContext| {
+            markdown.read_with(cx, |markdown, _| markdown.mermaid_zoom_level(0))
+        };
+        let assert_zoom = |found: f32, expected: f32| {
+            assert!(
+                (found - expected).abs() < 1e-4,
+                "zoomed to {found}, expected {expected}"
+            );
+        };
+
+        pinch(over_diagram, 0.02, TouchPhase::Started, cx);
+        pinch(over_diagram, 0.03, TouchPhase::Moved, cx);
+        assert_zoom(zoom(cx), 1.02 * 1.03);
+
+        pinch(over_diagram, -0.04, TouchPhase::Moved, cx);
+        assert_zoom(zoom(cx), 1.02 * 1.03 * 0.96);
+        assert_ne!(
+            zoom(cx),
+            1.0,
+            "a pinch is not held at the natural size while it goes on"
+        );
+
+        pinch(over_diagram, 0.0, TouchPhase::Ended, cx);
+        assert_eq!(zoom(cx), 1.0, "and snaps to it when it ends");
+
+        pinch(over_diagram, 0.5, TouchPhase::Moved, cx);
+        pinch(over_diagram, 0.0, TouchPhase::Ended, cx);
+        assert_zoom(zoom(cx), 1.5);
+
+        pinch(below_diagram, 0.2, TouchPhase::Moved, cx);
+        assert_zoom(zoom(cx), 1.5);
+
+        pinch(over_diagram, 5.0, TouchPhase::Moved, cx);
+        assert_eq!(zoom(cx), 2.0, "a pinch stops at the largest zoom");
     }
 }
