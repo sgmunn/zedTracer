@@ -2,10 +2,11 @@
 //! tab that shows its first table in a results grid, and each further table in a grid of its own.
 
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context as _;
+use anyhow::{Context as _, Result, bail};
 use encoding_rs::Encoding;
 use gpui::{
     Action as _, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
@@ -241,21 +242,48 @@ impl ResultsFile {
         }));
     }
 
-    fn write(&mut self, cx: &mut Context<Self>) {
-        if self.write_in_flight.is_some() {
-            self.changed_during_write = true;
-            return;
+    /// Replaces the data with a newer run of the query and writes the file at once. Unlike a
+    /// layout, which is written when the user pauses and only logged if it fails, a refresh was
+    /// asked for, so the task it returns says whether the file was written. Meant for a file
+    /// nobody else is writing at the moment, such as one opened only for this.
+    pub(crate) fn refresh(
+        &mut self,
+        run: ResultSet,
+        cx: &mut Context<Self>,
+    ) -> Result<Task<Result<()>>> {
+        if self.problem.is_some() {
+            bail!(
+                "{} is not a usable result file, so it cannot be refreshed.",
+                self.file_name
+            );
         }
-        let Some(storage) = &self.storage else {
-            return;
-        };
-        let text = match self.result.to_json() {
-            Ok(text) => text,
+        let refreshed = Arc::new(self.result.refreshed_with(run));
+        let previous = std::mem::replace(&mut self.result, refreshed);
+        let write = match self.start_write(cx) {
+            Ok(Some(write)) => write,
+            Ok(None) => {
+                self.result = previous;
+                bail!(
+                    "{} cannot be written, so it cannot be refreshed.",
+                    self.file_name
+                );
+            }
             Err(error) => {
-                log::error!("could not write {}: {error:#}", self.file_name);
-                return;
+                self.result = previous;
+                return Err(error);
             }
         };
+        self.save_delay = None;
+        cx.emit(ResultsFileEvent::Reloaded);
+        Ok(write)
+    }
+
+    /// Starts writing the result to the file, or returns `None` where the file cannot be written.
+    fn start_write(&self, cx: &mut Context<Self>) -> Result<Option<Task<Result<()>>>> {
+        let Some(storage) = &self.storage else {
+            return Ok(None);
+        };
+        let text = self.result.to_json()?;
         let write = storage.worktree.update(cx, |worktree, cx| {
             worktree.write_file(
                 self.project_path.path.clone(),
@@ -265,10 +293,22 @@ impl ResultsFile {
                 storage.has_bom,
                 cx,
             )
-        });
+        })?;
+        Ok(Some(cx.spawn(async move |_, _| {
+            write.await?;
+            Ok(())
+        })))
+    }
+
+    fn write(&mut self, cx: &mut Context<Self>) {
+        if self.write_in_flight.is_some() {
+            self.changed_during_write = true;
+            return;
+        }
         let file_name = self.file_name.clone();
-        let write = match write {
-            Ok(write) => write,
+        let write = match self.start_write(cx) {
+            Ok(Some(write)) => write,
+            Ok(None) => return,
             Err(error) => {
                 log::error!("could not write {file_name}: {error:#}");
                 return;
@@ -837,15 +877,15 @@ impl ResultsViewer {
         self.query_view = Some(cx.new(|cx| QueryView::new(&result, window, cx)));
     }
 
+    fn path_on_disk(&self, cx: &App) -> PathBuf {
+        let file = self.results_file.read(cx);
+        file._worktree.read(cx).absolutize(&file.project_path.path)
+    }
+
     /// Saves a copy of this result's file into the project, under a name made from its query.
     pub(crate) fn save_action(&self, cx: &App) -> Option<crate::save_result::SaveResult> {
         let file = self.results_file.read(cx);
-        let path = file
-            ._worktree
-            .read(cx)
-            .absolutize(&file.project_path.path)
-            .to_string_lossy()
-            .into_owned();
+        let path = self.path_on_disk(cx).to_string_lossy().into_owned();
         let query = file.result.query.as_deref().unwrap_or_default();
         Some(crate::save_result::SaveResult {
             path: Some(path),
@@ -857,8 +897,12 @@ impl ResultsViewer {
     }
 
     /// Runs the query of this result again, if the file says where it ran, with the values its
-    /// parameters had.
+    /// parameters had. A file the history keeps is a record of one run, so it gets a new result;
+    /// any other file is refreshed in place, keeping its charts and layout.
     pub(crate) fn rerun_action(&self, cx: &App) -> Option<RerunQuery> {
+        let path = self.path_on_disk(cx);
+        let into = (!path.starts_with(crate::history::history_folder()))
+            .then(|| path.to_string_lossy().into_owned());
         let result = &self.results_file.read(cx).result;
         let text = |value: &Option<String>| {
             value
@@ -878,6 +922,7 @@ impl ResultsViewer {
             parameters: parameter_values(result).into_iter().collect(),
             // The query of a result already holds the functions it used.
             functions: Vec::new(),
+            into,
         })
     }
 
@@ -1586,6 +1631,11 @@ impl Render for ResultsViewer {
             && matches!(&self.sequence, Some(Sequence::Ready(view)) if view.read(cx).steps() == 0);
         let collapse = self.sequence_options.collapse_repeats;
         let rerun = self.rerun_action(cx);
+        let rerun_tooltip = if rerun.as_ref().is_some_and(|action| action.into.is_some()) {
+            "Run this query again and replace the data in this file. Its charts and layout are kept"
+        } else {
+            "Run this query again, with the values it had"
+        };
         let save = self.save_action(cx);
         let extra_tabs: Vec<_> = self
             .extra_grids
@@ -1844,9 +1894,7 @@ impl Render for ResultsViewer {
                                         .start_icon(
                                             Icon::new(IconName::PlayFilled).size(IconSize::Small),
                                         )
-                                        .tooltip(ui::Tooltip::text(
-                                            "Run this query again, with the values it had",
-                                        ))
+                                        .tooltip(ui::Tooltip::text(rerun_tooltip))
                                         .on_click(move |_, window, cx| {
                                             window.dispatch_action(action.boxed_clone(), cx)
                                         }),
@@ -3391,6 +3439,11 @@ mod tests {
             .expect("the file says where it ran");
         assert_eq!(action.cluster, "help.kusto.windows.net");
         assert_eq!(action.database, "Samples");
+        assert_eq!(
+            action.into.as_deref(),
+            Some("/root/moved.ktt"),
+            "a file of the user's is refreshed in place"
+        );
         assert!(action.query.ends_with("T | where Id == raid"));
         assert_eq!(
             action.parameters,

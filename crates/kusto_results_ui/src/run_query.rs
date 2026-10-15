@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::{SecondsFormat, Utc};
 use editor::Editor;
 use fs::Fs;
@@ -60,7 +60,8 @@ pub struct ShowResult {
 }
 
 /// Runs a query again, as it was run before: the same text, on the same cluster and database,
-/// with the same values for its parameters.
+/// with the same values for its parameters. The result is a new one in the history, or, with
+/// `into`, the new data of a result file that keeps its charts and layout.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = kusto)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +74,9 @@ pub struct RerunQuery {
     /// The statements of the functions the query used that its file defines.
     #[serde(default)]
     pub functions: Vec<String>,
+    /// The path of the result file to refresh with the new data.
+    #[serde(default)]
+    pub into: Option<String>,
 }
 
 /// Copies the client request id of a run, which names it to the service and to support.
@@ -386,6 +390,8 @@ struct ActiveRun {
     log_lock: Arc<futures::lock::Mutex<()>>,
     /// Known once the shell environment is loaded. A run cancelled before then sent nothing.
     client: Option<Arc<KustoClient>>,
+    /// The result file this run replaces the data of. Such a run is not in the run log.
+    refreshing: Option<PathBuf>,
     task: Task<()>,
 }
 
@@ -412,16 +418,19 @@ impl QueryRuns {
             started_at,
             fs,
             log_lock,
+            refreshing,
             task,
             ..
         } = self.active.remove(index);
         drop(task);
-        cx.background_spawn(log_run(
-            fs,
-            log_lock,
-            RunLog::of(&request, &started_at).cancelled(),
-        ))
-        .detach();
+        if refreshing.is_none() {
+            cx.background_spawn(log_run(
+                fs,
+                log_lock,
+                RunLog::of(&request, &started_at).cancelled(),
+            ))
+            .detach();
+        }
         if let Some(client) = client {
             cx.background_spawn(async move { client.cancel(&request).await })
                 .detach_and_log_err(cx);
@@ -522,13 +531,21 @@ pub(crate) enum Destination {
     Tab,
 }
 
+/// What becomes of a run's result.
+enum Target {
+    /// A new result in the history, shown where the destination says.
+    New(Destination),
+    /// The data of this result file is replaced; its charts and layout stay.
+    Refresh(PathBuf),
+}
+
 /// Everything a run needs to start.
 struct RunSpec {
     query: String,
     connection: Connection,
     parameters: ParameterSource,
     functions: Vec<String>,
-    destination: Destination,
+    target: Target,
 }
 
 fn start_run(
@@ -568,7 +585,7 @@ fn start_run_in(
             given_by_file: query.parameters,
         },
         functions: query.functions,
-        destination,
+        target: Target::New(destination),
     };
     launch_run(workspace, runs, spec, window, cx)
 }
@@ -588,7 +605,10 @@ fn rerun_query(
         },
         parameters: ParameterSource::Values(action.parameters.clone()),
         functions: action.functions.clone(),
-        destination: Destination::Configured,
+        target: match &action.into {
+            Some(path) => Target::Refresh(PathBuf::from(path)),
+            None => Target::New(Destination::Configured),
+        },
     };
     if let Err(error) = launch_run(workspace, runs, spec, window, cx) {
         workspace.show_error(error, cx);
@@ -612,7 +632,20 @@ fn launch_run(
     let connection = spec.connection.clone();
     let query = spec.query;
     let parameter_source = spec.parameters;
-    let destination = spec.destination;
+    let target = spec.target;
+    let refreshing = match &target {
+        Target::Refresh(path) => Some(path.clone()),
+        Target::New(_) => None,
+    };
+    if let Some(path) = &refreshing
+        && runs
+            .read(cx)
+            .active
+            .iter()
+            .any(|run| run.refreshing.as_ref() == Some(path))
+    {
+        bail!("{} is already being refreshed.", path.display());
+    }
 
     let run_uuid = uuid::Uuid::new_v4();
     let request = QueryRequest {
@@ -656,12 +689,18 @@ fn launch_run(
 
     let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let log_lock = runs.read(cx).log_lock.clone();
-    let server = qualify_query::language_server(workspace.project().read(cx), cx);
-    let qualified = cx.background_spawn({
-        let query = request.text_to_send();
-        let connection = connection.clone();
-        async move { qualify_query::qualify(server, &query, &connection).await }
-    });
+    // A refresh keeps the query its file stored, so there is nothing to qualify.
+    let qualified = match &target {
+        Target::New(_) => {
+            let server = qualify_query::language_server(workspace.project().read(cx), cx);
+            cx.background_spawn({
+                let query = request.text_to_send();
+                let connection = connection.clone();
+                async move { qualify_query::qualify(server, &query, &connection).await }
+            })
+        }
+        Target::Refresh(_) => Task::ready(None),
+    };
     let task = cx.spawn_in(window, {
         let runs = runs.downgrade();
         let request = request.clone();
@@ -706,6 +745,28 @@ fn launch_run(
             let request = QueryRequest {
                 parameters: parameters.as_ref().cloned().unwrap_or_default(),
                 ..request
+            };
+            // A refresh is not a run of the history: its file is the user's, which the history
+            // lists, prunes and deletes from, and which the lenses would show for a query that
+            // is not the one in the editor.
+            let destination = match target {
+                Target::Refresh(path) => {
+                    let outcome = match parameters {
+                        Ok(_) => refresh_file(&workspace, path, client, request, cx).await,
+                        Err(error) => Err(error),
+                    };
+                    workspace
+                        .update_in(cx, |workspace, _, cx| {
+                            workspace.dismiss_toast(&toast_id, cx);
+                            if let Err(error) = outcome {
+                                workspace.show_error(error, cx);
+                            }
+                        })
+                        .log_err();
+                    runs.update(cx, |runs, _| runs.finish(run_id)).log_err();
+                    return;
+                }
+                Target::New(destination) => destination,
             };
             let run_log = RunLog::of(&request, &started_at);
             log_run(fs.clone(), log_lock.clone(), run_log.started()).await;
@@ -756,6 +817,7 @@ fn launch_run(
             fs,
             log_lock,
             client: None,
+            refreshing,
             task,
         })
     });
@@ -852,6 +914,26 @@ pub(crate) async fn display(
             Err(error) => workspace.show_error(error, cx),
         })
         .log_err();
+}
+
+/// Runs the query again and puts the new data into the result file at `path`. The file is written
+/// before this returns, so a failure reaches the person who asked.
+async fn refresh_file(
+    workspace: &WeakEntity<Workspace>,
+    path: PathBuf,
+    client: Arc<KustoClient>,
+    request: QueryRequest,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let run = cx
+        .background_executor()
+        .spawn(async move { client.execute(&request).await })
+        .await?;
+    let file = load_result_file(workspace, path.clone(), cx).await?;
+    let write = file.update(cx, |file, cx| file.refresh(run, cx))?;
+    write
+        .await
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 /// Opens a saved result the way a results tab does, without making a tab.
@@ -1061,6 +1143,7 @@ pub(crate) mod tests {
     use gpui::{BorrowAppContext as _, Focusable as _, Global, TestAppContext};
     use http_client::{AsyncBody, FakeHttpClient, Response};
     use kusto_client::AccessToken;
+    use kusto_results::ResultSet;
     use project::{Project, ProjectPath};
     use serde_json::json;
     use settings::SettingsStore;
@@ -1906,6 +1989,7 @@ pub(crate) mod tests {
             database: entry.database,
             parameters: entry.parameters,
             functions: entry.functions,
+            into: None,
         };
         workspace.update_in(cx, |workspace, window, cx| {
             rerun_query(workspace, &runs, &action, window, cx)
@@ -2008,6 +2092,7 @@ pub(crate) mod tests {
             database: entry.database,
             parameters: entry.parameters,
             functions: entry.functions,
+            into: None,
         };
         workspace.update_in(cx, |workspace, window, cx| {
             rerun_query(workspace, &runs, &action, window, cx)
@@ -2046,12 +2131,212 @@ pub(crate) mod tests {
             database: "Samples".into(),
             parameters: BTreeMap::new(),
             functions: Vec::new(),
+            into: None,
         };
         workspace.update_in(cx, |workspace, window, cx| {
             rerun_query(workspace, &runs, &action, window, cx)
         });
         cx.run_until_parked();
         assert!(bodies(&sent, "/v2/rest/query").is_empty());
+    }
+
+    /// A result the user keeps: one row, a saved layout, and a chart of their own.
+    const KEPT: &str = r#"{
+      "query": "StormEvents\n| take 1",
+      "cluster": "help.kusto.windows.net",
+      "database": "Samples",
+      "tables": [{"name": "PrimaryResult", "columns": [{"name": "n", "type": "long"}], "rows": [[9]]}],
+      "executionStartedAt": "2026-01-01T00:00:00.000Z",
+      "executionDurationMs": 5,
+      "tableViews": [{"name": "PrimaryResult", "gutterWidth": 64, "columns": [{"index": 0, "width": 140}]}],
+      "charts": [{"name": "mine", "options": {"type": "Line", "title": "Mine"}}]
+    }"#;
+
+    async fn open_result(
+        workspace: &Entity<Workspace>,
+        path: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Entity<ResultsViewer> {
+        let item = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(path),
+                    OpenOptions {
+                        visible: Some(OpenVisible::None),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .expect("the result opens");
+        cx.run_until_parked();
+        item.downcast::<ResultsViewer>().expect("a results viewer")
+    }
+
+    fn run_again(
+        workspace: &Entity<Workspace>,
+        runs: &Entity<QueryRuns>,
+        viewer: &Entity<ResultsViewer>,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let action = viewer
+            .read_with(cx, |viewer, cx| viewer.rerun_action(cx))
+            .expect("the file says where it ran");
+        workspace.update_in(cx, |workspace, window, cx| {
+            rerun_query(workspace, runs, &action, window, cx)
+        });
+        cx.run_until_parked();
+    }
+
+    async fn load_result(
+        workspace: &Entity<Workspace>,
+        path: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) -> String {
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        fs.load(std::path::Path::new(path))
+            .await
+            .expect("the result file")
+    }
+
+    fn error_shown(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> bool {
+        workspace.read_with(cx, |workspace, _| {
+            workspace.has_notification(&NotificationId::unique::<anyhow::Error>())
+        })
+    }
+
+    #[gpui::test]
+    async fn running_a_result_file_again_puts_the_new_data_in_the_file(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) =
+            setup_in(cx, 200, ANSWER, QUERIES, json!({ "kept.ktt": KEPT })).await;
+        let viewer = open_result(&workspace, "/root/kept.ktt", cx).await;
+        let runs = cx.new(|_| QueryRuns::default());
+
+        run_again(&workspace, &runs, &viewer, cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+
+        let sent = bodies(&sent, "/v2/rest/query");
+        assert_eq!(sent.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&sent[0]).expect("a JSON body");
+        assert_eq!(sent["csl"], "StormEvents\n| take 1");
+
+        let written = ResultSet::from_json(&load_result(&workspace, "/root/kept.ktt", cx).await)
+            .expect("the file is still a result");
+        assert_eq!(written.tables[0].rows.len(), 2, "the rows of the new run");
+        assert_ne!(
+            written.execution_started_at.as_deref(),
+            Some("2026-01-01T00:00:00.000Z")
+        );
+        assert_eq!(written.query.as_deref(), Some("StormEvents\n| take 1"));
+        assert_eq!(written.charts.len(), 1, "the chart is the user's");
+        assert_eq!(
+            written
+                .table_view("PrimaryResult")
+                .and_then(|view| view.gutter_width),
+            Some(64),
+            "so is the layout"
+        );
+
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer.result(cx).tables[0].rows.len()),
+            2,
+            "the open tab shows the new data"
+        );
+        assert_eq!(
+            results_viewers(&workspace, cx),
+            1,
+            "no tab was made for the run"
+        );
+        assert!(
+            run_log(&workspace, cx).await.is_empty(),
+            "a refresh is not a run of the history"
+        );
+        assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
+        assert!(!error_shown(&workspace, cx));
+    }
+
+    #[gpui::test]
+    async fn a_refresh_that_fails_leaves_the_file_as_it_was(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup_in(
+            cx,
+            400,
+            r#"{"error":{"message":"outer","innererror":{"@message":"Semantic error: SEM0100"}}}"#,
+            QUERIES,
+            json!({ "kept.ktt": KEPT }),
+        )
+        .await;
+        let viewer = open_result(&workspace, "/root/kept.ktt", cx).await;
+        let runs = cx.new(|_| QueryRuns::default());
+
+        run_again(&workspace, &runs, &viewer, cx);
+
+        assert_eq!(load_result(&workspace, "/root/kept.ktt", cx).await, KEPT);
+        assert!(error_shown(&workspace, cx));
+        assert!(runs.read_with(cx, |runs, _| runs.active.is_empty()));
+    }
+
+    #[gpui::test]
+    async fn a_result_file_is_not_refreshed_twice_at_once(cx: &mut TestAppContext) {
+        let (workspace, _editor, sent, cx) =
+            setup_in(cx, 0, ANSWER, QUERIES, json!({ "kept.ktt": KEPT })).await;
+        let viewer = open_result(&workspace, "/root/kept.ktt", cx).await;
+        let runs = cx.new(|_| QueryRuns::default());
+
+        run_again(&workspace, &runs, &viewer, cx);
+        assert!(!error_shown(&workspace, cx));
+        run_again(&workspace, &runs, &viewer, cx);
+
+        assert_eq!(
+            bodies(&sent, "/v2/rest/query").len(),
+            1,
+            "the second was not sent"
+        );
+        assert!(error_shown(&workspace, cx));
+        assert_eq!(runs.read_with(cx, |runs, _| runs.active.len()), 1);
+
+        runs.update(cx, |runs, cx| runs.cancel(1, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            bodies(&sent, "/v1/rest/mgmt").len(),
+            1,
+            "the service is told to stop"
+        );
+        assert!(run_log(&workspace, cx).await.is_empty());
+        assert_eq!(load_result(&workspace, "/root/kept.ktt", cx).await, KEPT);
+    }
+
+    #[gpui::test]
+    async fn a_result_of_the_history_is_run_again_as_a_new_result(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        use_editor_tabs(cx);
+        run(&workspace, cx);
+        assert_eq!(results_viewers(&workspace, cx), 1);
+        let viewer = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<ResultsViewer>(cx).next()
+            })
+            .expect("the run opened a tab");
+        assert_eq!(
+            viewer
+                .read_with(cx, |viewer, cx| viewer.rerun_action(cx))
+                .expect("the file says where it ran")
+                .into,
+            None,
+            "a record of one run is not overwritten"
+        );
+
+        let runs = cx.new(|_| QueryRuns::default());
+        run_again(&workspace, &runs, &viewer, cx);
+
+        assert_eq!(
+            results_viewers(&workspace, cx),
+            2,
+            "the new run has its own tab"
+        );
     }
 
     #[gpui::test]

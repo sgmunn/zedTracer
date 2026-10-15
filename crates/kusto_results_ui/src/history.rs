@@ -262,6 +262,7 @@ fn rerun_action(entry: &HistoryEntry) -> RerunQuery {
         database: entry.database.clone(),
         parameters: entry.parameters.clone(),
         functions: entry.functions.clone(),
+        into: None,
     }
 }
 
