@@ -436,7 +436,10 @@ leading `~` is your home folder. The section shows, best first:
   follows. So `Successfully fetched cluster details for [MetadataLocator: [TenantId=…` is found by
   `Successfully fetched cluster details for`, and `Memory backed cloud cache already initialized. Taking fast path.` by
   the whole of it. The text has to be in a string on a line of code (comments are skipped), and the most of it that any line
-  holds wins. When several lines hold the same text it says **Message text in one of N places** and shows the best three
+  holds wins. A line whose string goes on with text the message does not have, such as
+  `$"{name} => workspace ID: {id} cloned execution context"` for a message that has `=> workspace ID:` but not
+  `cloned execution context`, did not log it and is left out; what the string fills in (`{…}`, `%s`, escapes) may be
+  anything. When several lines hold the same text it says **Message text in one of N places** and shows the best three
   (a repository named like the process first, tests last); when more than sixteen do, it is too common to say anything.
   Rows that only say something started or ended (`kusto_results.structural_messages`) are not searched.
 - **Message names**: a `Class.Method` at the start of the message, in square brackets, or anywhere in it (a lambda like
