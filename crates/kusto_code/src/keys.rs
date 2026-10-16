@@ -243,6 +243,9 @@ pub struct CodeKeys {
     pub frames: Vec<SymbolPath>,
     /// The text of the message that code may have logged, from `message_literals`.
     pub literals: Vec<Vec<String>>,
+    /// The whole message, so that a line that holds a piece of it but also text it does not
+    /// have is not taken for where it was logged.
+    pub message: Option<String>,
     pub process: Option<String>,
 }
 
@@ -263,6 +266,7 @@ impl CodeKeys {
             prefix: event.message.and_then(message_prefix),
             frames,
             literals: event.message.map(message_literals).unwrap_or_default(),
+            message: non_empty(event.message),
             process: non_empty(event.process),
         }
     }

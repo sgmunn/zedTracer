@@ -78,6 +78,134 @@ pub fn is_comment(text: &str) -> bool {
     trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*')
 }
 
+/// Whether the string on `line` that holds `piece` of a message has text that the message does
+/// not, in the order the string has it, so that the line did not log the message. What a
+/// program fills into a string (an interpolation, a format item, an escape) may be anything, and
+/// a line that is not understood, as when a string goes on past it, contradicts nothing.
+pub fn contradicts_message(line: &str, piece: &str, message: &str) -> bool {
+    let Some(strings) = string_fragments(line) else {
+        return false;
+    };
+    let Some(fragments) = strings
+        .iter()
+        .find(|fragments| fragments.iter().any(|fragment| fragment.contains(piece)))
+    else {
+        return false;
+    };
+    // Taking the first place each fragment is at leaves the most of the message for the rest.
+    let mut rest = message;
+    for fragment in fragments {
+        match rest.find(fragment.as_str()) {
+            Some(start) => rest = rest.get(start + fragment.len()..).unwrap_or_default(),
+            None => return true,
+        }
+    }
+    false
+}
+
+/// The strings on a line of code, each as its runs of text between what a program fills in.
+/// `None` when the line has a string that it does not close, or one this does not read.
+fn string_fragments(line: &str) -> Option<Vec<Vec<String>>> {
+    // A raw string, or a quote that is a character, would be read as the bounds of a string.
+    if line.contains(r#"""""#) || line.contains(r#"'"'"#) || line.contains(r#"'\"'"#) {
+        return None;
+    }
+    let characters: Vec<char> = line.chars().collect();
+    let at = |index: usize| characters.get(index).copied();
+    let mut strings = Vec::new();
+    let mut index = 0;
+    while let Some(character) = at(index) {
+        index += 1;
+        if character != '"' {
+            continue;
+        }
+        let before = |back: usize| index.checked_sub(back + 1).and_then(at);
+        let verbatim = before(1) == Some('@') || (before(1) == Some('$') && before(2) == Some('@'));
+        let interpolated =
+            before(1) == Some('$') || (before(1) == Some('@') && before(2) == Some('$'));
+        let mut fragments = Vec::new();
+        let mut current = String::new();
+        let mut end_fragment = |current: &mut String| {
+            let fragment = current.trim();
+            if !fragment.is_empty() {
+                fragments.push(fragment.to_string());
+            }
+            current.clear();
+        };
+        loop {
+            let character = at(index)?;
+            index += 1;
+            match character {
+                '"' if verbatim && at(index) == Some('"') => {
+                    index += 1;
+                    current.push('"');
+                }
+                '"' => break,
+                '\\' if !verbatim => {
+                    index += 1;
+                    end_fragment(&mut current);
+                }
+                '{' if at(index) != Some('{') => {
+                    end_fragment(&mut current);
+                    index = if interpolated {
+                        end_of_interpolation(&characters, index)?
+                    } else {
+                        // A format item; a quote in it ends the string all the same.
+                        let mut end = index;
+                        while let Some(character) = at(end).filter(|character| *character != '"') {
+                            end += 1;
+                            if character == '}' {
+                                break;
+                            }
+                        }
+                        end
+                    };
+                }
+                '{' | '}' => {
+                    index += usize::from(at(index) == Some(character));
+                    end_fragment(&mut current);
+                }
+                '%' => {
+                    end_fragment(&mut current);
+                    while at(index).is_some_and(|character| "-+ #.0123456789".contains(character)) {
+                        index += 1;
+                    }
+                    if at(index).is_some_and(|character| character.is_ascii_alphabetic()) {
+                        index += 1;
+                    }
+                }
+                _ => current.push(character),
+            }
+        }
+        end_fragment(&mut current);
+        strings.push(fragments);
+    }
+    Some(strings)
+}
+
+/// Where an interpolation ends, from just after its `{`: past the `}` that closes it, over any
+/// braces and strings in its expression.
+fn end_of_interpolation(characters: &[char], mut index: usize) -> Option<usize> {
+    let mut depth = 1;
+    while depth > 0 {
+        match characters.get(index)? {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '"' => loop {
+                index += 1;
+                match characters.get(index)? {
+                    '\\' => index += 1,
+                    '"' => break,
+                    _ => {}
+                }
+            },
+            _ => {}
+        }
+        index += 1;
+    }
+    Some(index)
+}
+
 /// The name a `class`, `struct`, `record` or `interface` declaration on this line introduces.
 pub fn type_declaration_name(line: &str) -> Option<String> {
     TYPE_DECLARATION
@@ -303,6 +431,51 @@ mod tests {
             .iter()
             .position(|line| line.contains(needle))
             .unwrap_or_else(|| panic!("no line holds {needle}"))
+    }
+
+    #[test]
+    fn a_string_with_text_the_message_lacks_contradicts_it() {
+        let message = "DmsSqlWorkspaceClient.UpdateSqlWorkspaceCapacityUnitAsync => workspace ID: f6cc0055-1bc9-49d6-87c6-f30dcc1e4ec6 new CapacityID: 0a7334bd-8b42-4422-8fbd-0c459d30e189 sqlWorkspaceUpdateMutex acquired to update the sql workspace.";
+        let piece = "=> workspace ID:";
+        for line in [
+            r#"CTracer.LogMessage($"{nameof(DmsSqlWorkspaceClient)}.{nameof(this.UpdateSqlWorkspaceCapacityUnitAsync)} => workspace ID: {workspaceId} cloned execution context, proceeding to CU update.");"#,
+            r#"CTracer.LogMessage($"{nameof(this.UpdateSqlWorkspaceCapacityUnitAsync)} => workspace ID: {workspaceId} attempt to clone execution context started");"#,
+            // In the message, but not in this order.
+            r#"Log($"new CapacityID: {capacityId} => workspace ID: {workspaceId}");"#,
+        ] {
+            assert!(contradicts_message(line, piece, message), "{line}");
+        }
+        for line in [
+            r#"CTracer.LogMessage($"{nameof(DmsSqlWorkspaceClient)}.{nameof(this.UpdateSqlWorkspaceCapacityUnitAsync)} => workspace ID: {workspaceId} new CapacityID: {capacityId}" +"#,
+            r#"Log(string.Format("{0} => workspace ID: {1,-8} new CapacityID: {2}", a, b, c));"#,
+            r#"Log("Other", $"{(ok ? "a" : "b")} => workspace ID: {id}");"#,
+            r#"log.info("%s => workspace ID: %-8s new CapacityID: %s", a, b, c)"#,
+            // A string this does not read, or no string that holds the piece.
+            r#"Log($"=> workspace ID: {id} and more"#,
+            r##"Log("""=> workspace ID: {id} and more""");"##,
+            r#"var text = "x"; // => workspace ID: is in a comment"#,
+        ] {
+            assert!(!contradicts_message(line, piece, message), "{line}");
+        }
+    }
+
+    #[test]
+    fn escapes_and_escaped_braces_in_a_string_match_anything() {
+        let message = "Retrying the call\n\tafter a \"transient\" failure {code=7}";
+        for line in [
+            r#"Log($"Retrying the call\n\tafter a \"transient\" failure {{code={code}}}");"#,
+            r#"Log(@"Retrying the call" + "\n\tafter a ""transient"" failure");"#,
+        ] {
+            assert!(
+                !contradicts_message(line, "Retrying the call", message),
+                "{line}"
+            );
+        }
+        assert!(contradicts_message(
+            r#"Log($"Retrying the call\nafter a permanent failure");"#,
+            "Retrying the call",
+            message
+        ));
     }
 
     #[test]

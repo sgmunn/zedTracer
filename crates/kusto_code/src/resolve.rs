@@ -12,9 +12,9 @@ use parking_lot::Mutex;
 use crate::keys::{CodeKeys, SymbolPath};
 use crate::search::{GitSearch, GrepQuery, Hit, Repository};
 use crate::source::{
-    base_types, enclosing_method, enclosing_methods, enclosing_type, is_comment,
-    is_marker_attribute, method_declaration_name, namespace_of, read_lines, string_constant_name,
-    type_declaration_name, type_declared_below,
+    base_types, contradicts_message, enclosing_method, enclosing_methods, enclosing_type,
+    is_comment, is_marker_attribute, method_declaration_name, namespace_of, read_lines,
+    string_constant_name, type_declaration_name, type_declared_below,
 };
 
 /// How far below `[CodeMarkerName]` the class it marks may be.
@@ -280,7 +280,7 @@ impl CodeResolver {
                 .map(|frame| self.resolve_symbol(frame, process, KeyOrigin::Frame)),
         );
 
-        let message = self.resolve_message(&keys.literals, process);
+        let message = self.resolve_message(&keys.literals, keys.message.as_deref(), process);
 
         let (mut message, marker, prefix, frames) = join4(message, marker, prefix, frames).await;
         // The line that logged a message is likely to be in a file the other lookups found too.
@@ -306,10 +306,12 @@ impl CodeResolver {
 
     /// The lines that may have logged the message. For each of the two longest runs of it that
     /// code could have written (`CodeKeys::literals`), the lines that hold the most of the run
-    /// in a string, unless that is so many lines that it says nothing.
+    /// in a string, unless that is so many lines that it says nothing. A line whose string has
+    /// text that `message` does not is left out.
     async fn resolve_message(
         &self,
         literals: &[Vec<String>],
+        message: Option<&str>,
         process: Option<&str>,
     ) -> Vec<CodeRef> {
         if literals.is_empty() {
@@ -320,10 +322,17 @@ impl CodeResolver {
             .filter_map(|pieces| pieces.first().map(String::as_str))
             .collect();
         let cache_key = format!(
-            "message:{}:{}",
+            "message:{}:{}:{}",
             runs.join("\u{1f}"),
+            message.unwrap_or_default(),
             process.unwrap_or_default()
         );
+        // The piece of the message the line holds, unless its string says something else.
+        let piece_held = |location: &Located, piece: &str| {
+            location.hit.text.contains(piece)
+                && !message
+                    .is_some_and(|message| contradicts_message(&location.hit.text, piece, message))
+        };
         if let Some(cached) = self.cached(&cache_key) {
             return cached;
         }
@@ -349,7 +358,7 @@ impl CodeResolver {
             // repository; a line with only part of it can.
             let holds_a_whole_run = hits
                 .iter()
-                .any(|location| runs.iter().any(|run| location.hit.text.contains(run)));
+                .any(|location| runs.iter().any(|run| piece_held(location, run)));
             if holds_a_whole_run {
                 break;
             }
@@ -366,7 +375,7 @@ impl CodeResolver {
                 .filter_map(|location| {
                     let piece = pieces
                         .iter()
-                        .find(|piece| location.hit.text.contains(piece.as_str()))?;
+                        .find(|piece| piece_held(location, piece.as_str()))?;
                     Some((piece.chars().count(), piece.as_str(), location))
                 })
                 .collect();

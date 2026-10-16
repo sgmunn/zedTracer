@@ -189,6 +189,25 @@ namespace Contoso.Orders
     );
     write(
         &orders,
+        "src/Orders/Capacity.cs",
+        r#"namespace Contoso.Orders
+{
+    public class Capacity
+    {
+        public void Update()
+        {
+            this.logger.LogInfo($"{nameof(this.Update)} => workspace ID: {workspaceId} could not be acquired");
+            this.logger.LogInfo($"{nameof(this.Update)} => workspace ID: {workspaceId} attempt to clone started");
+            this.logger.LogInfo($"{nameof(this.Update)} => workspace ID: {workspaceId} cloned, proceeding to update.");
+            this.logger.LogInfo($"{nameof(this.Update)} => workspace ID: {workspaceId} new CapacityID: {capacityId}" +
+                "updateMutex acquired to update the workspace.");
+        }
+    }
+}
+"#,
+    );
+    write(
+        &orders,
         "src/Orders/Posting.cs",
         "namespace Contoso.Orders\n{\n    public class Posting\n    {\n        public void Post()\n        {\n            this.logger.LogInfo(\"Ledger posted the entry successfully\");\n        }\n    }\n}\n",
     );
@@ -639,6 +658,23 @@ fn a_message_that_several_lines_hold_says_how_many() {
 }
 
 #[test]
+fn a_line_whose_string_says_something_the_message_does_not_is_left_out() {
+    let (_root, resolver) = fixture();
+    let references = block_on(resolver.resolve(&message_keys(
+        "Update => workspace ID: f6cc0055-1bc9-49d6-87c6-f30dcc1e4ec6 new CapacityID: 0a7334bd-8b42-4422-8fbd-0c459d30e189 updateMutex acquired to update the workspace.",
+        None,
+    )));
+    assert_eq!(
+        references
+            .iter()
+            .filter(|reference| reference.kind == CodeRefKind::LogLine)
+            .map(|reference| (reference.line, reference.matches))
+            .collect::<Vec<_>>(),
+        vec![(11, 1), (10, 1)]
+    );
+}
+
+#[test]
 fn the_class_and_method_a_message_starts_with_are_not_part_of_what_is_looked_for() {
     let (_root, resolver) = fixture();
     let references = block_on(resolver.resolve(&message_keys(
@@ -1068,6 +1104,7 @@ fn resolves_a_real_trace_against_real_repositories() {
     for event in &sampled {
         let keys = CodeKeys {
             literals: event.literals.clone(),
+            message: event.message.clone(),
             process: event.process.clone(),
             ..CodeKeys::default()
         };
