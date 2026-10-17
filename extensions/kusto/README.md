@@ -468,7 +468,22 @@ beside the trace is used; a pane you close is made again by the next click. The 
 place replaces it, so going down a stack does not leave a tab for every frame) and takes the focus. With a modifier key:
 **alt** opens in a new split beside the code pane, which is the code pane from then on, and **command** (control on Linux
 and Windows) opens in the pane that was last active, which is where Zed opens any file. Shift does nothing, so it can
-still extend a selection. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, or a second
+still extend a selection.
+
+**Going further in the code.** The file opens as part of its whole checkout, which is added to the window without
+showing in the project panel, so a C# language server can go to definitions and find references (F12, Alt+Shift+F12)
+across that repository. Each checkout gets its own server, and it stays open until the window closes. Set the `roslyn`
+server for C# (`languages.CSharp.language_servers`). The server loads only checkouts that have been restored: a project
+whose `dotnet restore` failed is not loaded, and its files are on their own, so references stay inside the open file. If
+the checkouts' NuGet feeds are on Azure DevOps, `restore-checkouts.sh` restores them with a token from the Azure CLI
+(`az login` first):
+
+```sh
+extensions/kusto/restore-checkouts.sh ~/Projects/mwc
+```
+
+It takes checkouts or folders of checkouts, like `kusto_results.code.roots`, and restores the solution at the top of each.
+Run it again after a pull that changes the packages. Nothing is indexed: the lookup is a `git grep` made when you select a row (about half a second, or a second
 when the text of the message is in no repository named like the process, and the
 markers of a whole result are looked up together the first time you select in it), and what it finds is kept for five
 minutes. Only `.cs` files are searched for text and names (a call stack's file can be of any kind), and `git` has to be on the path of your shell. When a name is in none of the
