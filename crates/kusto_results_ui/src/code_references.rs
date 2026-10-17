@@ -5,7 +5,7 @@
 //! thread, and opens a place it found.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use editor::Editor;
@@ -24,10 +24,13 @@ use kusto_results::inspector::{InspectorSubject, StackFrameLink, resolve_subject
 use kusto_results::trace_schema::{TraceColumns, matches_pattern};
 use kusto_results::{ResultSet, Table};
 use language::Point;
+use project::ProjectPath;
 use settings::Settings as _;
 use ui::prelude::*;
+use util::rel_path::RelPath;
 use workspace::notifications::DetachAndPromptErr as _;
 use workspace::{OpenOptions, OpenVisible, Pane, SplitDirection, Workspace};
+use worktree::Worktree;
 
 use crate::results_settings::ResultsSettings;
 
@@ -103,6 +106,19 @@ fn distinct_markers(table: &Table, columns: &TraceColumns) -> Vec<String> {
     markers.into_iter().take(MAX_PREFETCHED_MARKERS).collect()
 }
 
+/// The checkout a reference is in: its path without the part relative to the repository.
+fn checkout_root(reference: &CodeRef) -> Option<PathBuf> {
+    let relative = Path::new(&reference.relative_path);
+    if relative.as_os_str().is_empty() || !reference.path.ends_with(relative) {
+        return None;
+    }
+    reference
+        .path
+        .ancestors()
+        .nth(relative.components().count())
+        .map(Path::to_path_buf)
+}
+
 /// What the section says about the selected row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodeState {
@@ -171,6 +187,9 @@ pub struct CodeReferences {
     lookup: Option<Task<()>>,
     /// The pane code is opened in, once there is one.
     code_pane: Option<WeakEntity<Pane>>,
+    /// The worktrees of the checkouts code was opened from. The project holds a worktree it did
+    /// not open itself only weakly, and its language server would stop with the last tab.
+    checkouts: Vec<Entity<Worktree>>,
 }
 
 impl CodeReferences {
@@ -185,6 +204,7 @@ impl CodeReferences {
             prefetch: None,
             lookup: None,
             code_pane: None,
+            checkouts: Vec::new(),
         }
     }
 
@@ -406,6 +426,12 @@ impl CodeReferences {
         .detach();
     }
 
+    fn keep_checkout(&mut self, worktree: Entity<Worktree>) {
+        if !self.checkouts.contains(&worktree) {
+            self.checkouts.push(worktree);
+        }
+    }
+
     fn show_problem(&self, message: String, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) else {
             return;
@@ -471,26 +497,76 @@ impl CodeReferences {
         let pane = workspace.update(cx, |workspace, cx| {
             self.pane_for(how, workspace, window, cx)
         });
-        let opened = match pane {
-            None => workspace.update(cx, |workspace, cx| {
-                workspace.open_abs_path(
-                    path,
-                    OpenOptions {
-                        visible: Some(OpenVisible::None),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )
-            }),
-            Some(pane) => {
-                let project = workspace.read(cx).project().clone();
-                let project_path = Workspace::project_path_for_path(project, &path, false, cx);
-                let workspace = workspace.downgrade();
-                window.spawn(cx, async move |cx| {
+        // The file is opened inside a worktree of its whole checkout, so that a language server
+        // started for it sees the solution and can go to definitions and find references.
+        let checkout = checkout_root(reference).map(|root| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.project().update(cx, |project, cx| {
+                    project.find_or_create_worktree(root, false, cx)
+                })
+            })
+        });
+        let workspace = workspace.downgrade();
+        cx.spawn_in(window, async move |this, cx| {
+            // Without the checkout the file still opens, on its own.
+            let mut in_checkout = None;
+            if let Some(checkout) = checkout
+                && let Some((worktree, _)) = checkout.await.log_err()
+            {
+                // The path is taken in the checkout's worktree rather than looked up, because a
+                // worktree made earlier for the file alone, such as for a tab restored from the
+                // last session, would otherwise be found first.
+                in_checkout = worktree.read_with(cx, |worktree, _| {
+                    let relative = path.strip_prefix(worktree.abs_path()).ok()?;
+                    let relative = RelPath::new(relative, worktree.path_style()).log_err()?;
+                    Some(ProjectPath {
+                        worktree_id: worktree.id(),
+                        path: relative.into_arc(),
+                    })
+                });
+                this.update(cx, |this, _| this.keep_checkout(worktree))?;
+            }
+            let item = match (pane, in_checkout) {
+                (None, Some(project_path)) => {
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            workspace.open_path(project_path, None, true, window, cx)
+                        })?
+                        .await?
+                }
+                (None, None) => {
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            workspace.open_abs_path(
+                                path,
+                                OpenOptions {
+                                    visible: Some(OpenVisible::None),
+                                    ..Default::default()
+                                },
+                                window,
+                                cx,
+                            )
+                        })?
+                        .await?
+                }
+                (Some(pane), in_checkout) => {
                     // A worktree made for a file outside the project is only held weakly by the
                     // project, and goes away unless something keeps it until the file is open.
-                    let (_worktree, project_path) = project_path.await?;
+                    let (_worktree, project_path) = match in_checkout {
+                        Some(project_path) => (None, project_path),
+                        None => {
+                            let project_path = workspace.update(cx, |workspace, cx| {
+                                Workspace::project_path_for_path(
+                                    workspace.project().clone(),
+                                    &path,
+                                    false,
+                                    cx,
+                                )
+                            })?;
+                            let (worktree, project_path) = project_path.await?;
+                            (Some(worktree), project_path)
+                        }
+                    };
                     workspace
                         .update_in(cx, |workspace, window, cx| {
                             workspace.open_path_preview(
@@ -503,12 +579,9 @@ impl CodeReferences {
                                 cx,
                             )
                         })?
-                        .await
-                })
-            }
-        };
-        cx.spawn_in(window, async move |_, cx| {
-            let item = opened.await?;
+                        .await?
+                }
+            };
             if let Some(editor) = item.downcast::<Editor>() {
                 editor.update_in(cx, |editor, window, cx| {
                     editor.go_to_singleton_buffer_point(Point::new(line, 0), window, cx)
@@ -895,5 +968,20 @@ mod tests {
         );
         logged.matches = 3;
         assert_eq!(heading(&logged), "Message text in one of 3 places");
+    }
+
+    #[test]
+    fn a_reference_is_opened_in_the_checkout_that_holds_it() {
+        let mut found = reference(KeyOrigin::Marker, CodeRefKind::MarkerUse, None);
+        assert_eq!(checkout_root(&found), Some(PathBuf::from("/code/orders")));
+
+        found.relative_path = "Checkout.cs".into();
+        found.path = PathBuf::from("/code/orders/Checkout.cs");
+        assert_eq!(checkout_root(&found), Some(PathBuf::from("/code/orders")));
+
+        found.relative_path = "src/Other.cs".into();
+        assert_eq!(checkout_root(&found), None);
+        found.relative_path = String::new();
+        assert_eq!(checkout_root(&found), None);
     }
 }
