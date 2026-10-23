@@ -36,11 +36,13 @@ struct FrameColumn {
     type_name: String,
 }
 
-/// What a v2 query response holds that is a result: the primary tables, and the charts the
-/// query's `render` operators asked for.
+/// What a v2 query response holds that is a result: the primary tables, the charts the
+/// query's `render` operators asked for, and what the run cost the service.
 pub struct QueryResponse {
     pub tables: Vec<Table>,
     pub charts: Vec<Chart>,
+    /// The payload of the `QueryResourceConsumption` event, as the service sent it.
+    pub statistics: Option<Value>,
 }
 
 /// The primary result tables of a v2 response, in the order the service sent them, and a chart
@@ -57,6 +59,7 @@ pub fn parse_query_result(body: &[u8]) -> Result<QueryResponse> {
     // properties before the tables.
     let mut frame_tables: Vec<(i64, usize)> = Vec::new();
     let mut renders: Vec<(i64, ChartOptions)> = Vec::new();
+    let mut statistics = None;
     for frame in frames {
         match frame.frame_type.as_str() {
             "DataTable" if frame.table_kind.as_deref() == Some("PrimaryResult") => {
@@ -76,6 +79,14 @@ pub fn parse_query_result(body: &[u8]) -> Result<QueryResponse> {
                 for row in frame.rows.unwrap_or_default() {
                     renders.extend(read_render(row));
                 }
+            }
+            "DataTable" if frame.table_kind.as_deref() == Some("QueryCompletionInformation") => {
+                statistics = statistics.or_else(|| {
+                    resource_consumption(
+                        frame.columns.as_deref().unwrap_or_default(),
+                        frame.rows.as_deref().unwrap_or_default(),
+                    )
+                });
             }
             "DataSetCompletion" => {
                 if frame.has_errors {
@@ -100,7 +111,33 @@ pub fn parse_query_result(body: &[u8]) -> Result<QueryResponse> {
             Some(chart)
         })
         .collect();
-    Ok(QueryResponse { tables, charts })
+    Ok(QueryResponse {
+        tables,
+        charts,
+        statistics,
+    })
+}
+
+/// The payload of the completion information row whose event is `QueryResourceConsumption`.
+/// The payload is JSON text in the usual answer, and a JSON object when the service has already
+/// parsed it. Statistics that cannot be read are left out, because the result is still good.
+fn resource_consumption(columns: &[FrameColumn], rows: &[&RawValue]) -> Option<Value> {
+    let column = |name: &str| columns.iter().position(|column| column.name == name);
+    let event = column("EventTypeName")?;
+    let payload = column("Payload")?;
+    rows.iter().find_map(|row| {
+        let cells: Vec<Value> = serde_json::from_str(row.get()).ok()?;
+        if cells.get(event)?.as_str()? != "QueryResourceConsumption" {
+            return None;
+        }
+        match cells.get(payload)? {
+            Value::String(text) => serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+            object @ Value::Object(_) => Some(object.clone()),
+            _ => None,
+        }
+    })
 }
 
 /// A row of the query properties that is a `render`: `[table id, "Visualization", options]`.
@@ -359,6 +396,62 @@ mod tests {
          "Columns":[{"ColumnName":"Level","ColumnType":"int"}],"Rows":[[4]]},
         {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}
     ]"#;
+
+    /// The completion information the help cluster sends, with the payloads cut down.
+    const WITH_COMPLETION: &str = r#"[
+        {"FrameType":"DataSetHeader","IsProgressive":false,"Version":"v2.0"},
+        {"FrameType":"DataTable","TableId":1,"TableKind":"PrimaryResult","TableName":"PrimaryResult",
+         "Columns":[{"ColumnName":"n","ColumnType":"long"}],"Rows":[[1],[2],[3]]},
+        {"FrameType":"DataTable","TableId":2,"TableKind":"QueryCompletionInformation","TableName":"QueryCompletionInformation",
+         "Columns":[{"ColumnName":"Timestamp","ColumnType":"datetime"},{"ColumnName":"ClientRequestId","ColumnType":"string"},
+                    {"ColumnName":"ActivityId","ColumnType":"guid"},{"ColumnName":"SubActivityId","ColumnType":"guid"},
+                    {"ColumnName":"ParentActivityId","ColumnType":"guid"},{"ColumnName":"Level","ColumnType":"int"},
+                    {"ColumnName":"LevelName","ColumnType":"string"},{"ColumnName":"StatusCode","ColumnType":"int"},
+                    {"ColumnName":"StatusCodeName","ColumnType":"string"},{"ColumnName":"EventType","ColumnType":"int"},
+                    {"ColumnName":"EventTypeName","ColumnType":"string"},{"ColumnName":"Payload","ColumnType":"string"}],
+         "Rows":[
+           ["2026-10-23T15:51:00Z","id","a","b","c",4,"Info",0,"S_OK (0)",4,"QueryInfo","{\"Count\":1,\"Text\":\"Query completed successfully\"}"],
+           ["2026-10-23T15:51:00Z","id","a","b","c",4,"Info",0,"S_OK (0)",5,"WorkloadGroup","{\"Count\":1,\"Text\":\"default\"}"],
+           ["2026-10-23T15:51:00Z","id","a","b","c",4,"Info",0,"S_OK (0)",6,"QueryResourceConsumption","{\"QueryHash\":\"be3cfb5d5a8bdc89\",\"ExecutionTime\":28.8199127,\"resource_usage\":{\"memory\":{\"peak_per_node\":1050944}},\"dataset_statistics\":[{\"table_row_count\":3,\"table_size\":54}]}"]]},
+        {"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false}
+    ]"#;
+
+    #[test]
+    fn the_resource_consumption_is_kept_as_the_statistics() {
+        let response = parse_query_result(WITH_COMPLETION.as_bytes()).unwrap();
+        assert_eq!(response.tables.len(), 1);
+        let statistics = response.statistics.unwrap();
+        assert_eq!(statistics["QueryHash"], "be3cfb5d5a8bdc89");
+        assert_eq!(statistics["ExecutionTime"], 28.8199127);
+        assert_eq!(statistics["dataset_statistics"][0]["table_row_count"], 3);
+    }
+
+    #[test]
+    fn statistics_that_cannot_be_read_leave_the_result_without_them() {
+        let unreadable = WITH_COMPLETION.replace(r#""{\"QueryHash"#, r#""not json {\"QueryHash"#);
+        let response = parse_query_result(unreadable.as_bytes()).unwrap();
+        assert_eq!(response.tables.len(), 1);
+        assert!(response.statistics.is_none());
+
+        let parsed = WITH_COMPLETION.replace(
+            r#""{\"QueryHash\":\"be3cfb5d5a8bdc89\",\"ExecutionTime\":28.8199127,\"resource_usage\":{\"memory\":{\"peak_per_node\":1050944}},\"dataset_statistics\":[{\"table_row_count\":3,\"table_size\":54}]}""#,
+            r#"{"ExecutionTime":2.5}"#,
+        );
+        let response = parse_query_result(parsed.as_bytes()).unwrap();
+        assert_eq!(
+            response.statistics.unwrap()["ExecutionTime"],
+            2.5,
+            "a payload the service already parsed is read too"
+        );
+
+        assert!(
+            parse_query_result(RESPONSE.as_bytes())
+                .unwrap()
+                .statistics
+                .is_none(),
+            "completion information without the event has no statistics"
+        );
+    }
 
     #[test]
     fn a_render_becomes_a_chart_on_its_table() {

@@ -17,6 +17,7 @@ pub mod findings;
 pub mod inspector;
 pub mod result;
 pub mod sequence;
+pub mod statistics;
 pub mod timeline;
 pub mod trace_schema;
 pub mod trace_text;
@@ -29,3 +30,4 @@ pub use result::{
     Cell, Column, ColumnKind, ColumnLayout, ExtraProperty, NoResultData, ResultSet, Table,
     TableView,
 };
+pub use statistics::QueryStatistics;

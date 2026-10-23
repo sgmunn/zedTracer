@@ -16,6 +16,7 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use crate::chart::Chart;
+use crate::statistics::QueryStatistics;
 
 /// The Kusto type of a column, reduced to the distinctions sorting and filtering need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -248,6 +249,8 @@ pub struct ResultSet {
     pub execution_started_at: Option<String>,
     pub execution_duration_ms: Option<u64>,
     pub client_request_id: Option<String>,
+    /// What the run cost the service, as it sent it. See [`QueryStatistics`].
+    pub statistics: Option<Value>,
     pub tables: Vec<Table>,
     pub table_views: Vec<TableView>,
     pub charts: Vec<Chart>,
@@ -276,6 +279,7 @@ impl ResultSet {
                 "clientRequestId" => {
                     result.client_request_id = parse_field(raw, "clientRequestId")?
                 }
+                "queryStatistics" => result.statistics = parse_field(raw, "queryStatistics")?,
                 "tableViews" => {
                     result.table_views =
                         parse_field::<Vec<TableView>>(raw, "tableViews")?.unwrap_or_default()
@@ -305,6 +309,10 @@ impl ResultSet {
 
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(self).context("could not write the result file")
+    }
+
+    pub fn query_statistics(&self) -> Option<QueryStatistics> {
+        self.statistics.as_ref().map(QueryStatistics::from_payload)
     }
 
     /// The row count shown in the results panel badge: rows across every table.
@@ -369,6 +377,7 @@ impl ResultSet {
             execution_started_at: run.execution_started_at,
             execution_duration_ms: run.execution_duration_ms,
             client_request_id: run.client_request_id,
+            statistics: run.statistics,
             tables: run.tables,
             table_views,
             charts: self.charts.clone(),
@@ -412,6 +421,9 @@ impl Serialize for ResultSet {
         }
         if let Some(request_id) = &self.client_request_id {
             map.serialize_entry("clientRequestId", request_id)?;
+        }
+        if let Some(statistics) = &self.statistics {
+            map.serialize_entry("queryStatistics", statistics)?;
         }
         if !self.table_views.is_empty() {
             map.serialize_entry("tableViews", &self.table_views)?;
@@ -619,6 +631,24 @@ mod tests {
     }
 
     #[test]
+    fn statistics_are_kept_as_the_service_sent_them() {
+        let text = r#"{"tables":[],"queryStatistics":{"ExecutionTime":28.8199127,
+            "resource_usage":{"memory":{"peak_per_node":1050944},"zzz":1,"aaa":2}}}"#;
+        let result = ResultSet::from_json(text).unwrap();
+        let statistics = result.query_statistics().unwrap();
+        assert_eq!(statistics.execution_seconds, Some(28.8199127));
+        assert_eq!(statistics.usage.memory_peak_per_node, Some(1050944));
+
+        let written = result.to_json().unwrap();
+        assert!(
+            written.find(r#""zzz""#) < written.find(r#""aaa""#),
+            "keys keep the order the service sent them in"
+        );
+        assert_eq!(ResultSet::from_json(&written).unwrap(), result);
+        assert_eq!(ResultSet::default().query_statistics(), None);
+    }
+
+    #[test]
     fn rejects_rows_with_the_wrong_cell_count() {
         let broken =
             r#"{"tables":[{"name":"t","columns":[{"name":"a","type":"long"}],"rows":[[1,2]]}]}"#;
@@ -662,6 +692,7 @@ mod tests {
       "executionStartedAt": "2026-01-01T00:00:00.000Z",
       "executionDurationMs": 12,
       "clientRequestId": "old",
+      "queryStatistics": {"ExecutionTime": 1.5},
       "tableViews": [
         {"name": "PrimaryResult", "gutterWidth": 64, "columns": [{"index": 1, "width": 90}]},
         {"name": "PrimaryResult::activity-structured:0", "columns": [{"index": 0}]},
@@ -675,7 +706,8 @@ mod tests {
             r#"{{"query": "new text", "cluster": "elsewhere", "database": "Other",
                 "tables": [{{"name": "PrimaryResult", "columns": {columns}, "rows": {rows}}}],
                 "executionStartedAt": "2026-02-02T00:00:00.000Z",
-                "executionDurationMs": 99, "clientRequestId": "new"}}"#
+                "executionDurationMs": 99, "clientRequestId": "new",
+                "queryStatistics": {{"ExecutionTime": 0.25}}}}"#
         ))
         .unwrap()
     }
@@ -696,6 +728,13 @@ mod tests {
         );
         assert_eq!(refreshed.execution_duration_ms, Some(99));
         assert_eq!(refreshed.client_request_id.as_deref(), Some("new"));
+        assert_eq!(
+            refreshed
+                .query_statistics()
+                .and_then(|statistics| statistics.execution_seconds),
+            Some(0.25),
+            "the statistics are those of the run that made the data"
+        );
 
         assert_eq!(
             refreshed.query, stored.query,
