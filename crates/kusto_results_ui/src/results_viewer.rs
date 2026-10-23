@@ -39,6 +39,7 @@ use crate::chart_view::{ChartView, ChartViewEvent};
 use crate::findings_strip::{FindingsStrip, FindingsStripEvent};
 use crate::grid::{GridOptions, ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
+use crate::statistics_view::StatisticsView;
 use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
@@ -427,6 +428,8 @@ pub enum ViewMode {
     Timeline,
     /// The query the result came from, to read.
     Query,
+    /// What the run cost the service.
+    Statistics,
     /// The chart at this position among the charts of the result.
     Chart(usize),
 }
@@ -506,6 +509,9 @@ pub struct ResultsViewer {
     /// Whether the file says which query it came from, which can be shown and run again.
     can_show_query: bool,
     query_view: Option<Entity<QueryView>>,
+    /// Whether the file holds the statistics the service reported for the run.
+    can_show_statistics: bool,
+    statistics_view: Option<Entity<StatisticsView>>,
     /// A view for each chart of the result, built when its tab is first shown.
     chart_views: Vec<Option<Entity<ChartView>>>,
     _chart_subscriptions: Vec<Subscription>,
@@ -633,6 +639,8 @@ impl ResultsViewer {
             hide_structural: false,
             can_show_query: false,
             query_view: None,
+            can_show_statistics: false,
+            statistics_view: None,
             chart_views: Vec::new(),
             _chart_subscriptions: Vec::new(),
             offered_row_details: false,
@@ -742,6 +750,8 @@ impl ResultsViewer {
                 .as_deref()
                 .is_some_and(|query| !query.trim().is_empty());
         self.query_view = None;
+        self.can_show_statistics = self.grid.is_some() && result.statistics.is_some();
+        self.statistics_view = None;
         self.chart_views = vec![None; result.charts.len()];
         self._chart_subscriptions.clear();
         if !self.can_show(self.mode) {
@@ -756,6 +766,8 @@ impl ResultsViewer {
             self.build_timeline(window, cx);
         } else if self.mode == ViewMode::Query {
             self.build_query_view(window, cx);
+        } else if self.mode == ViewMode::Statistics {
+            self.build_statistics_view(window, cx);
         }
     }
 
@@ -877,6 +889,11 @@ impl ResultsViewer {
         self.query_view = Some(cx.new(|cx| QueryView::new(&result, window, cx)));
     }
 
+    fn build_statistics_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.results_file.read(cx).result.clone();
+        self.statistics_view = Some(cx.new(|cx| StatisticsView::new(&result, window, cx)));
+    }
+
     fn path_on_disk(&self, cx: &App) -> PathBuf {
         let file = self.results_file.read(cx);
         file._worktree.read(cx).absolutize(&file.project_path.path)
@@ -984,6 +1001,7 @@ impl ResultsViewer {
             ViewMode::Sequence => self.can_show_sequence,
             ViewMode::Timeline => self.can_show_timeline,
             ViewMode::Query => self.can_show_query,
+            ViewMode::Statistics => self.can_show_statistics,
             ViewMode::Chart(position) => self.grid.is_some() && position < self.chart_views.len(),
         }
     }
@@ -1004,6 +1022,9 @@ impl ResultsViewer {
         }
         if mode == ViewMode::Query && self.query_view.is_none() {
             self.build_query_view(window, cx);
+        }
+        if mode == ViewMode::Statistics && self.statistics_view.is_none() {
+            self.build_statistics_view(window, cx);
         }
         if let ViewMode::Chart(position) = mode
             && self.chart_views.get(position).is_some_and(Option::is_none)
@@ -1082,7 +1103,11 @@ impl ResultsViewer {
             ViewMode::Structured => self.build_structured(window, cx),
             ViewMode::Sequence => self.build_sequence(window, cx),
             ViewMode::Timeline => self.build_timeline(window, cx),
-            ViewMode::Data | ViewMode::ExtraData(_) | ViewMode::Query | ViewMode::Chart(_) => {}
+            ViewMode::Data
+            | ViewMode::ExtraData(_)
+            | ViewMode::Query
+            | ViewMode::Statistics
+            | ViewMode::Chart(_) => {}
         }
         cx.notify();
     }
@@ -1587,6 +1612,10 @@ impl Render for ResultsViewer {
             (ViewMode::Timeline, _) => div()
                 .p_4()
                 .child(ui::Label::new("Drawing the timeline…")),
+            (ViewMode::Statistics, _) => match &self.statistics_view {
+                Some(view) => div().size_full().child(view.clone()),
+                None => div().p_4(),
+            },
             _ => match (
             self.mode,
             &self.structured,
@@ -1838,6 +1867,20 @@ impl Render for ResultsViewer {
                                         .toggle_state(mode == ViewMode::Query)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.set_mode(ViewMode::Query, window, cx)
+                                        })),
+                                ),
+                            )
+                        })
+                        .when(self.can_show_statistics, |bar| {
+                            bar.child(
+                                div().debug_selector(|| "statistics-tab".to_string()).child(
+                                    Button::new("results-statistics-tab", "Stats")
+                                        .toggle_state(mode == ViewMode::Statistics)
+                                        .tooltip(ui::Tooltip::text(
+                                            "What the run cost the service: time, CPU, memory, cache and network",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_mode(ViewMode::Statistics, window, cx)
                                         })),
                                 ),
                             )
@@ -2266,6 +2309,12 @@ mod tests {
       "tables": [{"name": "PrimaryResult", "columns": [{"name": "n", "type": "long"}], "rows": [[1]]}],
       "executionStartedAt": "2026-10-01T10:00:00.000Z",
       "executionDurationMs": 1840
+    }"#;
+
+    const WITH_STATISTICS: &str = r#"{
+      "query": "T | take 1",
+      "tables": [{"name": "PrimaryResult", "columns": [{"name": "n", "type": "long"}], "rows": [[1]]}],
+      "queryStatistics": {"ExecutionTime": 1.5, "resource_usage": {"memory": {"peak_per_node": 1050944}}}
     }"#;
 
     const WITHOUT_QUERY: &str = r#"{
@@ -3426,6 +3475,34 @@ mod tests {
                 ("raid".to_string(), "abc".to_string())
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn a_result_with_statistics_has_a_stats_tab(cx: &mut TestAppContext) {
+        let (viewers, cx) =
+            open_files(cx, &[("moved.ktt", MOVED), ("stats.ktt", WITH_STATISTICS)]).await;
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("statistics-tab").is_some());
+        assert!(
+            !viewers[0].read_with(cx, |viewer, _| viewer.can_show(ViewMode::Statistics)),
+            "a file without statistics has no Stats tab"
+        );
+
+        let viewer = &viewers[1];
+        viewer.update_in(cx, |viewer, window, cx| {
+            viewer.set_mode(ViewMode::Statistics, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.mode()),
+            ViewMode::Statistics
+        );
+        assert!(
+            viewer.read_with(cx, |viewer, _| viewer.statistics_view.is_some()),
+            "the view is built when its tab is first shown"
+        );
+        assert!(cx.debug_bounds("statistics-json").is_some());
     }
 
     #[gpui::test]

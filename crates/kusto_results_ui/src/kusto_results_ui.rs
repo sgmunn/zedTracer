@@ -23,6 +23,7 @@ mod row_details_panel;
 mod run_query;
 mod save_result;
 mod sequence_view;
+mod statistics_view;
 mod structured_view;
 mod waterfall_view;
 
