@@ -288,6 +288,28 @@ A result that is still in the history folder is a record of one run, so Run agai
 in the Results panel, or a tab) and leaves the old one alone. To keep a result you can refresh, use **Save a copy…**
 first and open the copy.
 
+## Query statistics
+
+A query run keeps what it cost the service in its result file: the statistics Azure Data Explorer shows in its
+**Stats** tab, exactly as the service sent them (the `queryStatistics` property of the `.ktt` file). A result that has
+them has a **Stats** tab after **Query**, with:
+
+- **Time**: the execution time the service reports, the round trip as Zed measured it, and when the run started.
+- **CPU**: total, kernel and user time, and how much of it went to execution and to planning.
+- **Memory**: the peak per node.
+- **Disk cache**: hot and cold cache hits and misses, what was retrieved, and what bypassed the cache.
+- **Network**: bytes sent between the nodes of the cluster and to other clusters.
+- **Result**: the rows and size of each result table.
+- **Scan**: the extents and rows the query scanned, of all there were.
+- **General**: the client request id and the query hash.
+
+A query that reads other clusters (`cluster("…").database("…")`) also lists the CPU, memory, cache and network of
+each of those clusters under its name, which is often where most of the cost is. **Raw JSON** shows the statistics
+as the service sent them, including anything the cards do not show.
+
+A figure the service did not send is left out. Control commands, and files written before statistics were kept, have
+no Stats tab. **Run again** replaces the statistics with those of the new run.
+
 ## Results with several tables
 
 A query that ends in more than one statement that returns rows, or a command that answers with more than one table,
