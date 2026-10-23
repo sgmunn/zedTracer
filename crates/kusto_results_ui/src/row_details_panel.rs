@@ -152,7 +152,7 @@ impl RowDetailsPanel {
             }),
             cx.subscribe_in(&inspector, window, |this, _, event, window, cx| {
                 let InspectorEvent::OpenFrame { frame, modifiers } = event;
-                if let Some(how) = OpenIn::from_modifiers(modifiers) {
+                if let Some(how) = OpenIn::from_modifiers(modifiers, cx) {
                     this.code
                         .update(cx, |code, cx| code.open_frame(frame, how, window, cx));
                 }
@@ -1284,7 +1284,8 @@ mod tests {
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.activate_pane_in_direction(SplitDirection::Left, window, cx)
         });
-        click_frame(&panel, 1, gpui::Modifiers::secondary_key(), cx);
+        let secondary_key = cx.read(gpui::Modifiers::secondary_key);
+        click_frame(&panel, 1, secondary_key, cx);
         wait_for_tabs(
             &workspace,
             &[&["trace.txt", "Ledger.cs"], &["Checkout.cs"]],

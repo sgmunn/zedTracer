@@ -96,12 +96,17 @@ pub(super) fn try_handle_client_command(
         return true;
     }
     let project = workspace.read(cx).project().clone();
+    let path_style = workspace.read(cx).path_style(cx);
     let client_command = project
         .read(cx)
         .lsp_store()
         .read(cx)
         .language_server_adapter_for_id(action.server_id)
-        .and_then(|adapter| adapter.adapter.client_command(&command.command, arguments))
+        .and_then(|adapter| {
+            adapter
+                .adapter
+                .client_command(&command.command, arguments, path_style)
+        })
         .or_else(|| match command.command.as_str() {
             "editor.action.showReferences"
             | "editor.action.goToLocations"

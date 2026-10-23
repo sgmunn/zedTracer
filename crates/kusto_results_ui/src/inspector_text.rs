@@ -650,8 +650,9 @@ mod tests {
         cx.simulate_mouse_up(on_plain, MouseButton::Left, Modifiers::none());
         assert!(opened.borrow().is_empty(), "a drag that ends elsewhere");
 
+        let secondary_key = cx.read(Modifiers::secondary_key);
         cx.simulate_click(on_first, Modifiers::none());
-        cx.simulate_click(on_first, Modifiers::secondary_key());
+        cx.simulate_click(on_first, secondary_key);
         let alt = Modifiers {
             alt: true,
             ..Modifiers::none()
@@ -663,7 +664,7 @@ mod tests {
                 .iter()
                 .map(|(_, modifiers)| *modifiers)
                 .collect::<Vec<_>>(),
-            [Modifiers::none(), Modifiers::secondary_key(), alt],
+            [Modifiers::none(), secondary_key, alt],
             "each click goes with the keys that were down"
         );
     }

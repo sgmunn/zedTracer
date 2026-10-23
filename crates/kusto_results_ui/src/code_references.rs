@@ -156,7 +156,7 @@ impl OpenIn {
     /// A plain click opens in the code pane, alt in a new split, and the secondary key (command
     /// on macOS) in the active pane. Any other combination, such as shift to extend a selection,
     /// is not a click on a link.
-    pub fn from_modifiers(modifiers: &Modifiers) -> Option<Self> {
+    pub fn from_modifiers(modifiers: &Modifiers, cx: &App) -> Option<Self> {
         let alt = Modifiers {
             alt: true,
             ..Modifiers::none()
@@ -165,7 +165,7 @@ impl OpenIn {
             Some(Self::CodePane)
         } else if *modifiers == alt {
             Some(Self::NewSplit)
-        } else if *modifiers == Modifiers::secondary_key() {
+        } else if *modifiers == Modifiers::secondary_key(cx) {
             Some(Self::ActivePane)
         } else {
             None
@@ -671,7 +671,7 @@ impl Render for CodeReferences {
                             .cursor_pointer()
                             .hover(move |style| style.bg(hover_background))
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                                if let Some(how) = OpenIn::from_modifiers(&event.modifiers()) {
+                                if let Some(how) = OpenIn::from_modifiers(&event.modifiers(), cx) {
                                     this.open(&opened, how, window, cx)
                                 }
                             }))

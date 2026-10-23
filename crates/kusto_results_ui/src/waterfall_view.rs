@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui::{
     Anchor, AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, DragMoveEvent, Empty,
     Entity, EventEmitter, Focusable, Hsla, IntoElement,
-    MouseButton, MouseDownEvent, Point, Render, ScrollStrategy, ScrollWheelEvent, SharedString,
+    MouseButton, MouseDownEvent, Point, Render, ScrollEvent, ScrollStrategy, SharedString,
     Subscription, UniformListScrollHandle, Window, anchored, canvas, deferred, div, pattern_slash,
     px, relative, uniform_list,
 };
@@ -285,7 +285,7 @@ impl WaterfallView {
         cx.notify();
     }
 
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) -> bool {
+    fn on_wheel(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) -> bool {
         let delta = event.delta.pixel_delta(ROW_HEIGHT);
         let (across, down) = (f32::from(delta.x), f32::from(delta.y));
         if event.modifiers.control || event.modifiers.platform {
@@ -655,7 +655,7 @@ impl Render for WaterfallView {
                         div()
                             .flex_1()
                             .min_h_0()
-                            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                                 if this.on_wheel(event, cx) {
                                     cx.stop_propagation();
                                 }

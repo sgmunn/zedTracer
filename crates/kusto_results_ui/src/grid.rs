@@ -722,7 +722,7 @@ impl ResultGrid {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if modifiers.secondary() {
+        if modifiers.secondary(cx) {
             self.select_row(row, modifiers, window, cx);
             return;
         }
@@ -768,7 +768,7 @@ impl ResultGrid {
         cx: &mut Context<Self>,
     ) {
         let column_count = self.column_order.len();
-        if modifiers.secondary() {
+        if modifiers.secondary(cx) {
             let (selection, added_rows) =
                 toggle_row(self.selection, &self.added_rows, row, column_count);
             self.set_selection_and_added_rows(selection, added_rows, cx);
@@ -2922,12 +2922,13 @@ mod tests {
 
         click(cx, "gutter-3", Modifiers::default());
         assert_eq!(status(cx), "200 rows · Row 4 selected");
-        click(cx, "gutter-9", Modifiers::secondary_key());
-        click(cx, "gutter-6", Modifiers::secondary_key());
+        let secondary_key = cx.read(Modifiers::secondary_key);
+        click(cx, "gutter-9", secondary_key);
+        click(cx, "gutter-6", secondary_key);
         assert_eq!(published(cx), [3, 6, 9]);
         assert_eq!(status(cx), "200 rows · 3 rows selected");
 
-        click(cx, "gutter-6", Modifiers::secondary_key());
+        click(cx, "gutter-6", secondary_key);
         assert_eq!(published(cx), [3, 9]);
 
         grid.update(cx, |grid, cx| grid.copy_selection(cx));
@@ -2941,7 +2942,7 @@ mod tests {
             "a header line and the two picked rows"
         );
 
-        click(cx, "cell-12-1", Modifiers::secondary_key());
+        click(cx, "cell-12-1", secondary_key);
         assert_eq!(published(cx), [3, 9, 12], "a cell click picks its row too");
 
         click(cx, "gutter-2", Modifiers::default());
@@ -2973,22 +2974,24 @@ mod tests {
         };
         let (vertical_before, _) = offsets(cx);
         let over_rows = centre_of(cx, "cell-3-2");
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: over_rows,
             delta: gpui::ScrollDelta::Lines(gpui::point(-3., 0.)),
             modifiers: Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
+            source: gpui::ScrollSource::Pointer,
         });
         draw(cx);
         let (vertical_after, horizontal_after) = offsets(cx);
         assert_ne!(horizontal_after.x, px(0.), "the columns scrolled");
         assert_eq!(vertical_after, vertical_before, "the rows did not scroll");
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: over_rows,
             delta: gpui::ScrollDelta::Lines(gpui::point(0., -3.)),
             modifiers: Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
+            source: gpui::ScrollSource::Pointer,
         });
         draw(cx);
         let (vertical_scrolled, horizontal_unchanged) = offsets(cx);
