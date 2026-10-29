@@ -401,9 +401,10 @@ in the result is placed under the root that carries that parent's id as its root
 several do), so a request that was handed on from another one shows as part of it. It stays marked as having no parent
 in the result, and its tooltip in the Structured tab says where it was placed.
 
-The events pane of the Structured tab lists the selected activity's own events and, among them, the first event of each
-child activity, to show when each child started. Those rows are drawn in the accent colour with `↳` before the row
-number, and stay when structural rows are hidden. Grandchildren are not shown.
+The events pane of the Structured tab lists the selected activity's own events and, among them, the first and last
+events of each child activity, to show when each child started and ended and so which children ran side by side. Those
+rows are drawn in the accent colour with `↳` (start) or `↲` (end) before the row number, and stay when structural rows
+are hidden. A child with a single event shows only its start. Grandchildren are not shown.
 
 A trace that calls a column something else is covered by listing the names in `kusto_results.trace_columns`, most
 preferred first:
