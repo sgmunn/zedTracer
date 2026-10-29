@@ -29,7 +29,7 @@ mod waterfall_view;
 
 pub use activity_tree::{ActivityTree, ActivityTreeEvent};
 pub use filter_popover::{FilterChanged, FilterPopover};
-pub use grid::{GridOptions, ResultGrid, ResultGridEvent};
+pub use grid::{ChildRow, GridOptions, ResultGrid, ResultGridEvent};
 pub use inspector_text::{InspectorEvent, InspectorPalette, InspectorText};
 pub use query_thread::{QueryThread, threads_folder};
 pub use results_panel::{ResultsPanel, ToggleResults};
