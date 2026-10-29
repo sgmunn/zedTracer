@@ -601,6 +601,30 @@ mod tests {
         });
     }
 
+    /// A warning triangle does not push its node's columns out of line with its siblings'.
+    #[gpui::test]
+    async fn a_warning_triangle_keeps_the_columns_in_line(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let tree = view.read_with(cx, |view, _| view.tree().clone());
+        let auth = activity_of(&view, "A", cx);
+        let notify = activity_of(&view, "B", cx);
+        let retry = activity_of(&view, "C", cx);
+        tree.update(cx, |tree, cx| tree.reveal(retry, cx));
+        cx.run_until_parked();
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            let activities = &view.projection.activities;
+            assert!(activities[auth].shows_warning_triangle());
+            assert!(!activities[notify].shows_warning_triangle());
+        });
+        let left = |activity: usize, cx: &mut VisualTestContext| {
+            cx.debug_bounds(format!("activity-depth-{activity}").leak())
+                .map(|bounds| bounds.origin.x)
+                .unwrap_or_else(|| panic!("activity {activity} is showing"))
+        };
+        assert_eq!(left(auth, cx), left(notify, cx));
+    }
+
     /// A trace with timestamps shows how long each activity ran and when it started.
     #[gpui::test]
     async fn the_tree_shows_how_long_each_activity_ran_and_when_it_started(

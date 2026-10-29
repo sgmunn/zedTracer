@@ -40,6 +40,9 @@ actions!(
 );
 
 /// The depth badge and the event count come first, in columns, so the names line up.
+/// The warning triangle has a column of its own, kept on every node, so a triangle does not
+/// push the rest of its node out of line with its siblings.
+const WARNING_COLUMN_WIDTH: Pixels = px(12.);
 const DEPTH_COLUMN_WIDTH: Pixels = px(28.);
 const COUNT_COLUMN_WIDTH: Pixels = px(40.);
 /// How long an activity ran and when it started, when the trace has timestamps.
@@ -382,16 +385,22 @@ impl ActivityTree {
                     }),
                 )
                 .child(disclosure)
-                .when(triangle_sentence.is_some(), |row| {
-                    row.child(
-                        Icon::new(IconName::Warning)
-                            .size(IconSize::XSmall)
-                            .color(Color::Warning),
-                    )
-                })
+                .child(
+                    div()
+                        .flex_none()
+                        .w(WARNING_COLUMN_WIDTH)
+                        .when(triangle_sentence.is_some(), |cell| {
+                            cell.child(
+                                Icon::new(IconName::Warning)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Warning),
+                            )
+                        }),
+                )
                 .child(
                     div()
                         .id(("activity-depth", index))
+                        .debug_selector(|| format!("activity-depth-{index}"))
                         .min_w(DEPTH_COLUMN_WIDTH)
                         .when(has_children, |cell| {
                             cell.tooltip(Tooltip::text(format!(
