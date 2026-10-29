@@ -2,6 +2,7 @@
 //! of the selected activity in a results grid, with a splitter between them.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -84,19 +85,15 @@ impl StructuredView {
             .tables
             .get(table_index)
             .map_or_else(String::new, |table| table.name.clone());
+        let (rows, child_start_rows) = events_and_child_starts(&projection, first);
         let grid = cx.new(|cx| {
             ResultGrid::with_options(
                 result,
                 table_index,
                 GridOptions {
                     view_name: Some(format!("{table_name}::activity-structured:{table_index}")),
-                    scope: Some(Arc::new(
-                        projection
-                            .activities
-                            .get(first)
-                            .map(|activity| activity.event_rows.clone())
-                            .unwrap_or_default(),
-                    )),
+                    scope: Some(Arc::new(rows)),
+                    child_start_rows: Arc::new(child_start_rows),
                     ..GridOptions::default()
                 },
                 window,
@@ -133,14 +130,10 @@ impl StructuredView {
     }
 
     fn show_events_of(&mut self, activity: usize, cx: &mut Context<Self>) {
-        let rows = self
-            .projection
-            .activities
-            .get(activity)
-            .map(|activity| activity.event_rows.clone())
-            .unwrap_or_default();
-        self.grid
-            .update(cx, |grid, cx| grid.set_scope(Some(Arc::new(rows)), cx));
+        let (rows, child_start_rows) = events_and_child_starts(&self.projection, activity);
+        self.grid.update(cx, |grid, cx| {
+            grid.set_scope_with_child_starts(Some(Arc::new(rows)), Arc::new(child_start_rows), cx)
+        });
         cx.notify();
     }
 
@@ -176,6 +169,27 @@ impl StructuredView {
             None => "Events".to_string(),
         }
     }
+}
+
+/// The activity's own events, with the first event of each child to show when the child
+/// started, in source order.
+fn events_and_child_starts(
+    projection: &ActivityProjection,
+    activity: usize,
+) -> (Vec<usize>, BTreeSet<usize>) {
+    let Some(own) = projection.activities.get(activity) else {
+        return (Vec::new(), BTreeSet::new());
+    };
+    let child_start_rows: BTreeSet<usize> = projection
+        .activities
+        .iter()
+        .filter(|child| child.parent == Some(activity))
+        .filter_map(|child| child.event_rows.first().copied())
+        .collect();
+    let mut rows = own.event_rows.clone();
+    rows.extend(child_start_rows.iter().copied());
+    rows.sort_unstable();
+    (rows, child_start_rows)
 }
 
 impl Focusable for StructuredView {
@@ -364,21 +378,26 @@ mod tests {
     }
 
     /// ACT-6, ACT-13: the grid shows only the selected activity's events, source row numbers
-    /// and all, and choosing another activity clears the selection.
+    /// and all, with the first event of each child but no grandchild, and choosing another
+    /// activity clears the selection.
     #[gpui::test]
     async fn the_grid_shows_the_events_of_the_selected_activity(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        assert_eq!(grid_rows(&view, cx), [0, 5], "the first root's own events");
+        assert_eq!(
+            grid_rows(&view, cx),
+            [0, 1, 4, 5],
+            "the first root's own events and where A and B start"
+        );
         assert_eq!(
             view.read_with(cx, |view, cx| view.grid().read(cx).status_text()),
-            "2 rows"
+            "4 rows"
         );
 
         let auth = activity_of(&view, "A", cx);
         let tree = view.read_with(cx, |view, _| view.tree().clone());
         tree.update(cx, |tree, cx| tree.select(auth, cx));
         cx.run_until_parked();
-        assert_eq!(grid_rows(&view, cx), [1, 2, 6]);
+        assert_eq!(grid_rows(&view, cx), [1, 2, 3, 6]);
 
         let active_rows =
             cx.update(|_, cx| crate::ActiveSelection::shared(cx).read(cx).rows.clone());
@@ -437,11 +456,11 @@ mod tests {
         );
         cx.dispatch_action(SelectNext);
         cx.run_until_parked();
-        assert_eq!(grid_rows(&view, cx), [1, 2, 6], "the first child");
+        assert_eq!(grid_rows(&view, cx), [1, 2, 3, 6], "the first child");
         cx.dispatch_action(Collapse);
         cx.dispatch_action(Collapse);
         cx.run_until_parked();
-        assert_eq!(grid_rows(&view, cx), [0, 5], "back to the root");
+        assert_eq!(grid_rows(&view, cx), [0, 1, 4, 5], "back to the root");
     }
 
     fn double_click(cx: &mut VisualTestContext, at: Point<Pixels>) {

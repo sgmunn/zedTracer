@@ -161,6 +161,8 @@ pub struct ResultGrid {
     visible_rows: Arc<Vec<usize>>,
     /// The rows the grid starts from, before search and filters; `None` is the whole table.
     scope: Option<Arc<Vec<usize>>>,
+    /// Scoped rows that mark where a child activity starts rather than being the scope's own.
+    child_start_rows: Arc<BTreeSet<usize>>,
     /// The name the column layout is saved under.
     view_name: String,
     selection: Option<CellSelection>,
@@ -210,6 +212,8 @@ pub struct GridOptions {
     /// The source rows the grid starts from, when it shows only some of the table, as the
     /// structured view shows one activity's events.
     pub scope: Option<Arc<Vec<usize>>>,
+    /// Rows of the scope that mark where a child activity starts.
+    pub child_start_rows: Arc<BTreeSet<usize>>,
     /// Whether the table is one besides the result's first. The views that read a trace are built
     /// from the first table only, so a row of another table cannot be focused on, and none of its
     /// rows is dimmed as structural.
@@ -324,6 +328,7 @@ impl ResultGrid {
                 .clone()
                 .unwrap_or_else(|| Arc::new((0..table_rows).collect())),
             scope: options.scope,
+            child_start_rows: options.child_start_rows,
             view_name,
             selection: None,
             added_rows: BTreeSet::new(),
@@ -440,7 +445,7 @@ impl ResultGrid {
         if hide == self.hides_structural_rows() {
             return;
         }
-        self.view_state.excluded_rows = hide.then(|| structural.mask.clone());
+        self.view_state.excluded_rows = hide.then(|| self.excluded_structural_rows(structural));
         // The rows the selection referred to may be going, as when the scope changes.
         self.selection = None;
         self.added_rows.clear();
@@ -836,10 +841,41 @@ impl ResultGrid {
             && selection.anchor.1.max(selection.focus.1) == last_column
     }
 
+    /// A child's first event is often a structural "started" row, and hiding it would hide
+    /// where the child started.
+    fn excluded_structural_rows(&self, structural: &StructuralRows) -> Arc<Vec<bool>> {
+        if self.child_start_rows.is_empty() {
+            return structural.mask.clone();
+        }
+        let mut mask = structural.mask.as_ref().clone();
+        for &row in self.child_start_rows.iter() {
+            if let Some(excluded) = mask.get_mut(row) {
+                *excluded = false;
+            }
+        }
+        Arc::new(mask)
+    }
+
     /// Shows another part of the table, or all of it with `None`. The selection is cleared,
     /// as it is whenever the rows change.
     pub fn set_scope(&mut self, scope: Option<Arc<Vec<usize>>>, cx: &mut Context<Self>) {
+        self.set_scope_with_child_starts(scope, Arc::default(), cx);
+    }
+
+    /// Like `set_scope`, with the rows of the scope that mark where a child activity starts.
+    pub fn set_scope_with_child_starts(
+        &mut self,
+        scope: Option<Arc<Vec<usize>>>,
+        child_start_rows: Arc<BTreeSet<usize>>,
+        cx: &mut Context<Self>,
+    ) {
         self.scope = scope;
+        self.child_start_rows = child_start_rows;
+        if self.hides_structural_rows()
+            && let Some(structural) = &self.structural
+        {
+            self.view_state.excluded_rows = Some(self.excluded_structural_rows(structural));
+        }
         // The rows the selection referred to are going, and the inspector is told even when
         // this grid had nothing selected, because it may still show another grid's rows.
         self.selection = None;
@@ -1297,6 +1333,7 @@ impl ResultGrid {
         };
         let selected_color = cx.theme().colors().element_selected;
         let muted = cx.theme().colors().text_muted;
+        let accent = cx.theme().colors().text_accent;
         let settings = ResultsSettings::get_global(cx).clone();
         let severity_column = settings.trace_columns(table).severity;
         let rows: Vec<Vec<AnyElement>> = range
@@ -1305,6 +1342,7 @@ impl ResultGrid {
                 let structural = self.structural.as_ref().is_some_and(|structural| {
                     structural.mask.get(source_row).copied().unwrap_or(false)
                 });
+                let child_start = self.child_start_rows.contains(&source_row);
                 let mut elements: Vec<AnyElement> = Vec::with_capacity(self.column_order.len() + 1);
                 let row_selected = self.added_rows.contains(&display_row)
                     || self.selection.is_some_and(|selection| {
@@ -1318,8 +1356,13 @@ impl ResultGrid {
                         .size_full()
                         .debug_selector(|| format!("gutter-{display_row}"))
                         .when(structural, |cell| cell.text_color(muted))
+                        .when(child_start, |cell| cell.text_color(accent))
                         .when(row_selected, |cell| cell.bg(selected_color))
-                        .child(SharedString::from((source_row + 1).to_string()))
+                        .child(SharedString::from(if child_start {
+                            format!("↳ {}", source_row + 1)
+                        } else {
+                            (source_row + 1).to_string()
+                        }))
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |this, _: &MouseDownEvent, _, _| {
@@ -1354,6 +1397,7 @@ impl ResultGrid {
                             .size_full()
                             .debug_selector(|| format!("cell-{display_row}-{position}"))
                             .when(structural, |cell| cell.text_color(muted))
+                            .when(child_start, |cell| cell.text_color(accent))
                             .when_some(tint, |cell, tint| cell.bg(tint))
                             .when(selected, |cell| cell.bg(selected_color))
                             .child(text)
@@ -2089,6 +2133,53 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(plain.read_with(cx, |grid, _| grid.visible_row_count()), 5, "a table with none changes nothing");
         assert!(!plain.read_with(cx, |grid, _| grid.hides_structural_rows()));
+    }
+
+    /// A child's start stays when structural rows are hidden, even when it is a structural row.
+    #[gpui::test]
+    async fn hiding_structural_rows_keeps_child_starts(cx: &mut TestAppContext) {
+        init_test(cx);
+        let rows: Vec<Vec<kusto_results::Cell>> = [
+            "Parent work",
+            "Monitored scope start.",
+            "Child work",
+            "Monitored scope end.",
+        ]
+        .into_iter()
+        .map(|message| vec![kusto_results::Cell::Text(message.into())])
+        .collect();
+        let result = Arc::new(ResultSet {
+            tables: vec![kusto_results::Table {
+                name: "t".into(),
+                columns: vec![kusto_results::Column::new("MessageText", "string")],
+                rows,
+            }],
+            ..ResultSet::default()
+        });
+        let (grid, cx) = cx.add_window_view(|window, cx| ResultGrid::new(result, 0, window, cx));
+        cx.simulate_resize(size(px(800.), px(400.)));
+        grid.update(cx, |grid, cx| grid.set_hide_structural(true, cx));
+        grid.update(cx, |grid, cx| {
+            grid.set_scope_with_child_starts(
+                Some(Arc::new(vec![0, 1, 3])),
+                Arc::new(BTreeSet::from([1])),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.visible_rows_for_test().to_vec()),
+            vec![0, 1]
+        );
+
+        grid.update(cx, |grid, cx| grid.set_scope(Some(Arc::new(vec![0, 1, 3])), cx));
+        cx.run_until_parked();
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.visible_rows_for_test().to_vec()),
+            vec![0],
+            "a plain scope hides it again"
+        );
     }
 
     /// A table after the first is not the trace the other views are built from, so it dims no
