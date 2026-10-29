@@ -93,6 +93,8 @@ Phase D (structured activity view), built and tested headlessly. Core: `kusto_re
 
 Child starts and ends in the events pane (asked for by the user after using the Structured tab; ends added next, to see children that ran in parallel): `StructuredView::events_and_child_rows` scopes the grid to the selected activity's own events plus the first and last events (in source order) of each direct child, and passes them as `GridOptions::child_rows` / `ResultGrid::set_scope_with_child_rows`, a map from source row to `ChildRow::Start` or `ChildRow::End`. A child with one event gets only a start. The grid draws them in `text_accent` with `↳` or `↲` before the row number, and leaves them out of the structural mask when structural rows are hidden, because a child's first and last events are usually `Monitored scope start.` and `Monitored scope end.`. Grandchildren are not shown. Tests: `grid::tests::hiding_structural_rows_keeps_child_starts_and_ends` and the structured view tests. Not looked at in a real window.
 
+The warning triangle has a fixed 12 px column on every tree node (`WARNING_COLUMN_WIDTH`), empty when the node has no triangle, so a triangle no longer pushes the depth, count, duration, start and marker of its node out of line with its siblings (asked for by the user). Test: `structured_view::tests::a_warning_triangle_keeps_the_columns_in_line`, checked to fail when the column is only there for a triangle.
+
 Not done for phase D: ACT-16 (the structured tab in the bottom results panel, which arrives with phase E), the Query tab of PER-4 (phase E), and nobody has looked at any of it in a real window.
 
 ## Running queries (first slice of phase E)
