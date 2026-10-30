@@ -5800,12 +5800,8 @@ impl<'a> BufferChunks<'a> {
             }
 
             highlights.captures.set_byte_range(self.range.clone());
-            self.initialize_diagnostic_endpoints();
-        } else {
-            // Without tree-sitter highlights, such as when a language server colours the text on
-            // its own, only the diagnostics depend on the range.
-            self.initialize_diagnostic_endpoints();
         }
+        self.initialize_diagnostic_endpoints();
     }
 
     fn initialize_diagnostic_endpoints(&mut self) {
