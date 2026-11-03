@@ -362,6 +362,7 @@ impl RenderOnce for ThreadItem {
         } else if self.title_generating {
             Label::new(title)
                 .color(Color::Muted)
+                .single_line()
                 .when(!opaque_window, |label| label.truncate())
                 .with_animation(
                     "generating-title",
@@ -373,11 +374,13 @@ impl RenderOnce for ThreadItem {
                 .into_any_element()
         } else if highlight_positions.is_empty() {
             Label::new(title)
+                .single_line()
                 .when_some(self.title_label_color, |label, color| label.color(color))
                 .when(!opaque_window, |label| label.truncate())
                 .into_any_element()
         } else {
             HighlightedLabel::new(title, highlight_positions)
+                .single_line()
                 .when_some(self.title_label_color, |label, color| label.color(color))
                 .when(!opaque_window, |label| label.truncate())
                 .into_any_element()
