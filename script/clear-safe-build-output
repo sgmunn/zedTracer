@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+# Removes build output that is rarely needed while keeping target/debug/deps,
+# so ordinary debug builds do not have to recompile every dependency.
+
+set -euo pipefail
+
+target_dir="$(cd "$(dirname "$0")/.." && pwd)/target"
+
+directories=(
+    "$target_dir/debug/incremental"
+    "$target_dir/release"
+    "$target_dir/release-fast"
+    "$target_dir/aarch64-apple-darwin"
+)
+
+for directory in "${directories[@]}"; do
+    if [[ -d "$directory" ]]; then
+        echo "Removing $(du -sh "$directory" | cut -f1) in $directory"
+        rm -rf "$directory"
+    fi
+done
+
+df -h "$target_dir" | tail -1 | awk '{print "Free space now: " $4}'
