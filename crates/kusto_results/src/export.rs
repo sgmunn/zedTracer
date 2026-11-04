@@ -1,5 +1,5 @@
 //! Text forms of a table selection for the clipboard: plain text (tab-separated), Markdown,
-//! HTML and a KQL `datatable` expression.
+//! HTML and a KQL `datatable` expression, and CSV for a file.
 //!
 //! Every function takes the source rows and columns to write, in the order to write them, so
 //! the caller decides between a selection, the current view or the whole table. Values are
@@ -55,6 +55,40 @@ pub fn tsv(table: &Table, rows: &[usize], columns: &[usize]) -> String {
 
 fn escape_tsv(value: &str) -> String {
     if value.contains(['\t', '\r', '\n', '"']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// Comma-separated text with a header row, as RFC 4180 writes it: every record, the last one
+/// too, ends in CRLF. A value holding a comma, a line break or a double quote is wrapped in
+/// double quotes with inner quotes doubled. A null is an empty field, the same as an empty
+/// string.
+pub fn csv(table: &Table, rows: &[usize], columns: &[usize]) -> String {
+    if columns.is_empty() {
+        return String::new();
+    }
+    let record = |values: Vec<String>| format!("{}\r\n", values.join(","));
+    let mut output = record(
+        columns
+            .iter()
+            .map(|column| escape_csv(column_name(table, *column)))
+            .collect(),
+    );
+    for row in rows {
+        output.push_str(&record(
+            columns
+                .iter()
+                .map(|column| escape_csv(&cell_text(table, *row, *column)))
+                .collect(),
+        ));
+    }
+    output
+}
+
+fn escape_csv(value: &str) -> String {
+    if value.contains([',', '\r', '\n', '"']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()
@@ -494,6 +528,36 @@ mod tests {
             "N\tName\n\t\"say \"\"x\"\"\"\n1\t\"has\ttab\""
         );
         assert_eq!(tsv(&sample(), &[0], &[]), "");
+    }
+
+    #[test]
+    fn csv_quotes_what_would_break_a_record_and_ends_every_record_in_crlf() {
+        assert_eq!(
+            csv(&sample(), &[0, 1, 2], &[0, 1]),
+            "Name,N\r\nhas\ttab,1\r\n\"say \"\"x\"\"\",\r\n\"a|b\nc\",\"{\"\"k\"\":[1]}\"\r\n"
+        );
+        let table = Table {
+            name: "t".into(),
+            columns: vec![Column::new("a,b", "string"), Column::new("c\"d", "string")],
+            rows: vec![vec![
+                Cell::Text("one, two".into()),
+                Cell::Text("line\r\nbreak".into()),
+            ]],
+        };
+        assert_eq!(
+            csv(&table, &[0], &[0, 1]),
+            "\"a,b\",\"c\"\"d\"\r\n\"one, two\",\"line\r\nbreak\"\r\n"
+        );
+    }
+
+    #[test]
+    fn csv_writes_columns_and_rows_in_the_order_given() {
+        assert_eq!(
+            csv(&sample(), &[1, 0], &[1, 0]),
+            "N,Name\r\n,\"say \"\"x\"\"\"\r\n1,has\ttab\r\n"
+        );
+        assert_eq!(csv(&sample(), &[], &[0]), "Name\r\n");
+        assert_eq!(csv(&sample(), &[0], &[]), "");
     }
 
     #[test]
