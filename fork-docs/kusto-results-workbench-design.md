@@ -494,6 +494,8 @@ A cancelled run leaves the previous display untouched and shows nothing (RUN-3).
 | Copy as HTML           |
 | Copy as datatable      |
 +------------------------+
+| Export as CSV...       |
++------------------------+
 | Save As...             |
 +------------------------+
 ```

@@ -261,6 +261,7 @@ All copy actions take the **current selection**, or the **whole table** when the
 | CPY-9 | P2 | Drag a selection into a Kusto editor to insert it as a `datatable` expression; dragging from the corner carries the whole table, dragging from a fully selected column header carries the column selection. VS Code supports this; a native drag source into an editor may not be practical at first. |
 | CPY-10 | P2 | (Zed addition) Offer "copy the filtered and sorted view" as an alternative to the whole-source-table default when nothing is selected. |
 | CPY-11 | P1 | Rich HTML on the clipboard next to the text: for Copy (TSV plus an HTML table) and Copy as HTML. VS Code does this only on Windows; elsewhere it copies plain text. Zed's clipboard currently has no HTML entry type, so this needs platform work (design doc section 3.1). |
+| CPY-12 | P1 | (Zed addition) **Export as CSV…** in the grid's context menu (`result_grid::ExportAsCsv`): the same cells as Copy, written to a file chosen in the save prompt, with a name made from the query and the time it ran. | **Built** as `kusto_results::export::csv` (RFC 4180: header row, CRLF, a value with a comma, quote or line break quoted, null empty) and `save_result::save_text`. |
 
 ### 4.10 Severity highlighting (SEV)
 

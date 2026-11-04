@@ -288,6 +288,17 @@ A result that is still in the history folder is a record of one run, so Run agai
 in the Results panel, or a tab) and leaves the old one alone. To keep a result you can refresh, use **Save a copy…**
 first and open the copy.
 
+### Exporting a table as CSV
+
+Right-click a table and choose **Export as CSV…** (or `result grid: export as csv` in the command palette). It exports
+what Copy would copy: the selected cells, or, when nothing is selected, the whole table in its original order,
+whatever the search, filters and sort. It opens the same save prompt as **Save a copy…**, with the name made from the
+query and the time it ran, ending in `.csv`; a name typed without an extension gets `.csv`.
+
+The file is UTF-8 with a header row and CRLF line endings (RFC 4180). A value holding a comma, a double quote or a
+line break is quoted. A null is an empty field, the same as an empty string, and a dynamic value is written as compact
+JSON.
+
 ## Query statistics
 
 A query run keeps what it cost the service in its result file: the statistics Azure Data Explorer shows in its
