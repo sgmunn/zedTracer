@@ -14,7 +14,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, actions, anchored, canvas, deferred, div, px,
 };
 use gpui_util::ResultExt as _;
-use kusto_results::export::{copy_text, datatable, html, markdown};
+use kusto_results::export::{copy_text, csv, datatable, html, markdown};
 use kusto_results::filter::ColumnFilter;
 use kusto_results::timeline::structural_rows;
 use kusto_results::view::{
@@ -31,7 +31,9 @@ use ui::{
 use crate::filter_popover::{FilterChanged, FilterPopover};
 use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::ActiveSelection;
+use crate::save_result::{save_text, suggested_local_name_with_extension};
 use settings::Settings as _;
+use workspace::Workspace;
 
 actions!(
     result_grid,
@@ -44,6 +46,8 @@ actions!(
         CopyAsHtml,
         /// Copies the selection as a KQL datatable expression.
         CopyAsDatatable,
+        /// Saves the selection as a CSV file, or the whole table when nothing is selected.
+        ExportAsCsv,
         /// Moves the selected cell up.
         MoveUp,
         /// Moves the selected cell down.
@@ -577,14 +581,41 @@ impl ResultGrid {
         self.copy_as(datatable, cx);
     }
 
+    /// Asks where to save the selection, or the whole table when nothing is selected, as a CSV
+    /// file.
+    pub fn export_as_csv(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(contents) = self.selection_as(csv) else {
+            return;
+        };
+        let Some(workspace) = Workspace::for_window(window, cx) else {
+            return;
+        };
+        let name = suggested_local_name_with_extension(
+            self.result.query.as_deref().unwrap_or_default(),
+            self.result.execution_started_at.as_deref(),
+            "csv",
+        );
+        workspace.update(cx, |workspace, cx| {
+            save_text(workspace, contents, name, "csv", window, cx)
+        });
+    }
+
     fn copy_as(
         &self,
         format: fn(&kusto_results::Table, &[usize], &[usize]) -> String,
         cx: &mut Context<Self>,
     ) {
-        let Some(table) = self.result.tables.get(self.table_index) else {
-            return;
-        };
+        if let Some(text) = self.selection_as(format) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// The selection, or the whole table when nothing is selected, written by `format`.
+    fn selection_as(
+        &self,
+        format: fn(&kusto_results::Table, &[usize], &[usize]) -> String,
+    ) -> Option<String> {
+        let table = self.result.tables.get(self.table_index)?;
         let (rows, columns) = match self.selection {
             Some(selection) => (
                 self.selected_source_rows(),
@@ -595,7 +626,7 @@ impl ResultGrid {
                 (0..table.columns.len()).collect(),
             ),
         };
-        cx.write_to_clipboard(ClipboardItem::new_string(format(table, &rows, &columns)));
+        Some(format(table, &rows, &columns))
     }
 
     /// The order and widths of the columns as a saved view of this table.
@@ -932,7 +963,9 @@ impl ResultGrid {
                 .action("Copy", Box::new(Copy))
                 .action("Copy as Markdown", Box::new(CopyAsMarkdown))
                 .action("Copy as HTML", Box::new(CopyAsHtml))
-                .action("Copy as datatable", Box::new(CopyAsDatatable));
+                .action("Copy as datatable", Box::new(CopyAsDatatable))
+                .separator()
+                .action("Export as CSV…", Box::new(ExportAsCsv));
             match focus_row {
                 Some(source_row) => menu.separator().entry(
                     "Focus on this row's activity",
@@ -1583,6 +1616,7 @@ impl Render for ResultGrid {
             .on_action(cx.listener(|this, _: &CopyAsMarkdown, _, cx| this.copy_as_markdown(cx)))
             .on_action(cx.listener(|this, _: &CopyAsHtml, _, cx| this.copy_as_html(cx)))
             .on_action(cx.listener(|this, _: &CopyAsDatatable, _, cx| this.copy_as_datatable(cx)))
+            .on_action(cx.listener(|this, _: &ExportAsCsv, window, cx| this.export_as_csv(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| this.toggle_search(window, cx)))
             .on_action(cx.listener(|this, _: &ClearAllFilters, _, cx| this.clear_filters(cx)))
             .on_action(cx.listener(|this, _: &Cancel, window, cx| {
@@ -1714,6 +1748,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
+    use fs::Fs as _;
     use gpui::{Bounds, Modifiers, Point, ScrollStrategy, TestAppContext, VisualTestContext, size};
     use kusto_results::{Cell, Column, Table};
 
@@ -3008,6 +3043,89 @@ mod tests {
             3,
             "header, one row and the bracket"
         );
+    }
+
+    #[gpui::test]
+    async fn the_csv_export_covers_the_selection_or_the_whole_table(cx: &mut TestAppContext) {
+        let (grid, cx) = open_grid(cx, 20, 3);
+        let exported = |cx: &mut VisualTestContext| {
+            grid.read_with(cx, |grid, _| grid.selection_as(csv))
+                .expect("the grid has a table")
+        };
+        let whole = exported(cx);
+        assert!(whole.starts_with("Id0,Message1,Stamp2\r\n"), "{whole}");
+        assert_eq!(whole.matches("\r\n").count(), 21, "header and 20 rows");
+
+        click(cx, "gutter-1", Modifiers::default());
+        assert_eq!(
+            exported(cx),
+            "Id0,Message1,Stamp2\r\n7,message 1 column 1 with some text to display,2026-01-01T00:00:01.0000000Z\r\n"
+        );
+    }
+
+    async fn grid_in_workspace(
+        cx: &mut TestAppContext,
+    ) -> (Entity<ResultGrid>, Arc<fs::FakeFs>, &mut VisualTestContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            workspace::AppState::test(cx);
+        });
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/root", serde_json::json!({})).await;
+        let project = project::Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let result = Arc::new(ResultSet {
+            query: Some("StormEvents | take 3".into()),
+            ..generated_result(3, 3)
+        });
+        let grid = multi_workspace.update_in(cx, |_, window, cx| {
+            cx.new(|cx| ResultGrid::new(result, 0, window, cx))
+        });
+        (grid, fs, cx)
+    }
+
+    #[gpui::test]
+    async fn exporting_as_csv_writes_the_file_chosen_in_the_save_prompt(cx: &mut TestAppContext) {
+        let (grid, fs, cx) = grid_in_workspace(cx).await;
+        grid.update_in(cx, |grid, window, cx| grid.export_as_csv(window, cx));
+        cx.run_until_parked();
+        cx.simulate_new_path_selection(|folder| Some(folder.join("storm.csv")));
+        cx.run_until_parked();
+
+        let saved = fs
+            .load(std::path::Path::new("/root/storm.csv"))
+            .await
+            .expect("the file is where the prompt put it");
+        assert_eq!(
+            saved.matches("\r\n").count(),
+            4,
+            "header and 3 rows: {saved}"
+        );
+        assert!(
+            saved.starts_with("Id0,Message1,Stamp2\r\n0,message 0 column 1"),
+            "{saved}"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_name_without_an_extension_gets_csv_and_cancelling_writes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (grid, fs, cx) = grid_in_workspace(cx).await;
+        grid.update_in(cx, |grid, window, cx| grid.export_as_csv(window, cx));
+        cx.run_until_parked();
+        cx.simulate_new_path_selection(|folder| Some(folder.join("storm")));
+        cx.run_until_parked();
+        assert!(fs.is_file(std::path::Path::new("/root/storm.csv")).await);
+        assert!(!fs.is_file(std::path::Path::new("/root/storm")).await);
+
+        grid.update_in(cx, |grid, window, cx| grid.export_as_csv(window, cx));
+        cx.run_until_parked();
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert_eq!(fs.files().len(), 1, "only the first export was written");
     }
 
     /// SEL-11: Ctrl/Cmd+click on row numbers picks rows that are not next to each other, and

@@ -1,5 +1,6 @@
 //! Saving a copy of a result into the project, to keep it: a save prompt in the folder of the
-//! file being worked on, with a readable name made from the query and the time it ran.
+//! file being worked on, with a readable name made from the query and the time it ran. A table
+//! exported as text, such as CSV, goes through the same prompt.
 
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -52,6 +53,13 @@ pub(crate) fn suggested_file_name<Zone: TimeZone>(
 where
     Zone::Offset: Display,
 {
+    format!("{}.ktt", suggested_file_stem(query, started_at, zone))
+}
+
+fn suggested_file_stem<Zone: TimeZone>(query: &str, started_at: Option<&str>, zone: &Zone) -> String
+where
+    Zone::Offset: Display,
+{
     let title = title(query);
     let title = if title == NO_QUERY_TEXT { "" } else { &title };
     let mut slug = String::new();
@@ -80,18 +88,29 @@ where
                 .format("%Y-%m-%d-%H%M")
                 .to_string()
         });
-    let stem = match (slug.is_empty(), when) {
+    match (slug.is_empty(), when) {
         (true, Some(when)) => format!("result-{when}"),
         (true, None) => "result".to_string(),
         (false, Some(when)) => format!("{slug}-{when}"),
         (false, None) => slug.to_string(),
-    };
-    format!("{stem}.ktt")
+    }
 }
 
 /// The same, in the local time zone, which is what the person who ran the query remembers.
 pub(crate) fn suggested_local_file_name(query: &str, started_at: Option<&str>) -> String {
     suggested_file_name(query, started_at, &Local)
+}
+
+/// The name of a result for a file of another kind, such as `csv`.
+pub(crate) fn suggested_local_name_with_extension(
+    query: &str,
+    started_at: Option<&str>,
+    extension: &str,
+) -> String {
+    format!(
+        "{}.{extension}",
+        suggested_file_stem(query, started_at, &Local)
+    )
 }
 
 fn save_result(
@@ -146,49 +165,95 @@ fn save_result(
         let copied = copy_result(fs.as_ref(), &source, &target).await;
         workspace
             .update_in(cx, |workspace, _, cx| match copied {
-                Ok(()) => {
-                    let name = target
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let weak_workspace = cx.weak_entity();
-                    workspace.show_toast(
-                        Toast::new(
-                            NotificationId::unique::<SaveResult>(),
-                            format!("Saved {name}"),
-                        )
-                        .on_click("Open", move |window, cx| {
-                            let target = target.clone();
-                            weak_workspace
-                                .update(cx, |workspace, cx| {
-                                    workspace
-                                        .open_abs_path(
-                                            target,
-                                            OpenOptions {
-                                                visible: Some(OpenVisible::None),
-                                                ..Default::default()
-                                            },
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_prompt_err(
-                                            "Could not open the saved result",
-                                            window,
-                                            cx,
-                                            |_, _, _| None,
-                                        )
-                                })
-                                .log_err();
-                        })
-                        .autohide(),
-                        cx,
-                    );
-                }
+                Ok(()) => show_saved(workspace, target, cx),
                 Err(error) => workspace.show_error(error, cx),
             })
             .log_err();
     })
     .detach();
+}
+
+/// Asks where to put `contents` and writes it there, as it is. A name typed without an
+/// extension gets `default_extension`.
+pub(crate) fn save_text(
+    workspace: &mut Workspace,
+    contents: String,
+    suggested_name: String,
+    default_extension: &'static str,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let fs = workspace.app_state().fs.clone();
+    let project = workspace.project().clone();
+    let choice = workspace.prompt_for_new_path(
+        DirectoryLister::Project(project),
+        Some(suggested_name),
+        window,
+        cx,
+    );
+    cx.spawn_in(window, async move |workspace, cx| {
+        let Some(mut target) = choice
+            .await
+            .ok()
+            .flatten()
+            .and_then(|paths| paths.into_iter().next())
+        else {
+            return;
+        };
+        if target.extension().is_none() {
+            target.set_extension(default_extension);
+        }
+        let written = fs
+            .write(&target, contents.as_bytes())
+            .await
+            .map_err(|error| anyhow::anyhow!("Could not save to {}: {error:#}", target.display()));
+        workspace
+            .update_in(cx, |workspace, _, cx| match written {
+                Ok(()) => show_saved(workspace, target, cx),
+                Err(error) => workspace.show_error(error, cx),
+            })
+            .log_err();
+    })
+    .detach();
+}
+
+fn show_saved(workspace: &mut Workspace, target: PathBuf, cx: &mut Context<Workspace>) {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let weak_workspace = cx.weak_entity();
+    workspace.show_toast(
+        Toast::new(
+            NotificationId::unique::<SaveResult>(),
+            format!("Saved {name}"),
+        )
+        .on_click("Open", move |window, cx| {
+            let target = target.clone();
+            weak_workspace
+                .update(cx, |workspace, cx| {
+                    workspace
+                        .open_abs_path(
+                            target,
+                            OpenOptions {
+                                visible: Some(OpenVisible::None),
+                                ..Default::default()
+                            },
+                            window,
+                            cx,
+                        )
+                        .detach_and_prompt_err(
+                            "Could not open the saved file",
+                            window,
+                            cx,
+                            |_, _, _| None,
+                        )
+                })
+                .log_err();
+        })
+        .autohide(),
+        cx,
+    );
 }
 
 /// Copies a result file. The prompt has already asked about replacing a file that is there.
@@ -261,6 +326,16 @@ mod tests {
         );
         assert_eq!(suggested_file_name("//\n", None, &zone()), "result.ktt");
         assert_eq!(suggested_file_name("print 1", None, &zone()), "print-1.ktt");
+    }
+
+    #[test]
+    fn another_kind_of_file_is_named_the_same_way() {
+        let name = suggested_local_name_with_extension("// Incident 123\nT | take 1", None, "csv");
+        assert_eq!(name, "incident-123-t-take-1.csv");
+        assert_eq!(
+            suggested_local_name_with_extension("", None, "csv"),
+            "result.csv"
+        );
     }
 
     #[test]
