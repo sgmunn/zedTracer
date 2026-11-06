@@ -1908,17 +1908,44 @@ impl ToolCall {
         project: WeakEntity<Project>,
         cx: &mut AsyncApp,
     ) -> Option<ResolvedLocation> {
-        let buffer = project
+        let known_buffer = project
             .update(cx, |project, cx| {
-                if let Some(path) = project.project_path_for_absolute_path(&location.path, cx) {
-                    Some(project.open_buffer(path, cx))
-                } else if project.path_style(cx).is_absolute(&location.path) {
-                    Some(project.open_local_buffer(&location.path, cx))
-                } else {
-                    None
-                }
+                project
+                    .project_path_for_absolute_path(&location.path, cx)
+                    .map(|path| project.open_buffer(path, cx))
             })
-            .ok()??;
+            .ok()?;
+        let buffer = match known_buffer {
+            Some(buffer) => buffer,
+            None => {
+                let (is_absolute, local_fs) = project
+                    .read_with(cx, |project, cx| {
+                        (
+                            project.path_style(cx).is_absolute(&location.path),
+                            project.is_local().then(|| project.fs().clone()),
+                        )
+                    })
+                    .ok()?;
+                if !is_absolute {
+                    return None;
+                }
+                // Opening a buffer for a path outside the project makes a worktree for it first.
+                // An agent reports the `path` argument of any tool as a location, and that may be
+                // a directory, such as `/` for the root of a repository on a server, or a path
+                // that exists only on a server. A directory cannot be opened as a buffer, but its
+                // worktree is made and scanned all the same, which for `/` is the whole disk.
+                if let Some(local_fs) = local_fs
+                    && !local_fs.is_file(&location.path).await
+                {
+                    return None;
+                }
+                project
+                    .update(cx, |project, cx| {
+                        project.open_local_buffer(&location.path, cx)
+                    })
+                    .ok()?
+            }
+        };
         let buffer = buffer.await.log_err()?;
         let position = buffer.update(cx, |buffer, _| {
             let snapshot = buffer.snapshot();
@@ -18631,6 +18658,81 @@ mod tests {
                     .row,
                 1
             );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_tool_call_location_does_not_open_worktree_for_directory_or_missing_path(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/tmp/skills/test-skill"),
+            json!({ "SKILL.md": "skill body" }),
+        )
+        .await;
+        let project = Project::test(fs, [], cx).await;
+        // A worktree for a directory is dropped again once opening it as a buffer has failed, so
+        // the worktrees left over would not show that one was made.
+        let added_worktrees = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&project, {
+                let added_worktrees = added_worktrees.clone();
+                move |_, event: &project::Event, _| {
+                    if let project::Event::WorktreeAdded(worktree_id) = event {
+                        added_worktrees.borrow_mut().push(*worktree_id);
+                    }
+                }
+            })
+        });
+        let connection = Rc::new(FakeAgentConnection::new());
+        let thread = cx
+            .update(|cx| {
+                connection.new_session(project, PathList::new(&[Path::new(path!("/project"))]), cx)
+            })
+            .await
+            .unwrap();
+
+        let locations = [
+            path!("/"),
+            path!("/tmp/skills"),
+            path!("/Service/Library/Missing.cs"),
+        ];
+        thread
+            .update(cx, |thread, cx| {
+                thread.handle_session_update(
+                    acp_v1::SessionUpdate::ToolCall(
+                        acp_v1::ToolCall::new("list_directory", "List repository files")
+                            .kind(acp_v1::ToolKind::Read)
+                            .status(acp_v1::ToolCallStatus::Completed)
+                            .locations(
+                                locations
+                                    .iter()
+                                    .map(|path| acp_v1::ToolCallLocation::new(*path))
+                                    .collect::<Vec<_>>(),
+                            ),
+                    ),
+                    cx,
+                )
+            })
+            .unwrap();
+
+        cx.run_until_parked();
+
+        assert_eq!(
+            *added_worktrees.borrow(),
+            Vec::new(),
+            "a directory or a missing path must not get a worktree"
+        );
+        thread.read_with(cx, |thread, _| {
+            for index in 0..locations.len() {
+                assert!(
+                    thread.entries[0].location(index).is_none(),
+                    "location {index} should not resolve"
+                );
+            }
         });
     }
 
