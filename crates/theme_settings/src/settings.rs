@@ -1,6 +1,9 @@
 #![allow(missing_docs)]
 
-use crate::schema::{status_colors_refinement, syntax_overrides, theme_colors_refinement};
+use crate::schema::{
+    status_colors_refinement, syntax_overrides, theme_colors_refinement,
+    window_gradient_from_content,
+};
 use crate::{merge_accent_colors, merge_player_colors};
 use collections::HashMap;
 use gpui::{
@@ -543,6 +546,13 @@ impl ThemeSettings {
             base_theme.styles.window_background_appearance =
                 window_background_appearance.into_gpui();
         }
+        if let Some(window_gradient) = theme_overrides
+            .window_gradient
+            .as_ref()
+            .and_then(window_gradient_from_content)
+        {
+            base_theme.styles.window_gradient = Some(window_gradient);
+        }
         let status_color_refinement = status_colors_refinement(&theme_overrides.status);
 
         let theme_color_refinement = theme_colors_refinement(
@@ -887,5 +897,59 @@ mod tests {
                 .color(::theme::ThemeColorField::EditorCodeLensForeground),
             green
         );
+    }
+
+    fn gradient_content(from: &str, to: &str) -> ::settings::WindowGradientContent {
+        ::settings::WindowGradientContent {
+            angle: 135.,
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn theme_overrides_set_the_window_gradient() {
+        let mut test_theme = theme_with_colors(Default::default());
+        assert_eq!(test_theme.styles.window_gradient, None);
+
+        ThemeSettings::modify_theme(
+            &mut test_theme,
+            &::settings::ThemeStyleContent {
+                window_gradient: Some(gradient_content("#0a0f2e", "#2a1050")),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            test_theme.styles.window_gradient,
+            window_gradient_from_content(&gradient_content("#0a0f2e", "#2a1050"))
+        );
+        assert!(test_theme.styles.window_gradient.is_some());
+    }
+
+    #[test]
+    fn theme_overrides_keep_the_window_gradient_when_unset_or_invalid() {
+        let mut test_theme = theme_with_colors(Default::default());
+        ThemeSettings::modify_theme(
+            &mut test_theme,
+            &::settings::ThemeStyleContent {
+                window_gradient: Some(gradient_content("#0a0f2e", "#2a1050")),
+                ..Default::default()
+            },
+        );
+        let original = test_theme.styles.window_gradient;
+        assert!(original.is_some());
+
+        ThemeSettings::modify_theme(&mut test_theme, &Default::default());
+        assert_eq!(test_theme.styles.window_gradient, original);
+
+        ThemeSettings::modify_theme(
+            &mut test_theme,
+            &::settings::ThemeStyleContent {
+                window_gradient: Some(gradient_content("#0a0f2e", "not a color")),
+                ..Default::default()
+            },
+        );
+        assert_eq!(test_theme.styles.window_gradient, original);
     }
 }

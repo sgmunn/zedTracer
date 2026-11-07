@@ -529,6 +529,11 @@ pub struct ThemeStyleContent {
     #[serde(rename = "background.appearance")]
     pub window_background_appearance: Option<WindowBackgroundContent>,
 
+    /// A gradient painted behind the entire workspace. Surfaces with a translucent
+    /// background color let it show through.
+    #[serde(rename = "background.gradient")]
+    pub window_gradient: Option<WindowGradientContent>,
+
     #[serde(default)]
     pub accents: Vec<AccentContent>,
 
@@ -1364,6 +1369,18 @@ pub enum WindowBackgroundContent {
     Blurred,
     MicaBackdrop,
     MicaAltBackdrop,
+}
+
+/// A two-stop linear gradient.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct WindowGradientContent {
+    /// The direction of the gradient in degrees. `0` points up and values increase clockwise,
+    /// so `90` points right and `180` points down.
+    pub angle: f32,
+    /// The color at the start of the gradient.
+    pub from: ThemeColor,
+    /// The color at the end of the gradient.
+    pub to: ThemeColor,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
