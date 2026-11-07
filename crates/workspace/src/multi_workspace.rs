@@ -2100,6 +2100,7 @@ impl Render for MultiWorkspace {
 
         let ui_font = theme_settings::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
+        let window_gradient = cx.theme().window_gradient();
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
@@ -2111,6 +2112,8 @@ impl Render for MultiWorkspace {
                 .size_full()
                 .font(ui_font)
                 .text_color(text_color)
+                // Painted here rather than in `Workspace` so the sidebar sits on the gradient too.
+                .when_some(window_gradient, |this, gradient| this.bg(gradient))
                 .on_action(cx.listener(Self::close_window))
                 .when(self.multi_workspace_enabled(cx), |this| {
                     this.on_action(cx.listener(
