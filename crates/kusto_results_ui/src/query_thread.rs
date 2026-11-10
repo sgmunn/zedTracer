@@ -26,6 +26,7 @@ use crate::run_query::{
     CancelQuery, CopyQuery, RunQuery, ShowResult, cancel_thread_query, copy_thread_query,
     run_thread_query, show_thread_result,
 };
+use crate::share_query::{ShareQuery, share_thread_query};
 
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -155,6 +156,12 @@ impl QueryThread {
         }
     }
 
+    fn share(&mut self, action: &ShareQuery, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            share_thread_query(&workspace, &self.editor, action, window, cx);
+        }
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             cancel_thread_query(&workspace, &self.editor, cx);
@@ -188,6 +195,9 @@ impl Render for QueryThread {
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| this.run(window, cx)))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
             .on_action(cx.listener(|this, _: &CopyQuery, window, cx| this.copy(window, cx)))
+            .on_action(
+                cx.listener(|this, action: &ShareQuery, window, cx| this.share(action, window, cx)),
+            )
             .on_action(cx.listener(|this, action: &ShowResult, window, cx| {
                 this.show_result(action, window, cx)
             }))
@@ -328,6 +338,28 @@ mod tests {
             Some(
                 "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nTraces\n| take 1"
             )
+        );
+    }
+
+    #[gpui::test]
+    async fn sharing_from_a_thread_shares_the_query_of_that_thread(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let thread = open(&workspace, "one", cx).await;
+        write(&thread, "Traces\n| take 1", cx);
+
+        thread.update_in(cx, |thread, window, cx| {
+            thread.share(&ShareQuery::default(), window, cx)
+        });
+        cx.run_until_parked();
+
+        let modal = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.active_modal::<crate::share_query::ShareModal>(cx)
+            })
+            .expect("the dialog asks what to share");
+        assert_eq!(
+            modal.read_with(cx, |modal, _| modal.query().to_string()),
+            "// :setDefaultCluster('https://help.kusto.windows.net')\n// :setDefaultDb('Samples')\nTraces\n| take 1"
         );
     }
 

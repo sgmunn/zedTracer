@@ -44,6 +44,7 @@ use crate::results_settings::ResultsSettings;
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
 use crate::sequence_view::SequenceView;
+use crate::share_query::ShareQuery;
 use crate::structured_view::{StructuredView, StructuredViewEvent};
 use crate::waterfall_view::{WaterfallEvent, WaterfallView};
 
@@ -73,6 +74,7 @@ pub fn init(cx: &mut App) {
         crate::query_parameters::register(workspace);
         crate::history::register(workspace);
         crate::save_result::register(workspace);
+        crate::share_query::register(workspace);
         workspace.register_action(|workspace, _: &ToggleRowDetails, window, cx| {
             if !workspace.toggle_panel_focus::<RowDetailsPanel>(window, cx) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
@@ -241,6 +243,10 @@ impl ResultsFile {
             })
             .log_err();
         }));
+    }
+
+    pub(crate) fn result(&self) -> Arc<ResultSet> {
+        self.result.clone()
     }
 
     /// Replaces the data with a newer run of the query and writes the file at once. Unlike a
@@ -894,7 +900,7 @@ impl ResultsViewer {
         self.statistics_view = Some(cx.new(|cx| StatisticsView::new(&result, window, cx)));
     }
 
-    fn path_on_disk(&self, cx: &App) -> PathBuf {
+    pub(crate) fn path_on_disk(&self, cx: &App) -> PathBuf {
         let file = self.results_file.read(cx);
         file._worktree.read(cx).absolutize(&file.project_path.path)
     }
@@ -1666,6 +1672,16 @@ impl Render for ResultsViewer {
             "Run this query again, with the values it had"
         };
         let save = self.save_action(cx);
+        let share = self
+            .results_file
+            .read(cx)
+            .result
+            .query
+            .as_deref()
+            .is_some_and(|query| !query.trim().is_empty())
+            .then(|| ShareQuery {
+                path: Some(self.path_on_disk(cx).to_string_lossy().into_owned()),
+            });
         let extra_tabs: Vec<_> = self
             .extra_grids
             .iter()
@@ -1923,6 +1939,19 @@ impl Render for ResultsViewer {
                                     Button::new("results-save", "Save a copy…")
                                         .tooltip(ui::Tooltip::text(
                                             "Save a copy of this result in your project to keep it",
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(action.boxed_clone(), cx)
+                                        }),
+                                ),
+                            )
+                        })
+                        .when_some(share, |bar, action| {
+                            bar.child(
+                                div().debug_selector(|| "share-button".to_string()).child(
+                                    Button::new("results-share", "Share…")
+                                        .tooltip(ui::Tooltip::text(
+                                            "Copy a link to this query, the query and the first rows of this result",
                                         ))
                                         .on_click(move |_, window, cx| {
                                             window.dispatch_action(action.boxed_clone(), cx)
@@ -3529,6 +3558,20 @@ mod tests {
                 ("raid".to_string(), "abc".to_string()),
             ])
         );
+    }
+
+    #[gpui::test]
+    async fn a_result_with_a_query_offers_to_share_it(cx: &mut TestAppContext) {
+        let (_viewers, cx) = open_files(cx, &[("moved.ktt", MOVED)]).await;
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("share-button").is_some());
+    }
+
+    #[gpui::test]
+    async fn a_result_with_no_query_has_nothing_to_share(cx: &mut TestAppContext) {
+        let (_viewers, cx) = open_files(cx, &[("plain.ktt", WITHOUT_QUERY)]).await;
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("share-button").is_none());
     }
 
     #[gpui::test]
