@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use gpui::{App, Hsla, SharedString, WindowBackgroundAppearance};
+use gpui::{App, Background, Hsla, SharedString, WindowBackgroundAppearance};
 use refineable::Refineable;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumIter, IntoEnumIterator};
@@ -624,6 +624,8 @@ pub fn all_theme_colors(cx: &mut App) -> Vec<(Hsla, SharedString)> {
 pub struct ThemeStyles {
     /// The background appearance of the window.
     pub window_background_appearance: WindowBackgroundAppearance,
+    /// A gradient painted behind the entire workspace, if the theme defines one.
+    pub window_gradient: Option<Background>,
     pub system: SystemColors,
     /// An array of colors used for theme elements that iterate through a series of colors.
     ///

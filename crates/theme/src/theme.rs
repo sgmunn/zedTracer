@@ -27,7 +27,7 @@ use std::sync::Arc;
 use gpui::BorrowAppContext;
 use gpui::Global;
 use gpui::{
-    App, AssetSource, Hsla, Pixels, SharedString, Styled, Tiling, WindowAppearance,
+    App, AssetSource, Background, Hsla, Pixels, SharedString, Styled, Tiling, WindowAppearance,
     WindowBackgroundAppearance, px,
 };
 use serde::Deserialize;
@@ -292,6 +292,12 @@ impl Theme {
     #[inline(always)]
     pub fn window_background_appearance(&self) -> WindowBackgroundAppearance {
         self.styles.window_background_appearance
+    }
+
+    /// Returns the gradient painted behind the entire workspace, if the theme defines one.
+    #[inline(always)]
+    pub fn window_gradient(&self) -> Option<Background> {
+        self.styles.window_gradient
     }
 
     /// Darkens the color by reducing its lightness.

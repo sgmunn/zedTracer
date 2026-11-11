@@ -896,6 +896,22 @@ fn ensure_opaque(color: Hsla) -> Hsla {
     Hsla { a: 1.0, ..color }
 }
 
+/// Converts a gradient from a theme or settings override into a GPUI background.
+///
+/// Returns `None` when either color fails to parse, so an invalid gradient never replaces a
+/// valid one.
+pub fn window_gradient_from_content(
+    content: &settings::WindowGradientContent,
+) -> Option<gpui::Background> {
+    let from = try_parse_color(&content.from).ok()?;
+    let to = try_parse_color(&content.to).ok()?;
+    Some(gpui::linear_gradient(
+        content.angle,
+        gpui::linear_color_stop(from, 0.),
+        gpui::linear_color_stop(to, 1.),
+    ))
+}
+
 fn try_parse_color(color: &str) -> anyhow::Result<Hsla> {
     let rgba = gpui::Rgba::try_from(color)?;
     let rgba = palette::rgb::Srgba::from_components((rgba.r, rgba.g, rgba.b, rgba.a));
@@ -916,8 +932,8 @@ mod tests {
     use theme::StatusColorsRefinement;
 
     use super::{
-        StatusColorsContent, ThemeColorsContent, status_colors_refinement, theme_colors_refinement,
-        try_parse_color,
+        StatusColorsContent, ThemeColorsContent, ThemeStyleContent, status_colors_refinement,
+        theme_colors_refinement, try_parse_color, window_gradient_from_content,
     };
 
     #[test]
@@ -1105,6 +1121,62 @@ mod tests {
         assert_eq!(
             override_refinement.vim_helix_jump_label_foreground,
             Some(override_color)
+        );
+    }
+
+    #[test]
+    fn window_gradient_is_built_from_parsed_colors() {
+        let content = settings::WindowGradientContent {
+            angle: 135.,
+            from: "#0a0f2e".into(),
+            to: "#2a1050cc".into(),
+        };
+
+        let expected = gpui::linear_gradient(
+            135.,
+            gpui::linear_color_stop(try_parse_color("#0a0f2e").unwrap(), 0.),
+            gpui::linear_color_stop(try_parse_color("#2a1050cc").unwrap(), 1.),
+        );
+
+        assert_eq!(window_gradient_from_content(&content), Some(expected));
+    }
+
+    #[test]
+    fn window_gradient_with_an_invalid_color_is_rejected() {
+        let invalid_from = settings::WindowGradientContent {
+            angle: 0.,
+            from: "not a color".into(),
+            to: "#2a1050".into(),
+        };
+        let invalid_to = settings::WindowGradientContent {
+            angle: 0.,
+            from: "#0a0f2e".into(),
+            to: "not a color".into(),
+        };
+
+        assert_eq!(window_gradient_from_content(&invalid_from), None);
+        assert_eq!(window_gradient_from_content(&invalid_to), None);
+    }
+
+    #[test]
+    fn theme_style_reads_window_gradient_from_json() {
+        let style: ThemeStyleContent = serde_json::from_value(serde_json::json!({
+            "background.gradient": { "angle": 160, "from": "#0a0f2e", "to": "#2a1050" },
+        }))
+        .unwrap();
+
+        assert_eq!(
+            style.window_gradient,
+            Some(settings::WindowGradientContent {
+                angle: 160.,
+                from: "#0a0f2e".into(),
+                to: "#2a1050".into(),
+            })
+        );
+        assert_eq!(
+            ThemeStyleContent::default().window_gradient,
+            None,
+            "a theme without the key has no gradient"
         );
     }
 }

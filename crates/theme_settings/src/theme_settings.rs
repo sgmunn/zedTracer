@@ -25,6 +25,7 @@ pub use crate::schema::{
     FontStyleContent, FontWeightContent, HighlightStyleContent, StatusColorsContent,
     ThemeColorsContent, ThemeContent, ThemeFamilyContent, ThemeStyleContent,
     WindowBackgroundContent, status_colors_refinement, syntax_overrides, theme_colors_refinement,
+    window_gradient_from_content,
 };
 use crate::settings::adjust_buffer_font_size;
 pub use crate::settings::{
@@ -355,6 +356,12 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         .map(|w| w.into_gpui())
         .unwrap_or_default();
 
+    let window_gradient = theme
+        .style
+        .window_gradient
+        .as_ref()
+        .and_then(window_gradient_from_content);
+
     Theme {
         id: uuid::Uuid::new_v4().to_string(),
         name: theme.name.clone().into(),
@@ -362,6 +369,7 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         styles: ThemeStyles {
             system: SystemColors::default(),
             window_background_appearance,
+            window_gradient,
             accents: refined_accent_colors,
             colors: refined_theme_colors,
             status: refined_status_colors,
