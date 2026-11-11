@@ -48,7 +48,10 @@ pub use portable_query::{
 };
 pub use query_text::{command_text, is_control_command, query_blocks, query_range_at};
 pub use run_log::{RUN_LOG_FILE, RunRecord, append_record};
-pub use share::{PREVIEW_ROWS, Shared, results_preview, share_text, web_explorer_link};
+pub use share::{
+    ResultsFormat, ResultsPreview, Shared, results_preview, share_html, share_text,
+    web_explorer_link,
+};
 pub use token::{AccessToken, AzureCliTokenProvider, TokenProvider};
 
 /// A cluster, written as `https://help.kusto.windows.net`, as the host name, or as a short name

@@ -1,5 +1,5 @@
 //! What Share puts on the clipboard: a link that opens the query in Azure Data Explorer, the query
-//! itself and the first rows of its result, for whichever of them the person chose.
+//! itself and the rows of its result, for whichever of them the person chose.
 
 use anyhow::{Context as _, Result};
 use async_compression::futures::bufread::GzipEncoder;
@@ -7,13 +7,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use futures::AsyncReadExt as _;
 use kusto_results::Table;
-use kusto_results::export::tsv;
+use kusto_results::export::{escape_html, html as html_table, markdown, tsv};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use serde::{Deserialize, Serialize};
 
 use crate::Cluster;
-
-/// How many rows of a result the preview holds.
-pub const PREVIEW_ROWS: usize = 10;
 
 const WEB_EXPLORER: &str = "https://dataexplorer.azure.com";
 
@@ -52,20 +50,86 @@ pub async fn web_explorer_link(cluster: &str, database: &str, query: &str) -> Re
     ))
 }
 
-/// The first rows of a table as tab-separated text with a header, and a last line that says how
-/// many of the rows these are when there are more. A table with no columns has no preview.
-pub fn results_preview(table: &Table) -> Option<String> {
+/// How the rows of a result are written. Rich text is an HTML table for the programs that take
+/// one, with tab-separated text for the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResultsFormat {
+    #[default]
+    Markdown,
+    RichText,
+}
+
+/// The rows of a result, written to be shared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResultsPreview {
+    /// For the plain-text clipboard: a Markdown table, or for rich text, tab-separated rows.
+    pub text: String,
+    /// For the rich-text clipboard, and only for rich text.
+    pub html: Option<String>,
+    /// The last line of `text`, and the last paragraph of `html`, that says how many of the rows
+    /// there are, when the rows were cut.
+    pub note: Option<String>,
+}
+
+impl ResultsPreview {
+    /// The text without the note, for a place that says how many rows there are in its own way.
+    pub fn text_without_note(&self) -> &str {
+        match &self.note {
+            Some(note) => self
+                .text
+                .strip_suffix(note.as_str())
+                .unwrap_or(&self.text)
+                .trim_end(),
+            None => &self.text,
+        }
+    }
+}
+
+/// The first `limit` rows of a table, or all of them with no limit, with a header and a last line
+/// that says how many of the rows these are when there are more. A table with no columns has
+/// nothing to show.
+pub fn results_preview(
+    table: &Table,
+    limit: Option<usize>,
+    format: ResultsFormat,
+) -> Option<ResultsPreview> {
     if table.columns.is_empty() {
         return None;
     }
     let columns: Vec<usize> = (0..table.columns.len()).collect();
-    let shown = table.rows.len().min(PREVIEW_ROWS);
+    let total = table.rows.len();
+    let shown = limit.map_or(total, |limit| limit.min(total));
     let rows: Vec<usize> = (0..shown).collect();
-    let mut text = tsv(table, &rows, &columns);
-    if table.rows.len() > shown {
-        text.push_str(&format!("\n({shown} of {} rows)", table.rows.len()));
-    }
-    Some(text)
+    let note = (shown < total).then(|| format!("({shown} of {total} rows)"));
+    Some(match format {
+        ResultsFormat::Markdown => {
+            let mut text = markdown(table, &rows, &columns);
+            if let Some(note) = &note {
+                text.push_str("\n\n");
+                text.push_str(note);
+            }
+            ResultsPreview {
+                text,
+                html: None,
+                note,
+            }
+        }
+        ResultsFormat::RichText => {
+            let mut text = tsv(table, &rows, &columns);
+            let mut html = html_table(table, &rows, &columns);
+            if let Some(note) = &note {
+                text.push('\n');
+                text.push_str(note);
+                html.push_str(&format!("<p>{note}</p>"));
+            }
+            ResultsPreview {
+                text,
+                html: Some(html),
+                note,
+            }
+        }
+    })
 }
 
 /// The parts of what is shared. A part that is `None` is left out.
@@ -73,19 +137,42 @@ pub fn results_preview(table: &Table) -> Option<String> {
 pub struct Shared<'a> {
     pub link: Option<&'a str>,
     pub query: Option<&'a str>,
-    pub results_preview: Option<&'a str>,
+    pub results: Option<&'a ResultsPreview>,
 }
 
 /// The text for the clipboard: the parts that are there, in the order the web explorer gives
 /// them, with a blank line between.
 pub fn share_text(shared: Shared) -> String {
-    [shared.link, shared.query, shared.results_preview]
-        .into_iter()
-        .flatten()
-        .map(str::trim_end)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    [
+        shared.link,
+        shared.query,
+        shared.results.map(|results| results.text.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim_end)
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+/// The rich text for the clipboard, when the rows are rich text. Without a table there is nothing
+/// that plain text does not say as well.
+pub fn share_html(shared: Shared) -> Option<String> {
+    let table = shared.results?.html.as_deref()?;
+    let mut html = String::new();
+    if let Some(link) = shared.link {
+        let link = escape_html(link);
+        html.push_str(&format!("<p><a href=\"{link}\">{link}</a></p>"));
+    }
+    if let Some(query) = shared.query {
+        html.push_str(&format!(
+            "<pre style=\"font-family: Consolas, Menlo, monospace\">{}</pre>",
+            escape_html(query.trim_end())
+        ));
+    }
+    html.push_str(table);
+    Some(html)
 }
 
 #[cfg(test)]
@@ -204,32 +291,91 @@ mod tests {
         assert!(block_on(web_explorer_link("http://help", "Samples", "print 1")).is_err());
     }
 
+    fn preview(rows: usize, limit: Option<usize>, format: ResultsFormat) -> ResultsPreview {
+        results_preview(&table(rows), limit, format).expect("a preview")
+    }
+
     #[test]
-    fn the_preview_is_the_header_and_the_rows() {
+    fn markdown_rows_are_a_table() {
         assert_eq!(
-            results_preview(&table(2)).as_deref(),
-            Some("n\tlabel\n0\trow 0\n1\trow 1")
+            preview(2, None, ResultsFormat::Markdown),
+            ResultsPreview {
+                text: "| n | label |\n| --- | --- |\n| 0 | row 0 |\n| 1 | row 1 |".into(),
+                html: None,
+                note: None,
+            }
         );
     }
 
     #[test]
-    fn the_preview_stops_at_ten_rows_and_says_how_many_there_are() {
-        let preview = results_preview(&table(25)).expect("a preview");
-        let lines: Vec<_> = preview.lines().collect();
-        assert_eq!(lines.len(), 1 + PREVIEW_ROWS + 1);
-        assert_eq!(lines[PREVIEW_ROWS], "9\trow 9");
-        assert_eq!(lines[PREVIEW_ROWS + 1], "(10 of 25 rows)");
+    fn rich_text_rows_are_an_html_table_over_tab_separated_text() {
+        let preview = preview(2, None, ResultsFormat::RichText);
+        assert_eq!(preview.text, "n\tlabel\n0\trow 0\n1\trow 1");
+        let html = preview.html.expect("HTML");
+        assert!(html.starts_with("<table "), "{html}");
+        assert_eq!(html.matches("<tr>").count(), 3, "{html}");
+        assert!(html.contains(">row 1</td>"), "{html}");
     }
 
     #[test]
-    fn a_table_of_exactly_ten_rows_has_no_note() {
-        let preview = results_preview(&table(PREVIEW_ROWS)).expect("a preview");
-        assert!(!preview.contains("rows)"), "{preview}");
+    fn with_no_limit_every_row_is_there_and_nothing_is_said_about_a_count() {
+        let preview = preview(25, None, ResultsFormat::Markdown);
+        assert_eq!(preview.text.lines().count(), 2 + 25);
+        assert!(!preview.text.contains("rows)"), "{}", preview.text);
+    }
+
+    #[test]
+    fn a_limit_keeps_the_first_rows_and_says_how_many_there_are() {
+        let markdown = preview(25, Some(3), ResultsFormat::Markdown);
+        let lines: Vec<_> = markdown.text.lines().collect();
+        assert_eq!(lines.len(), 2 + 3 + 2);
+        assert_eq!(lines[4], "| 2 | row 2 |");
+        assert_eq!(lines[6], "(3 of 25 rows)");
+
+        let rich = preview(25, Some(3), ResultsFormat::RichText);
+        assert_eq!(rich.text.lines().last(), Some("(3 of 25 rows)"));
+        let html = rich.html.expect("HTML");
+        assert_eq!(html.matches("<tr>").count(), 1 + 3);
+        assert!(html.ends_with("<p>(3 of 25 rows)</p>"), "{html}");
+    }
+
+    #[test]
+    fn the_note_can_be_taken_off_the_text() {
+        let cut = preview(25, Some(3), ResultsFormat::Markdown);
+        assert_eq!(cut.text_without_note().lines().count(), 2 + 3);
+        let rich = preview(25, Some(3), ResultsFormat::RichText);
+        assert_eq!(
+            rich.text_without_note(),
+            "n\tlabel\n0\trow 0\n1\trow 1\n2\trow 2"
+        );
+        let whole = preview(2, None, ResultsFormat::Markdown);
+        assert_eq!(whole.text_without_note(), whole.text);
+    }
+
+    #[test]
+    fn a_limit_that_is_as_big_as_the_table_or_bigger_leaves_no_note() {
+        for limit in [25, 26, 1000] {
+            let preview = preview(25, Some(limit), ResultsFormat::Markdown);
+            assert!(!preview.text.contains("rows)"), "{}", preview.text);
+            assert_eq!(preview.text.lines().count(), 2 + 25);
+        }
+    }
+
+    #[test]
+    fn a_limit_of_nothing_shows_the_header_only() {
+        let preview = preview(5, Some(0), ResultsFormat::Markdown);
+        assert_eq!(
+            preview.text,
+            "| n | label |\n| --- | --- |\n\n(0 of 5 rows)"
+        );
     }
 
     #[test]
     fn a_table_with_no_rows_still_shows_its_columns() {
-        assert_eq!(results_preview(&table(0)).as_deref(), Some("n\tlabel"));
+        assert_eq!(
+            preview(0, None, ResultsFormat::Markdown).text,
+            "| n | label |\n| --- | --- |"
+        );
     }
 
     #[test]
@@ -239,7 +385,15 @@ mod tests {
             columns: Vec::new(),
             rows: Vec::new(),
         };
-        assert_eq!(results_preview(&table), None);
+        assert_eq!(results_preview(&table, None, ResultsFormat::Markdown), None);
+    }
+
+    fn rows_of_text(text: &str) -> ResultsPreview {
+        ResultsPreview {
+            text: text.into(),
+            html: None,
+            note: None,
+        }
     }
 
     #[test]
@@ -248,7 +402,7 @@ mod tests {
             share_text(Shared {
                 link: Some("https://link"),
                 query: Some("T\n| take 1\n"),
-                results_preview: Some("n\n1"),
+                results: Some(&rows_of_text("n\n1")),
             }),
             "https://link\n\nT\n| take 1\n\nn\n1"
         );
@@ -260,10 +414,52 @@ mod tests {
             share_text(Shared {
                 link: None,
                 query: Some("T"),
-                results_preview: Some("n\n1"),
+                results: Some(&rows_of_text("n\n1")),
             }),
             "T\n\nn\n1"
         );
         assert_eq!(share_text(Shared::default()), "");
+    }
+
+    #[test]
+    fn rich_text_holds_the_link_the_query_and_the_table() {
+        let results = preview(1, None, ResultsFormat::RichText);
+        let html = share_html(Shared {
+            link: Some("https://link?a=1&b=2"),
+            query: Some("T\n| where x < 1\n"),
+            results: Some(&results),
+        })
+        .expect("HTML");
+        assert!(
+            html.starts_with(
+                "<p><a href=\"https://link?a=1&amp;b=2\">https://link?a=1&amp;b=2</a></p><pre "
+            ),
+            "{html}"
+        );
+        assert!(html.contains(">T\n| where x &lt; 1</pre><table "), "{html}");
+        assert!(html.ends_with("</table>"), "{html}");
+    }
+
+    #[test]
+    fn rich_text_leaves_out_the_parts_that_were_not_chosen() {
+        let results = preview(1, None, ResultsFormat::RichText);
+        let html = share_html(Shared {
+            link: None,
+            query: None,
+            results: Some(&results),
+        })
+        .expect("HTML");
+        assert!(html.starts_with("<table "), "{html}");
+    }
+
+    #[test]
+    fn without_a_rich_text_table_there_is_no_rich_text() {
+        let shared = Shared {
+            link: Some("https://link"),
+            query: Some("T"),
+            results: Some(&preview(1, None, ResultsFormat::Markdown)),
+        };
+        assert_eq!(share_html(shared), None);
+        assert_eq!(share_html(Shared::default()), None);
     }
 }
