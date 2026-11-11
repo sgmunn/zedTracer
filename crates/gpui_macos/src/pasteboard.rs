@@ -8,8 +8,8 @@ use objc2::{Message, rc::Retained};
 )]
 use objc2_app_kit::NSFilenamesPboardType;
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardNameFind, NSPasteboardTypePNG, NSPasteboardTypeString,
-    NSPasteboardTypeTIFF,
+    NSPasteboard, NSPasteboardNameFind, NSPasteboardTypeHTML, NSPasteboardTypePNG,
+    NSPasteboardTypeString, NSPasteboardTypeTIFF,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 use smallvec::SmallVec;
@@ -200,6 +200,15 @@ impl Pasteboard {
         }
     }
 
+    pub fn write_text_and_html(&self, text: &str, html: &str) {
+        self.write_plaintext(&ClipboardString::new(text.to_string()));
+        let html_bytes = NSData::with_bytes(html.as_bytes());
+        unsafe {
+            self.inner
+                .setData_forType(Some(&html_bytes), NSPasteboardTypeHTML);
+        }
+    }
+
     fn write_plaintext(&self, string: &ClipboardString) {
         unsafe {
             self.inner.clearContents();
@@ -342,6 +351,21 @@ mod tests {
             pasteboard.write(item.clone());
             assert_eq!(pasteboard.read(), Some(item));
         }
+    }
+
+    #[test]
+    fn test_text_and_html() {
+        let pasteboard = Pasteboard::unique();
+        pasteboard.write_text_and_html("a\tb", "<table><tr><td>a</td><td>b</td></tr></table>");
+        assert_eq!(
+            pasteboard.read(),
+            Some(ClipboardItem::new_string("a\tb".to_string()))
+        );
+        let html = unsafe { pasteboard.data_for_type(NSPasteboardTypeHTML) };
+        assert_eq!(
+            html.as_deref(),
+            Some("<table><tr><td>a</td><td>b</td></tr></table>".as_bytes())
+        );
     }
 
     #[test]

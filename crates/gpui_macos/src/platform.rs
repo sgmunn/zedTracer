@@ -1213,6 +1213,11 @@ impl Platform for MacPlatform {
         state.general_pasteboard.write(item);
     }
 
+    fn write_text_and_html_to_clipboard(&self, text: String, html: String) {
+        let state = self.0.lock();
+        state.general_pasteboard.write_text_and_html(&text, &html);
+    }
+
     fn read_from_find_pasteboard(&self) -> Option<ClipboardItem> {
         let state = self.0.lock();
         state.find_pasteboard.read()
