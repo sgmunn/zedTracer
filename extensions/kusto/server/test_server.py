@@ -576,13 +576,14 @@ class CodeLensTest(unittest.TestCase):
         return self.request(7, "textDocument/codeLens", {"textDocument": {"uri": URI}})
 
     def titles(self, lenses, line):
-        """The lens titles on a line, without the ones that copy the query and say where it runs."""
+        """The lens titles on a line, without the ones that copy or share the query and say where it runs."""
         return [
             lens["command"]["title"]
             for lens in lenses
             if lens["range"]["start"]["line"] == line
             and lens["command"]["command"] not in ("kusto.connection", "kusto.refreshSchema", "kusto.snapshotFunctions")
             and lens["command"]["arguments"] != ["kusto::CopyQuery"]
+            and lens["command"]["arguments"][:1] != ["kusto::ShareQuery"]
         ]
 
     def connection_titles(self, lenses):
@@ -615,6 +616,26 @@ class CodeLensTest(unittest.TestCase):
         self.assertEqual(command["command"], "zed.dispatchAction")
         self.assertEqual(command["arguments"], ["kusto::RunQuery"])
 
+    def test_a_query_that_has_not_run_is_shared_without_a_result(self):
+        shares = [
+            lens["command"]
+            for lens in self.lenses()
+            if lens["command"]["title"] == "Share"
+        ]
+        self.assertEqual(len(shares), 2, "one for each query")
+        for share in shares:
+            self.assertEqual(share["command"], "zed.dispatchAction")
+            self.assertEqual(share["arguments"], ["kusto::ShareQuery"])
+
+    def test_a_failed_last_run_leaves_no_result_to_share_rows_of(self):
+        self.record("finished", "id-1", "T1\n| take 1", durationMs=900, rows=7, path="/history/a.ktt")
+        self.record("started", "id-2", "T1\n| take 1")
+        self.record("failed", "id-2", "T1\n| take 1", message="Semantic error")
+        share = next(
+            lens["command"] for lens in self.lenses() if lens["command"]["title"] == "Share"
+        )
+        self.assertEqual(share["arguments"], ["kusto::ShareQuery"])
+
     def test_the_last_run_is_on_the_first_line_and_where_the_query_runs_on_the_second(self):
         self.record("started", "id-1", "T1 | take 1")
         self.record(
@@ -635,12 +656,19 @@ class CodeLensTest(unittest.TestCase):
         self.assertTrue(first[2].startswith("Last run: "), first)
         self.assertEqual(len(first), 3)
         second = titles_on(1)
-        self.assertEqual(second[:2], ["Copy", "help.kusto.windows.net / Samples"])
-        self.assertTrue(second[2].startswith("↻ Schema: "), second)
-        self.assertEqual(second[3:], ["Snapshot functions", "Copy CID"])
+        self.assertEqual(second[:3], ["Copy", "Share", "help.kusto.windows.net / Samples"])
+        self.assertTrue(second[3].startswith("↻ Schema: "), second)
+        self.assertEqual(second[4:], ["Snapshot functions", "Copy CID"])
         copy = next(lens for lens in lenses if lens["command"]["title"] == "Copy")["command"]
         self.assertEqual(copy["command"], "zed.dispatchAction")
         self.assertEqual(copy["arguments"], ["kusto::CopyQuery"])
+        share = next(lens for lens in lenses if lens["command"]["title"] == "Share")["command"]
+        self.assertEqual(share["command"], "zed.dispatchAction")
+        self.assertEqual(
+            share["arguments"],
+            ["kusto::ShareQuery", {"path": "/history/a.ktt"}],
+            "the last result has the rows the share previews",
+        )
         self.assertEqual(
             {lens["range"]["start"]["line"] for lens in lenses}, {0},
             "both lines are above the first line of the query",
@@ -802,8 +830,8 @@ class CodeLensTest(unittest.TestCase):
     def test_without_a_log_there_are_only_run_lenses_and_the_connection(self):
         self.assertFalse(self.log.exists())
         lenses = self.lenses()
-        # Each of the two queries has a Run, a Copy, a connection, a schema and a snapshot lens.
-        self.assertEqual(len(lenses), 10)
+        # Each of the two queries has a Run, a Copy, a Share, a connection, a schema and a snapshot lens.
+        self.assertEqual(len(lenses), 12)
         self.assertEqual(self.titles(lenses, 0), ["▶ Run"])
 
     def test_the_noop_command_is_accepted(self):

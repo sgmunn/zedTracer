@@ -164,7 +164,7 @@ pub fn html(table: &Table, rows: &[usize], columns: &[usize]) -> String {
     output
 }
 
-fn escape_html(value: &str) -> String {
+pub fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

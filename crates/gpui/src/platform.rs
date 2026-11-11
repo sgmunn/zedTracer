@@ -615,6 +615,12 @@ pub trait Platform: 'static {
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 
+    /// Writes `text` to the clipboard along with `html`, for the programs that paste a table or
+    /// other markup. A platform that cannot hold both writes the text alone.
+    fn write_text_and_html_to_clipboard(&self, text: String, _html: String) {
+        self.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
     /// Reads the clipboard, resolving once its contents are available.
     ///
     /// Most platforms read synchronously and return a ready task. Platforms

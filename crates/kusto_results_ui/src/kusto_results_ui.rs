@@ -23,6 +23,7 @@ mod row_details_panel;
 mod run_query;
 mod save_result;
 mod sequence_view;
+mod share_query;
 mod statistics_view;
 mod structured_view;
 mod waterfall_view;
@@ -39,4 +40,5 @@ pub use row_details_panel::{ActiveSelection, RowDetailsPanel, ToggleRowDetails};
 pub use run_query::{
     CancelQuery, CopyClientRequestId, CopyQuery, KustoSettings, RunQuery, ShowResult,
 };
+pub use share_query::ShareQuery;
 pub use structured_view::StructuredView;

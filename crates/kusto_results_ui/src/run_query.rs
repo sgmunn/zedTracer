@@ -233,16 +233,21 @@ pub(crate) fn copy_thread_query(
     });
 }
 
-fn copy_query(
-    workspace: &mut Workspace,
+/// The query around the cursor, written so that it means the same wherever it is run, and where
+/// it runs: what a copy puts on the clipboard and a share puts in its link.
+pub(crate) struct PortableQueryAtCursor {
+    pub(crate) text: String,
+    pub(crate) connection: Connection,
+}
+
+/// Starts writing the query around the cursor of `editor` as a copy does. `None` when there is no
+/// query there.
+pub(crate) fn portable_query_at_cursor(
+    workspace: &Workspace,
     editor: &Entity<Editor>,
-    window: &mut Window,
     cx: &mut Context<Workspace>,
-) {
-    let Some(query) = editor.update(cx, |editor, cx| query_to_run(editor, cx)) else {
-        workspace.show_error(anyhow!("There is no query at the cursor."), cx);
-        return;
-    };
+) -> Option<Task<Result<PortableQueryAtCursor>>> {
+    let query = editor.update(cx, |editor, cx| query_to_run(editor, cx))?;
     let files = {
         let project = workspace.project().clone();
         editor.update(cx, |editor, cx| {
@@ -251,21 +256,35 @@ fn copy_query(
     };
     let server = qualify_query::language_server(workspace.project().read(cx), cx);
     let fs = workspace.app_state().fs.clone();
-    cx.spawn_in(window, async move |workspace, cx| {
-        let text = async {
-            let values =
-                parameters_of_query(fs.as_ref(), &files, &query.text, &query.parameters).await?;
-            let with_functions = with_functions(&query.text, &query.functions);
-            let qualified =
-                qualify_query::qualify(server, &with_functions, &query.connection).await;
-            Ok::<_, anyhow::Error>(portable_query(
+    Some(cx.spawn(async move |_, _| {
+        let values =
+            parameters_of_query(fs.as_ref(), &files, &query.text, &query.parameters).await?;
+        let with_functions = with_functions(&query.text, &query.functions);
+        let qualified = qualify_query::qualify(server, &with_functions, &query.connection).await;
+        Ok(PortableQueryAtCursor {
+            text: portable_query(
                 &with_functions,
                 &query.connection,
                 &values,
                 qualified.as_ref(),
-            ))
-        }
-        .await;
+            ),
+            connection: query.connection,
+        })
+    }))
+}
+
+fn copy_query(
+    workspace: &mut Workspace,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(portable) = portable_query_at_cursor(workspace, editor, cx) else {
+        workspace.show_error(anyhow!("There is no query at the cursor."), cx);
+        return;
+    };
+    cx.spawn_in(window, async move |workspace, cx| {
+        let text = portable.await.map(|portable| portable.text);
         workspace
             .update(cx, |workspace, cx| match text {
                 Ok(text) => {
@@ -937,7 +956,7 @@ async fn refresh_file(
 }
 
 /// Opens a saved result the way a results tab does, without making a tab.
-async fn load_result_file(
+pub(crate) async fn load_result_file(
     workspace: &WeakEntity<Workspace>,
     path: PathBuf,
     cx: &mut AsyncWindowContext,

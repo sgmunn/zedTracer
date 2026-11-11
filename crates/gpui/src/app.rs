@@ -1869,6 +1869,12 @@ impl App {
         self.platform.write_to_clipboard(item)
     }
 
+    /// Writes text and HTML to the platform clipboard. A platform that cannot hold both gets the
+    /// text alone.
+    pub fn write_text_and_html_to_clipboard(&self, text: String, html: String) {
+        self.platform.write_text_and_html_to_clipboard(text, html)
+    }
+
     /// Reads data from the primary selection buffer.
     /// Only available on Linux.
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
