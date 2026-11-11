@@ -705,7 +705,7 @@ After updating, run `./install-server.sh`, then **Zed: Rebuild Dev Extension**, 
 
 **Share** copies what someone else needs to see a query and what it returned, as the Azure Data Explorer web UI's Share does. It is
 the second lens of a query (after **Copy**), the **Share…** button at the right of the tabs of a result, and `kusto: share query` in
-the command palette. A dialog asks which of three parts to copy:
+the command palette. A dialog asks which of three parts to copy, and how to write the rows:
 
 - **Link**: a link that opens the query in the Azure Data Explorer web UI, on the cluster and database it ran on:
   `https://dataexplorer.azure.com/clusters/<cluster>/databases/<database>?query=…`. The query is in the link as
@@ -714,20 +714,27 @@ the command palette. A dialog asks which of three parts to copy:
   whole name. The link is left out, and its box is greyed out with the reason, for a query that does not say which cluster and
   database it runs on. A very long query can make a link longer than a browser takes; the query part is still copied.
 - **Query code**: the query as **Copy** writes it (see [Copying a query](#copying-a-query)), or, from a result, the query the result keeps.
-- **Results preview**: the header and the first 10 rows of the first table of the result, tab-separated, with a last line
-  `(10 of 1240 rows)` when there are more. The Share lens and the button take the result they are on. A query that has not run (or
-  whose last run failed) has no rows, so its box is greyed out.
+- **Results preview**: the rows of the first table of the result, with a header. The Share lens and the button take the result they
+  are on. A query that has not run (or whose last run failed) has no rows, so its box is greyed out. Under the box:
+  - **Markdown** (the default) writes a pipe table, as **Copy as Markdown** does in the grid. **Rich text** puts an HTML table on
+    the clipboard, which a program that takes HTML (a mail or chat editor, a document) pastes as a table under the link and the query, and
+    the same rows as tab-separated text, which a plain-text field gets instead.
+  - **All rows** (the default) or **Top**, with the number of rows to take from the top, which is typed in the box beside it
+    (100 to start with). A number that is not above zero is said so, and **Copy** waits for a good one. When rows are left out, a
+    last line says how many of how many, `(100 of 1240 rows)`.
 
-The parts that are checked are joined, a blank line between, in that order, and put on the clipboard as plain text, because Zed's
-clipboard has no rich text (the web UI copies HTML and plain text; this is its plain text). The preview shows what will be copied.
-A notice says it was copied.
+The parts that are checked are joined, a blank line between, in that order. The dialog shows the text that will be copied, but only
+the first 20 rows of the table, and says so when more are copied; the clipboard gets all of them. A notice says it was copied.
 
-The dialog starts with the boxes as they were last left. **Remember my choice** stops the dialog from appearing: Share then copies
+Rich text is written to the macOS clipboard, which takes HTML next to text. On Windows and Linux Zed's clipboard has no rich text,
+so **Rich text** there copies the tab-separated rows alone.
+
+The dialog starts with the boxes, the format and the number of rows as they were last left. **Remember my choice** stops the dialog from appearing: Share then copies
 at once what was chosen, and its notice has a **Change** button that brings the dialog back. Both are kept in `kusto/share.json` in
 Zed's data folder, which you can also delete.
 
 A result file whose history entry has been pruned says so, as **Results** does. A result with no query has no **Share…** button.
-There is no link to Kusto.Explorer or Fabric; Kusto.Explorer opens `https://<cluster>/<database>?web=0&query=…`, which is not built.
+The Markdown table has no limit of its own, so a thousand rows is a thousand lines. There is no link to Kusto.Explorer or Fabric; Kusto.Explorer opens `https://<cluster>/<database>?web=0&query=…`, which is not built.
 
 ## Saving a query as a snippet
 
