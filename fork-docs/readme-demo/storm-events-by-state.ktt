@@ -1,0 +1,298 @@
+{
+  "query": "// Which states had the most severe weather\nStormEvents\n| where EventType in (\"Thunderstorm Wind\", \"Hail\", \"Flash Flood\", \"Tornado\")\n| summarize Events = count() by State, EventType\n| render columnchart with (kind=stacked, title=\"Severe weather by state\")",
+  "cluster": "https://help.kusto.windows.net",
+  "database": "Samples",
+  "parameters": {},
+  "tables": [
+    {
+      "name": "PrimaryResult",
+      "columns": [
+        {
+          "name": "State",
+          "type": "string"
+        },
+        {
+          "name": "EventType",
+          "type": "string"
+        },
+        {
+          "name": "Events",
+          "type": "long"
+        }
+      ],
+      "rows": [
+        [
+          "TEXAS",
+          "Thunderstorm Wind",
+          853
+        ],
+        [
+          "TEXAS",
+          "Hail",
+          715
+        ],
+        [
+          "TEXAS",
+          "Flash Flood",
+          253
+        ],
+        [
+          "TEXAS",
+          "Tornado",
+          67
+        ],
+        [
+          "KANSAS",
+          "Thunderstorm Wind",
+          1005
+        ],
+        [
+          "KANSAS",
+          "Hail",
+          848
+        ],
+        [
+          "KANSAS",
+          "Flash Flood",
+          110
+        ],
+        [
+          "KANSAS",
+          "Tornado",
+          80
+        ],
+        [
+          "IOWA",
+          "Thunderstorm Wind",
+          570
+        ],
+        [
+          "IOWA",
+          "Hail",
+          932
+        ],
+        [
+          "IOWA",
+          "Flash Flood",
+          239
+        ],
+        [
+          "IOWA",
+          "Tornado",
+          73
+        ],
+        [
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          891
+        ],
+        [
+          "ILLINOIS",
+          "Hail",
+          542
+        ],
+        [
+          "ILLINOIS",
+          "Flash Flood",
+          290
+        ],
+        [
+          "ILLINOIS",
+          "Tornado",
+          95
+        ],
+        [
+          "MISSOURI",
+          "Thunderstorm Wind",
+          1259
+        ],
+        [
+          "MISSOURI",
+          "Hail",
+          456
+        ],
+        [
+          "MISSOURI",
+          "Flash Flood",
+          207
+        ],
+        [
+          "MISSOURI",
+          "Tornado",
+          142
+        ],
+        [
+          "GEORGIA",
+          "Thunderstorm Wind",
+          1421
+        ],
+        [
+          "GEORGIA",
+          "Hail",
+          686
+        ],
+        [
+          "GEORGIA",
+          "Flash Flood",
+          123
+        ],
+        [
+          "GEORGIA",
+          "Tornado",
+          104
+        ],
+        [
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          285
+        ],
+        [
+          "MINNESOTA",
+          "Hail",
+          659
+        ],
+        [
+          "MINNESOTA",
+          "Flash Flood",
+          264
+        ],
+        [
+          "MINNESOTA",
+          "Tornado",
+          62
+        ],
+        [
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          848
+        ],
+        [
+          "WISCONSIN",
+          "Hail",
+          472
+        ],
+        [
+          "WISCONSIN",
+          "Flash Flood",
+          269
+        ],
+        [
+          "WISCONSIN",
+          "Tornado",
+          103
+        ],
+        [
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          686
+        ],
+        [
+          "NEBRASKA",
+          "Hail",
+          868
+        ],
+        [
+          "NEBRASKA",
+          "Flash Flood",
+          121
+        ],
+        [
+          "NEBRASKA",
+          "Tornado",
+          108
+        ],
+        [
+          "NEW YORK",
+          "Thunderstorm Wind",
+          895
+        ],
+        [
+          "NEW YORK",
+          "Hail",
+          238
+        ],
+        [
+          "NEW YORK",
+          "Flash Flood",
+          371
+        ],
+        [
+          "NEW YORK",
+          "Tornado",
+          118
+        ]
+      ]
+    }
+  ],
+  "executionStartedAt": "2026-11-12T14:08:03.000Z",
+  "executionDurationMs": 241,
+  "clientRequestId": "KustoTraceTools;8a8f1f0e-2a51-4c49-9d43-1f2e4cc0d003",
+  "queryStatistics": {
+    "QueryHash": "5f1c0e9a2b7d4c31",
+    "ExecutionTime": 0.1563,
+    "resource_usage": {
+      "cache": {
+        "shards": {
+          "hot": {
+            "hitbytes": 48211840,
+            "missbytes": 1204224,
+            "retrievebytes": 1204224
+          },
+          "cold": {
+            "hitbytes": 0,
+            "missbytes": 0,
+            "retrievebytes": 0
+          },
+          "bypassbytes": 0
+        }
+      },
+      "cpu": {
+        "user": "00:00:00.2968750",
+        "kernel": "00:00:00.0156250",
+        "total cpu": "00:00:00.3125000",
+        "breakdown": {
+          "query execution": "00:00:00.2968750",
+          "query planning": "00:00:00.0156250"
+        }
+      },
+      "memory": {
+        "peak_per_node": 52428800
+      },
+      "network": {
+        "inter_cluster_total_bytes": 1843221,
+        "cross_cluster_total_bytes": 0
+      }
+    },
+    "input_dataset_statistics": {
+      "extents": {
+        "total": 1,
+        "scanned": 1
+      },
+      "rows": {
+        "total": 59066,
+        "scanned": 59066
+      }
+    },
+    "dataset_statistics": [
+      {
+        "table_row_count": 40,
+        "table_size": 1920
+      }
+    ]
+  },
+  "charts": [
+    {
+      "options": {
+        "type": "ColumnStacked",
+        "title": "Severe weather by state",
+        "xColumn": "State",
+        "yColumns": [
+          "Events"
+        ],
+        "seriesColumns": [
+          "EventType"
+        ]
+      }
+    }
+  ]
+}

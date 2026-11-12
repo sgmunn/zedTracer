@@ -1,0 +1,398 @@
+{
+  "query": "// Checkout of order ORD-2026-118342\ndeclare query_parameters(raid:string);\nCheckoutTraces\n| where RootActivityId == raid\n| order by TIMESTAMP asc",
+  "cluster": "https://help.kusto.windows.net",
+  "database": "Samples",
+  "parameters": {
+    "raid": "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2"
+  },
+  "tables": [
+    {
+      "name": "PrimaryResult",
+      "columns": [
+        {
+          "name": "TIMESTAMP",
+          "type": "datetime"
+        },
+        {
+          "name": "MessageText",
+          "type": "string"
+        },
+        {
+          "name": "level",
+          "type": "long"
+        },
+        {
+          "name": "MarkerName",
+          "type": "string"
+        },
+        {
+          "name": "CustomData",
+          "type": "dynamic"
+        },
+        {
+          "name": "CurrentActivityId",
+          "type": "string"
+        },
+        {
+          "name": "ParentActivityId",
+          "type": "string"
+        },
+        {
+          "name": "RootActivityId",
+          "type": "string"
+        },
+        {
+          "name": "ProcessName",
+          "type": "string"
+        }
+      ],
+      "rows": [
+        [
+          "2026-11-12T13:41:07.2500000Z",
+          "Monitored scope start: PlaceOrder",
+          5,
+          "PlaceOrder",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ],
+        [
+          "2026-11-12T13:41:07.2560000Z",
+          "Checkout requested for cart with 3 items, order ORD-2026-118342",
+          4,
+          "PlaceOrder",
+          {
+            "items": 3,
+            "currency": "USD"
+          },
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ],
+        [
+          "2026-11-12T13:41:07.2900000Z",
+          "Monitored scope start: CreateOrder",
+          5,
+          "CreateOrder",
+          null,
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:07.2980000Z",
+          "Validating order ORD-2026-118342",
+          4,
+          "CreateOrder",
+          null,
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:07.3300000Z",
+          "Monitored scope start: ReserveStock",
+          5,
+          "ReserveStock",
+          null,
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.3500000Z",
+          "Monitored scope start: ReadStockLevels",
+          5,
+          "ReadStockLevels",
+          null,
+          "d03f7bda-b368-4593-b87d-1343af87ec5a",
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.3540000Z",
+          "Stock cache miss, reading levels from the store",
+          3,
+          "ReadStockLevels",
+          {
+            "cache": "stock-levels",
+            "ageSeconds": 912
+          },
+          "d03f7bda-b368-4593-b87d-1343af87ec5a",
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.6300000Z",
+          "Monitored scope end: ReadStockLevels",
+          5,
+          "ReadStockLevels",
+          null,
+          "d03f7bda-b368-4593-b87d-1343af87ec5a",
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.6600000Z",
+          "Reserved 3 items in warehouse SEA-02",
+          4,
+          "ReserveStock",
+          {
+            "warehouse": "SEA-02",
+            "skus": [
+              "A-1001",
+              "B-2210",
+              "C-0042"
+            ]
+          },
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.6800000Z",
+          "Monitored scope end: ReserveStock",
+          5,
+          "ReserveStock",
+          null,
+          "ca640f58-2c6f-4875-9a02-4c3640bfd06c",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "InventoryService"
+        ],
+        [
+          "2026-11-12T13:41:07.7000000Z",
+          "Monitored scope start: AuthorizePayment",
+          5,
+          "AuthorizePayment",
+          null,
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:07.7200000Z",
+          "Monitored scope start: CallCardNetwork",
+          5,
+          "CallCardNetwork",
+          null,
+          "bfececcd-a0ca-43ac-a4e1-9714592e913f",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.5180000Z",
+          "Card network call timed out after 800 ms",
+          2,
+          "CallCardNetwork",
+          {
+            "exception": "System.TimeoutException",
+            "callStack": "System.TimeoutException: The operation has timed out.\n   at Orders.Payments.CardNetworkClient.AuthorizeAsync(PaymentRequest request) in CardNetworkClient.cs:line 88\n   at Orders.Payments.AuthorizationService.AuthorizeAsync(Order order) in AuthorizationService.cs:line 41"
+          },
+          "bfececcd-a0ca-43ac-a4e1-9714592e913f",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.5200000Z",
+          "Monitored scope end: CallCardNetwork",
+          5,
+          "CallCardNetwork",
+          null,
+          "bfececcd-a0ca-43ac-a4e1-9714592e913f",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.5250000Z",
+          "Card network did not answer, retrying (attempt 2 of 3)",
+          3,
+          "AuthorizePayment",
+          {
+            "attempt": 2
+          },
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.5300000Z",
+          "Monitored scope start: CallCardNetwork",
+          5,
+          "CallCardNetwork",
+          null,
+          "f7115ac3-b3fd-4d72-a3aa-509973c0e0dd",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.7200000Z",
+          "Card network approved the payment",
+          4,
+          "CallCardNetwork",
+          {
+            "approvalCode": "A71Q3"
+          },
+          "f7115ac3-b3fd-4d72-a3aa-509973c0e0dd",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.7300000Z",
+          "Monitored scope end: CallCardNetwork",
+          5,
+          "CallCardNetwork",
+          null,
+          "f7115ac3-b3fd-4d72-a3aa-509973c0e0dd",
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.7420000Z",
+          "Payment authorized for USD 184.20",
+          4,
+          "AuthorizePayment",
+          {
+            "amount": 184.2,
+            "currency": "USD"
+          },
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.7500000Z",
+          "Monitored scope end: AuthorizePayment",
+          5,
+          "AuthorizePayment",
+          null,
+          "762c0b52-5620-4040-9ac3-484510cabf6f",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "PaymentGateway"
+        ],
+        [
+          "2026-11-12T13:41:08.7700000Z",
+          "Monitored scope start: WriteOrder",
+          5,
+          "WriteOrder",
+          null,
+          "096527a0-28f0-450a-b860-36329e99fafb",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:08.8600000Z",
+          "Wrote order ORD-2026-118342 to the orders store",
+          4,
+          "WriteOrder",
+          null,
+          "096527a0-28f0-450a-b860-36329e99fafb",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:09.0100000Z",
+          "Monitored scope end: WriteOrder",
+          5,
+          "WriteOrder",
+          null,
+          "096527a0-28f0-450a-b860-36329e99fafb",
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:09.0400000Z",
+          "Order ORD-2026-118342 confirmed",
+          4,
+          "CreateOrder",
+          null,
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:09.0500000Z",
+          "Monitored scope end: CreateOrder",
+          5,
+          "CreateOrder",
+          null,
+          "d4943469-4c53-4e4a-8c1a-af906ad8ffa7",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "OrderService"
+        ],
+        [
+          "2026-11-12T13:41:09.0600000Z",
+          "Monitored scope start: RenderConfirmation",
+          5,
+          "RenderConfirmation",
+          null,
+          "38225fd3-e948-4581-84d3-0b960f1ae822",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ],
+        [
+          "2026-11-12T13:41:09.0980000Z",
+          "Monitored scope end: RenderConfirmation",
+          5,
+          "RenderConfirmation",
+          null,
+          "38225fd3-e948-4581-84d3-0b960f1ae822",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ],
+        [
+          "2026-11-12T13:41:09.1020000Z",
+          "Order ORD-2026-118342 placed",
+          4,
+          "PlaceOrder",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ],
+        [
+          "2026-11-12T13:41:09.1100000Z",
+          "Monitored scope end: PlaceOrder",
+          5,
+          "PlaceOrder",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          null,
+          "f4dd22ab-5a36-4a7d-8543-6654fdd48eb2",
+          "Storefront"
+        ]
+      ]
+    }
+  ],
+  "executionStartedAt": "2026-11-12T14:10:22.000Z",
+  "executionDurationMs": 655,
+  "clientRequestId": "KustoTraceTools;8a8f1f0e-2a51-4c49-9d43-1f2e4cc0d004"
+}

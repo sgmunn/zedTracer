@@ -1,0 +1,6131 @@
+{
+  "query": "// Storm events from April and May 2007\nStormEvents\n| where StartTime between (datetime(2007-04-01) .. datetime(2007-06-01))\n| project StartTime, EndTime, EpisodeId, EventId, State, EventType, InjuriesDirect,\n    DeathsDirect, DamageProperty, Source, BeginLocation, BeginLat, BeginLon,\n    EventNarrative, StormSummary\n| take 240",
+  "cluster": "https://help.kusto.windows.net",
+  "database": "Samples",
+  "parameters": {},
+  "tables": [
+    {
+      "name": "PrimaryResult",
+      "columns": [
+        {
+          "name": "StartTime",
+          "type": "datetime"
+        },
+        {
+          "name": "EndTime",
+          "type": "datetime"
+        },
+        {
+          "name": "EpisodeId",
+          "type": "int"
+        },
+        {
+          "name": "EventId",
+          "type": "int"
+        },
+        {
+          "name": "State",
+          "type": "string"
+        },
+        {
+          "name": "EventType",
+          "type": "string"
+        },
+        {
+          "name": "InjuriesDirect",
+          "type": "int"
+        },
+        {
+          "name": "DeathsDirect",
+          "type": "int"
+        },
+        {
+          "name": "DamageProperty",
+          "type": "long"
+        },
+        {
+          "name": "Source",
+          "type": "string"
+        },
+        {
+          "name": "BeginLocation",
+          "type": "string"
+        },
+        {
+          "name": "BeginLat",
+          "type": "real"
+        },
+        {
+          "name": "BeginLon",
+          "type": "real"
+        },
+        {
+          "name": "EventNarrative",
+          "type": "string"
+        },
+        {
+          "name": "StormSummary",
+          "type": "dynamic"
+        }
+      ],
+      "rows": [
+        [
+          "2007-04-01T06:01:00.0000000Z",
+          "2007-04-01T07:31:00.0000000Z",
+          10036,
+          60108,
+          "TEXAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Mesonet",
+          "GLENWOOD",
+          30.7726,
+          -99.7373,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-01T06:01:00.0000000Z",
+            "EndTime": "2007-04-01T07:31:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-01T07:40:00.0000000Z",
+          "2007-04-01T07:50:00.0000000Z",
+          10038,
+          60114,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "ASHFORD",
+          42.3704,
+          -98.968,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-01T07:40:00.0000000Z",
+            "EndTime": "2007-04-01T07:50:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-01T08:19:00.0000000Z",
+          "2007-04-01T08:39:00.0000000Z",
+          10067,
+          60203,
+          "WISCONSIN",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "FAIRVIEW",
+          44.4143,
+          -88.9985,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-01T08:19:00.0000000Z",
+            "EndTime": "2007-04-01T08:39:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-02T04:58:00.0000000Z",
+          "2007-04-02T05:03:00.0000000Z",
+          10049,
+          60147,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "BROOKFIELD",
+          41.3526,
+          -99.9927,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-02T04:58:00.0000000Z",
+            "EndTime": "2007-04-02T05:03:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-02T05:27:00.0000000Z",
+          "2007-04-02T05:32:00.0000000Z",
+          10053,
+          60161,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "DALTON",
+          44.3556,
+          -76.9464,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-02T05:27:00.0000000Z",
+            "EndTime": "2007-04-02T05:32:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-02T09:06:00.0000000Z",
+          "2007-04-02T09:51:00.0000000Z",
+          10032,
+          60096,
+          "TEXAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "GLENWOOD",
+          32.0838,
+          -100.0322,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-02T09:06:00.0000000Z",
+            "EndTime": "2007-04-02T09:51:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-02T10:42:00.0000000Z",
+          "2007-04-02T11:27:00.0000000Z",
+          10057,
+          60173,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          4,
+          0,
+          5000,
+          "Public",
+          "ASHFORD",
+          43.6287,
+          -74.0094,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-02T10:42:00.0000000Z",
+            "EndTime": "2007-04-02T11:27:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-02T11:11:00.0000000Z",
+          "2007-04-02T11:21:00.0000000Z",
+          10059,
+          60179,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Trained Spotter",
+          "ASHFORD",
+          40.5656,
+          -93.5339,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-02T11:11:00.0000000Z",
+            "EndTime": "2007-04-02T11:21:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-02T15:54:00.0000000Z",
+          "2007-04-02T16:04:00.0000000Z",
+          10070,
+          60212,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "CEDAR HILL",
+          30.2137,
+          -97.664,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-02T15:54:00.0000000Z",
+            "EndTime": "2007-04-02T16:04:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-02T17:15:00.0000000Z",
+          "2007-04-02T20:15:00.0000000Z",
+          10024,
+          60073,
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          1,
+          0,
+          0,
+          "Public",
+          "ELM GROVE",
+          45.8471,
+          -93.8855,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-02T17:15:00.0000000Z",
+            "EndTime": "2007-04-02T20:15:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-02T17:58:00.0000000Z",
+          "2007-04-02T18:18:00.0000000Z",
+          10059,
+          60178,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          1200000,
+          "Law Enforcement",
+          "CEDAR HILL",
+          45.6154,
+          -88.9791,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-02T17:58:00.0000000Z",
+            "EndTime": "2007-04-02T18:18:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-03T00:36:00.0000000Z",
+          "2007-04-03T01:21:00.0000000Z",
+          10026,
+          60080,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "ASHFORD",
+          41.0207,
+          -99.557,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-03T00:36:00.0000000Z",
+            "EndTime": "2007-04-03T01:21:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-03T04:37:00.0000000Z",
+          "2007-04-03T04:42:00.0000000Z",
+          10012,
+          60037,
+          "WISCONSIN",
+          "Hail",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "FAIRVIEW",
+          43.2083,
+          -90.5295,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-03T04:37:00.0000000Z",
+            "EndTime": "2007-04-03T04:42:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-03T06:56:00.0000000Z",
+          "2007-04-03T07:41:00.0000000Z",
+          10055,
+          60165,
+          "NEW YORK",
+          "Tornado",
+          0,
+          0,
+          1200000,
+          "Trained Spotter",
+          "ASHFORD",
+          42.2016,
+          -75.1083,
+          "A brief tornado touched down west of Ashford, damaging two barns.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-03T06:56:00.0000000Z",
+            "EndTime": "2007-04-03T07:41:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Ashford, damaging two barns.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-03T17:02:00.0000000Z",
+          "2007-04-03T18:32:00.0000000Z",
+          10003,
+          60011,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "GLENWOOD",
+          38.2494,
+          -92.4079,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-03T17:02:00.0000000Z",
+            "EndTime": "2007-04-03T18:32:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-03T17:58:00.0000000Z",
+          "2007-04-03T18:43:00.0000000Z",
+          10064,
+          60192,
+          "ILLINOIS",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "ELM GROVE",
+          41.4937,
+          -89.267,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-03T17:58:00.0000000Z",
+            "EndTime": "2007-04-03T18:43:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-03T23:56:00.0000000Z",
+          "2007-04-04T00:06:00.0000000Z",
+          10055,
+          60167,
+          "KANSAS",
+          "Flash Flood",
+          0,
+          0,
+          5000,
+          "Trained Spotter",
+          "ASHFORD",
+          37.6796,
+          -99.3893,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-03T23:56:00.0000000Z",
+            "EndTime": "2007-04-04T00:06:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-04T03:43:00.0000000Z",
+          "2007-04-04T06:43:00.0000000Z",
+          10004,
+          60012,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          41.647,
+          -94.5281,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-04T03:43:00.0000000Z",
+            "EndTime": "2007-04-04T06:43:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-04T05:51:00.0000000Z",
+          "2007-04-04T05:56:00.0000000Z",
+          10073,
+          60220,
+          "ILLINOIS",
+          "Flash Flood",
+          0,
+          0,
+          250000,
+          "Law Enforcement",
+          "CEDAR HILL",
+          39.4754,
+          -87.5353,
+          "Water up to a foot deep flowed across the main road through Cedar Hill.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-04T05:51:00.0000000Z",
+            "EndTime": "2007-04-04T05:56:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Cedar Hill.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-04T20:46:00.0000000Z",
+          "2007-04-04T23:46:00.0000000Z",
+          10012,
+          60036,
+          "NEW YORK",
+          "Hail",
+          4,
+          0,
+          0,
+          "Public",
+          "FAIRVIEW",
+          42.2084,
+          -75.8747,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-04T20:46:00.0000000Z",
+            "EndTime": "2007-04-04T23:46:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-04T23:46:00.0000000Z",
+          "2007-04-04T23:51:00.0000000Z",
+          10075,
+          60227,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "GLENWOOD",
+          33.8648,
+          -83.1245,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-04T23:46:00.0000000Z",
+            "EndTime": "2007-04-04T23:51:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-05T02:40:00.0000000Z",
+          "2007-04-05T03:25:00.0000000Z",
+          10021,
+          60063,
+          "MINNESOTA",
+          "Tornado",
+          0,
+          0,
+          250000,
+          "Public",
+          "DALTON",
+          46.5307,
+          -95.9684,
+          "A brief tornado touched down west of Dalton, damaging two barns.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-05T02:40:00.0000000Z",
+            "EndTime": "2007-04-05T03:25:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Dalton, damaging two barns.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-05T03:41:00.0000000Z",
+          "2007-04-05T06:41:00.0000000Z",
+          10010,
+          60031,
+          "MISSOURI",
+          "Tornado",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "BROOKFIELD",
+          37.4862,
+          -91.6848,
+          "A brief tornado touched down west of Brookfield, damaging two barns.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-05T03:41:00.0000000Z",
+            "EndTime": "2007-04-05T06:41:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Brookfield, damaging two barns.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-05T17:57:00.0000000Z",
+          "2007-04-05T18:17:00.0000000Z",
+          10043,
+          60131,
+          "TEXAS",
+          "Hail",
+          4,
+          0,
+          250000,
+          "Law Enforcement",
+          "BROOKFIELD",
+          31.9524,
+          -98.3958,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-05T17:57:00.0000000Z",
+            "EndTime": "2007-04-05T18:17:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-06T05:28:00.0000000Z",
+          "2007-04-06T06:58:00.0000000Z",
+          10053,
+          60160,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Public",
+          "ELM GROVE",
+          32.1028,
+          -84.3236,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-06T05:28:00.0000000Z",
+            "EndTime": "2007-04-06T06:58:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-06T13:45:00.0000000Z",
+          "2007-04-06T14:30:00.0000000Z",
+          10063,
+          60190,
+          "GEORGIA",
+          "Flash Flood",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "CEDAR HILL",
+          33.4212,
+          -84.1665,
+          "Water up to a foot deep flowed across the main road through Cedar Hill.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-06T13:45:00.0000000Z",
+            "EndTime": "2007-04-06T14:30:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Cedar Hill.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-06T14:23:00.0000000Z",
+          "2007-04-06T14:33:00.0000000Z",
+          10077,
+          60233,
+          "NEBRASKA",
+          "Hail",
+          2,
+          0,
+          5000,
+          "Mesonet",
+          "CEDAR HILL",
+          42.1197,
+          -100.2565,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-06T14:23:00.0000000Z",
+            "EndTime": "2007-04-06T14:33:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-07T00:15:00.0000000Z",
+          "2007-04-07T01:00:00.0000000Z",
+          10071,
+          60213,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Trained Spotter",
+          "ASHFORD",
+          40.2579,
+          -100.4571,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-07T00:15:00.0000000Z",
+            "EndTime": "2007-04-07T01:00:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-07T09:32:00.0000000Z",
+          "2007-04-07T10:17:00.0000000Z",
+          10000,
+          60000,
+          "ILLINOIS",
+          "Flash Flood",
+          0,
+          0,
+          15000,
+          "Trained Spotter",
+          "ELM GROVE",
+          40.6342,
+          -87.9999,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-07T09:32:00.0000000Z",
+            "EndTime": "2007-04-07T10:17:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-07T13:53:00.0000000Z",
+          "2007-04-07T13:58:00.0000000Z",
+          10032,
+          60097,
+          "ILLINOIS",
+          "Hail",
+          1,
+          0,
+          15000,
+          "Trained Spotter",
+          "ASHFORD",
+          38.617,
+          -88.3733,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-07T13:53:00.0000000Z",
+            "EndTime": "2007-04-07T13:58:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-08T01:00:00.0000000Z",
+          "2007-04-08T01:20:00.0000000Z",
+          10015,
+          60046,
+          "ILLINOIS",
+          "Flash Flood",
+          4,
+          0,
+          50000,
+          "Emergency Manager",
+          "ELM GROVE",
+          40.1769,
+          -89.2406,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-08T01:00:00.0000000Z",
+            "EndTime": "2007-04-08T01:20:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-08T10:02:00.0000000Z",
+          "2007-04-08T10:47:00.0000000Z",
+          10014,
+          60042,
+          "TEXAS",
+          "Thunderstorm Wind",
+          1,
+          0,
+          50000,
+          "Law Enforcement",
+          "ELM GROVE",
+          29.8824,
+          -98.4575,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-08T10:02:00.0000000Z",
+            "EndTime": "2007-04-08T10:47:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-08T13:21:00.0000000Z",
+          "2007-04-08T13:26:00.0000000Z",
+          10051,
+          60154,
+          "KANSAS",
+          "Thunderstorm Wind",
+          4,
+          0,
+          0,
+          "Mesonet",
+          "BROOKFIELD",
+          37.5389,
+          -97.2104,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-08T13:21:00.0000000Z",
+            "EndTime": "2007-04-08T13:26:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-09T01:25:00.0000000Z",
+          "2007-04-09T01:30:00.0000000Z",
+          10056,
+          60170,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "ASHFORD",
+          41.7805,
+          -76.9494,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-09T01:25:00.0000000Z",
+            "EndTime": "2007-04-09T01:30:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-09T09:59:00.0000000Z",
+          "2007-04-09T10:09:00.0000000Z",
+          10071,
+          60215,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "DALTON",
+          40.5254,
+          -92.1438,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-09T09:59:00.0000000Z",
+            "EndTime": "2007-04-09T10:09:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-09T13:10:00.0000000Z",
+          "2007-04-09T13:15:00.0000000Z",
+          10003,
+          60010,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Law Enforcement",
+          "DALTON",
+          41.985,
+          -99.3644,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-09T13:10:00.0000000Z",
+            "EndTime": "2007-04-09T13:15:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-09T17:05:00.0000000Z",
+          "2007-04-09T18:35:00.0000000Z",
+          10006,
+          60018,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          1,
+          0,
+          5000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          44.2688,
+          -75.7099,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-09T17:05:00.0000000Z",
+            "EndTime": "2007-04-09T18:35:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-10T03:09:00.0000000Z",
+          "2007-04-10T03:19:00.0000000Z",
+          10022,
+          60068,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "GLENWOOD",
+          47.4237,
+          -93.8932,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-10T03:09:00.0000000Z",
+            "EndTime": "2007-04-10T03:19:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-10T13:31:00.0000000Z",
+          "2007-04-10T13:36:00.0000000Z",
+          10019,
+          60058,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          2,
+          0,
+          0,
+          "Public",
+          "DALTON",
+          33.7434,
+          -82.9423,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-10T13:31:00.0000000Z",
+            "EndTime": "2007-04-10T13:36:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-11T01:26:00.0000000Z",
+          "2007-04-11T01:36:00.0000000Z",
+          10030,
+          60091,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "FAIRVIEW",
+          38.9681,
+          -98.9061,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-11T01:26:00.0000000Z",
+            "EndTime": "2007-04-11T01:36:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-11T03:08:00.0000000Z",
+          "2007-04-11T03:18:00.0000000Z",
+          10037,
+          60111,
+          "KANSAS",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "GLENWOOD",
+          37.0544,
+          -98.3321,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-11T03:08:00.0000000Z",
+            "EndTime": "2007-04-11T03:18:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-11T04:19:00.0000000Z",
+          "2007-04-11T04:39:00.0000000Z",
+          10040,
+          60120,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "GLENWOOD",
+          39.5438,
+          -98.1001,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-11T04:19:00.0000000Z",
+            "EndTime": "2007-04-11T04:39:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-11T04:45:00.0000000Z",
+          "2007-04-11T04:50:00.0000000Z",
+          10039,
+          60119,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          2,
+          0,
+          50000,
+          "Mesonet",
+          "ASHFORD",
+          41.4695,
+          -98.5536,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-11T04:45:00.0000000Z",
+            "EndTime": "2007-04-11T04:50:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-11T04:52:00.0000000Z",
+          "2007-04-11T07:52:00.0000000Z",
+          10068,
+          60206,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "ASHFORD",
+          44.5033,
+          -95.7015,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-11T04:52:00.0000000Z",
+            "EndTime": "2007-04-11T07:52:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-12T03:00:00.0000000Z",
+          "2007-04-12T03:05:00.0000000Z",
+          10015,
+          60045,
+          "KANSAS",
+          "Flash Flood",
+          2,
+          0,
+          0,
+          "Emergency Manager",
+          "GLENWOOD",
+          38.8789,
+          -97.0243,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-12T03:00:00.0000000Z",
+            "EndTime": "2007-04-12T03:05:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-12T05:05:00.0000000Z",
+          "2007-04-12T06:35:00.0000000Z",
+          10078,
+          60234,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          4,
+          0,
+          250000,
+          "Law Enforcement",
+          "DALTON",
+          39.595,
+          -91.2046,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-12T05:05:00.0000000Z",
+            "EndTime": "2007-04-12T06:35:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-12T07:16:00.0000000Z",
+          "2007-04-12T10:16:00.0000000Z",
+          10008,
+          60026,
+          "NEBRASKA",
+          "Hail",
+          4,
+          0,
+          0,
+          "Emergency Manager",
+          "ELM GROVE",
+          41.4314,
+          -98.8998,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-12T07:16:00.0000000Z",
+            "EndTime": "2007-04-12T10:16:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-12T11:26:00.0000000Z",
+          "2007-04-12T11:36:00.0000000Z",
+          10040,
+          60122,
+          "KANSAS",
+          "Flash Flood",
+          0,
+          0,
+          50000,
+          "Emergency Manager",
+          "CEDAR HILL",
+          38.0123,
+          -96.5095,
+          "Water up to a foot deep flowed across the main road through Cedar Hill.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-12T11:26:00.0000000Z",
+            "EndTime": "2007-04-12T11:36:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Cedar Hill.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-12T12:33:00.0000000Z",
+          "2007-04-12T12:38:00.0000000Z",
+          10009,
+          60028,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          2,
+          0,
+          0,
+          "Trained Spotter",
+          "ELM GROVE",
+          40.0489,
+          -88.1987,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-12T12:33:00.0000000Z",
+            "EndTime": "2007-04-12T12:38:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-12T15:59:00.0000000Z",
+          "2007-04-12T16:04:00.0000000Z",
+          10011,
+          60035,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "DALTON",
+          30.9359,
+          -100.0011,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-12T15:59:00.0000000Z",
+            "EndTime": "2007-04-12T16:04:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-12T16:27:00.0000000Z",
+          "2007-04-12T16:37:00.0000000Z",
+          10070,
+          60210,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Public",
+          "DALTON",
+          41.8373,
+          -93.2744,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-12T16:27:00.0000000Z",
+            "EndTime": "2007-04-12T16:37:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-12T20:49:00.0000000Z",
+          "2007-04-12T20:54:00.0000000Z",
+          10049,
+          60148,
+          "MISSOURI",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "CEDAR HILL",
+          39.7924,
+          -92.3305,
+          "Water up to a foot deep flowed across the main road through Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-12T20:49:00.0000000Z",
+            "EndTime": "2007-04-12T20:54:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Cedar Hill.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-13T00:53:00.0000000Z",
+          "2007-04-13T01:03:00.0000000Z",
+          10077,
+          60231,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "GLENWOOD",
+          33.101,
+          -83.3569,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-13T00:53:00.0000000Z",
+            "EndTime": "2007-04-13T01:03:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-13T01:12:00.0000000Z",
+          "2007-04-13T01:57:00.0000000Z",
+          10046,
+          60139,
+          "NEBRASKA",
+          "Flash Flood",
+          0,
+          0,
+          2000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          41.6093,
+          -99.7579,
+          "Water up to a foot deep flowed across the main road through Brookfield.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-13T01:12:00.0000000Z",
+            "EndTime": "2007-04-13T01:57:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Brookfield.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-13T07:52:00.0000000Z",
+          "2007-04-13T09:22:00.0000000Z",
+          10015,
+          60047,
+          "MISSOURI",
+          "Hail",
+          1,
+          0,
+          50000,
+          "Law Enforcement",
+          "ASHFORD",
+          38.5991,
+          -92.8664,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-13T07:52:00.0000000Z",
+            "EndTime": "2007-04-13T09:22:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-13T07:52:00.0000000Z",
+          "2007-04-13T10:52:00.0000000Z",
+          10056,
+          60168,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Public",
+          "FAIRVIEW",
+          44.0061,
+          -89.7425,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-13T07:52:00.0000000Z",
+            "EndTime": "2007-04-13T10:52:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-13T07:55:00.0000000Z",
+          "2007-04-13T08:05:00.0000000Z",
+          10030,
+          60092,
+          "TEXAS",
+          "Hail",
+          4,
+          0,
+          5000,
+          "Mesonet",
+          "BROOKFIELD",
+          29.5448,
+          -97.5705,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-13T07:55:00.0000000Z",
+            "EndTime": "2007-04-13T08:05:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-13T10:18:00.0000000Z",
+          "2007-04-13T11:03:00.0000000Z",
+          10037,
+          60112,
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "ASHFORD",
+          44.7096,
+          -94.9886,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-13T10:18:00.0000000Z",
+            "EndTime": "2007-04-13T11:03:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-13T14:21:00.0000000Z",
+          "2007-04-13T15:51:00.0000000Z",
+          10041,
+          60125,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Public",
+          "ASHFORD",
+          38.1917,
+          -93.6919,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-13T14:21:00.0000000Z",
+            "EndTime": "2007-04-13T15:51:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-13T22:22:00.0000000Z",
+          "2007-04-13T23:52:00.0000000Z",
+          10016,
+          60048,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Mesonet",
+          "BROOKFIELD",
+          38.4515,
+          -97.9414,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-13T22:22:00.0000000Z",
+            "EndTime": "2007-04-13T23:52:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-13T23:35:00.0000000Z",
+          "2007-04-13T23:45:00.0000000Z",
+          10074,
+          60223,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          1,
+          0,
+          "Emergency Manager",
+          "FAIRVIEW",
+          42.0904,
+          -99.2388,
+          "A brief tornado touched down west of Fairview, damaging two barns.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-13T23:35:00.0000000Z",
+            "EndTime": "2007-04-13T23:45:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Fairview, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-14T03:58:00.0000000Z",
+          "2007-04-14T06:58:00.0000000Z",
+          10059,
+          60177,
+          "TEXAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          30.9414,
+          -97.7683,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-14T03:58:00.0000000Z",
+            "EndTime": "2007-04-14T06:58:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-14T08:43:00.0000000Z",
+          "2007-04-14T08:48:00.0000000Z",
+          10069,
+          60207,
+          "TEXAS",
+          "Flash Flood",
+          0,
+          0,
+          250000,
+          "Trained Spotter",
+          "DALTON",
+          32.0543,
+          -100.3472,
+          "Water up to a foot deep flowed across the main road through Dalton.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-14T08:43:00.0000000Z",
+            "EndTime": "2007-04-14T08:48:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Dalton.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-14T19:37:00.0000000Z",
+          "2007-04-14T19:57:00.0000000Z",
+          10033,
+          60101,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          40.8806,
+          -89.5955,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-14T19:37:00.0000000Z",
+            "EndTime": "2007-04-14T19:57:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-14T21:12:00.0000000Z",
+          "2007-04-14T21:22:00.0000000Z",
+          10044,
+          60133,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "FAIRVIEW",
+          33.9432,
+          -83.5816,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-14T21:12:00.0000000Z",
+            "EndTime": "2007-04-14T21:22:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-15T01:48:00.0000000Z",
+          "2007-04-15T03:18:00.0000000Z",
+          10052,
+          60156,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "BROOKFIELD",
+          38.0187,
+          -92.3657,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-15T01:48:00.0000000Z",
+            "EndTime": "2007-04-15T03:18:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-15T10:18:00.0000000Z",
+          "2007-04-15T13:18:00.0000000Z",
+          10028,
+          60086,
+          "TEXAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          1200000,
+          "Public",
+          "ELM GROVE",
+          29.9791,
+          -97.909,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-15T10:18:00.0000000Z",
+            "EndTime": "2007-04-15T13:18:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-15T19:48:00.0000000Z",
+          "2007-04-15T21:18:00.0000000Z",
+          10041,
+          60124,
+          "ILLINOIS",
+          "Flash Flood",
+          0,
+          0,
+          250000,
+          "Public",
+          "DALTON",
+          38.5091,
+          -88.4324,
+          "Water up to a foot deep flowed across the main road through Dalton.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-15T19:48:00.0000000Z",
+            "EndTime": "2007-04-15T21:18:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Dalton.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-15T20:08:00.0000000Z",
+          "2007-04-15T20:18:00.0000000Z",
+          10050,
+          60152,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          2000,
+          "Emergency Manager",
+          "ASHFORD",
+          42.4178,
+          -92.0898,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-15T20:08:00.0000000Z",
+            "EndTime": "2007-04-15T20:18:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-15T22:58:00.0000000Z",
+          "2007-04-15T23:18:00.0000000Z",
+          10034,
+          60102,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          250000,
+          "Emergency Manager",
+          "ELM GROVE",
+          40.7142,
+          -92.6029,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-15T22:58:00.0000000Z",
+            "EndTime": "2007-04-15T23:18:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-16T11:01:00.0000000Z",
+          "2007-04-16T11:06:00.0000000Z",
+          10009,
+          60027,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "CEDAR HILL",
+          42.978,
+          -74.0496,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-16T11:01:00.0000000Z",
+            "EndTime": "2007-04-16T11:06:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-16T20:55:00.0000000Z",
+          "2007-04-16T21:05:00.0000000Z",
+          10057,
+          60171,
+          "MISSOURI",
+          "Tornado",
+          1,
+          0,
+          2000,
+          "Public",
+          "CEDAR HILL",
+          37.8539,
+          -91.8275,
+          "A brief tornado touched down west of Cedar Hill, damaging two barns.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-16T20:55:00.0000000Z",
+            "EndTime": "2007-04-16T21:05:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Cedar Hill, damaging two barns.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-17T02:18:00.0000000Z",
+          "2007-04-17T05:18:00.0000000Z",
+          10019,
+          60057,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "ASHFORD",
+          41.125,
+          -92.0463,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-17T02:18:00.0000000Z",
+            "EndTime": "2007-04-17T05:18:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-17T07:46:00.0000000Z",
+          "2007-04-17T07:51:00.0000000Z",
+          10077,
+          60232,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          250000,
+          "Public",
+          "ASHFORD",
+          38.7801,
+          -97.9134,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-17T07:46:00.0000000Z",
+            "EndTime": "2007-04-17T07:51:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-18T01:43:00.0000000Z",
+          "2007-04-18T04:43:00.0000000Z",
+          10033,
+          60100,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Public",
+          "BROOKFIELD",
+          42.7461,
+          -100.9651,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-18T01:43:00.0000000Z",
+            "EndTime": "2007-04-18T04:43:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-18T15:46:00.0000000Z",
+          "2007-04-18T16:31:00.0000000Z",
+          10034,
+          60104,
+          "NEW YORK",
+          "Tornado",
+          0,
+          0,
+          250000,
+          "Mesonet",
+          "BROOKFIELD",
+          41.7654,
+          -74.7959,
+          "A brief tornado touched down west of Brookfield, damaging two barns.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-18T15:46:00.0000000Z",
+            "EndTime": "2007-04-18T16:31:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Brookfield, damaging two barns.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-19T18:52:00.0000000Z",
+          "2007-04-19T18:57:00.0000000Z",
+          10034,
+          60103,
+          "IOWA",
+          "Thunderstorm Wind",
+          1,
+          0,
+          250000,
+          "Trained Spotter",
+          "ELM GROVE",
+          42.1436,
+          -93.2045,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-19T18:52:00.0000000Z",
+            "EndTime": "2007-04-19T18:57:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-20T00:35:00.0000000Z",
+          "2007-04-20T01:20:00.0000000Z",
+          10006,
+          60019,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          1200000,
+          "Emergency Manager",
+          "GLENWOOD",
+          33.7835,
+          -84.0581,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-20T00:35:00.0000000Z",
+            "EndTime": "2007-04-20T01:20:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-20T09:47:00.0000000Z",
+          "2007-04-20T10:07:00.0000000Z",
+          10022,
+          60067,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Mesonet",
+          "ASHFORD",
+          40.5941,
+          -89.8085,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-04-20T09:47:00.0000000Z",
+            "EndTime": "2007-04-20T10:07:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-20T20:35:00.0000000Z",
+          "2007-04-20T22:05:00.0000000Z",
+          10038,
+          60115,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Public",
+          "DALTON",
+          37.9332,
+          -97.2089,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-20T20:35:00.0000000Z",
+            "EndTime": "2007-04-20T22:05:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-20T22:19:00.0000000Z",
+          "2007-04-20T23:04:00.0000000Z",
+          10076,
+          60228,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          4,
+          0,
+          1200000,
+          "Law Enforcement",
+          "DALTON",
+          44.0215,
+          -74.4702,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-20T22:19:00.0000000Z",
+            "EndTime": "2007-04-20T23:04:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-21T05:14:00.0000000Z",
+          "2007-04-21T05:34:00.0000000Z",
+          10032,
+          60098,
+          "NEW YORK",
+          "Tornado",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          41.9734,
+          -74.8683,
+          "A brief tornado touched down west of Fairview, damaging two barns.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-21T05:14:00.0000000Z",
+            "EndTime": "2007-04-21T05:34:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Fairview, damaging two barns.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-21T11:38:00.0000000Z",
+          "2007-04-21T12:23:00.0000000Z",
+          10007,
+          60021,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          0,
+          50000,
+          "Trained Spotter",
+          "BROOKFIELD",
+          40.3647,
+          -99.719,
+          "A brief tornado touched down west of Brookfield, damaging two barns.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-21T11:38:00.0000000Z",
+            "EndTime": "2007-04-21T12:23:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Brookfield, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-21T15:52:00.0000000Z",
+          "2007-04-21T17:22:00.0000000Z",
+          10021,
+          60064,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Emergency Manager",
+          "DALTON",
+          41.196,
+          -92.4296,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-21T15:52:00.0000000Z",
+            "EndTime": "2007-04-21T17:22:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-21T16:00:00.0000000Z",
+          "2007-04-21T16:05:00.0000000Z",
+          10078,
+          60236,
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          4,
+          0,
+          5000,
+          "Mesonet",
+          "FAIRVIEW",
+          44.571,
+          -95.1538,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-21T16:00:00.0000000Z",
+            "EndTime": "2007-04-21T16:05:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-22T01:57:00.0000000Z",
+          "2007-04-22T02:02:00.0000000Z",
+          10048,
+          60144,
+          "MISSOURI",
+          "Hail",
+          4,
+          0,
+          0,
+          "Emergency Manager",
+          "DALTON",
+          39.0435,
+          -91.6117,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-22T01:57:00.0000000Z",
+            "EndTime": "2007-04-22T02:02:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-22T09:49:00.0000000Z",
+          "2007-04-22T10:34:00.0000000Z",
+          10075,
+          60225,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Emergency Manager",
+          "GLENWOOD",
+          41.7875,
+          -100.6543,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-22T09:49:00.0000000Z",
+            "EndTime": "2007-04-22T10:34:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-22T11:05:00.0000000Z",
+          "2007-04-22T12:35:00.0000000Z",
+          10011,
+          60034,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "GLENWOOD",
+          45.3626,
+          -95.3627,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-22T11:05:00.0000000Z",
+            "EndTime": "2007-04-22T12:35:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-22T13:32:00.0000000Z",
+          "2007-04-22T13:52:00.0000000Z",
+          10010,
+          60030,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "FAIRVIEW",
+          41.4432,
+          -88.7497,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-22T13:32:00.0000000Z",
+            "EndTime": "2007-04-22T13:52:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-22T23:33:00.0000000Z",
+          "2007-04-22T23:53:00.0000000Z",
+          10019,
+          60059,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "CEDAR HILL",
+          47.0445,
+          -93.243,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-22T23:33:00.0000000Z",
+            "EndTime": "2007-04-22T23:53:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-23T05:48:00.0000000Z",
+          "2007-04-23T05:58:00.0000000Z",
+          10021,
+          60065,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "DALTON",
+          44.6471,
+          -88.7716,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-23T05:48:00.0000000Z",
+            "EndTime": "2007-04-23T05:58:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-23T19:06:00.0000000Z",
+          "2007-04-23T20:36:00.0000000Z",
+          10048,
+          60146,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "ASHFORD",
+          39.5563,
+          -98.6391,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-23T19:06:00.0000000Z",
+            "EndTime": "2007-04-23T20:36:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-24T05:16:00.0000000Z",
+          "2007-04-24T05:21:00.0000000Z",
+          10029,
+          60088,
+          "WISCONSIN",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Law Enforcement",
+          "BROOKFIELD",
+          45.3334,
+          -89.5158,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-24T05:16:00.0000000Z",
+            "EndTime": "2007-04-24T05:21:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-24T05:58:00.0000000Z",
+          "2007-04-24T06:18:00.0000000Z",
+          10072,
+          60217,
+          "KANSAS",
+          "Hail",
+          1,
+          0,
+          0,
+          "Mesonet",
+          "BROOKFIELD",
+          38.5552,
+          -97.1313,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-24T05:58:00.0000000Z",
+            "EndTime": "2007-04-24T06:18:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-24T11:09:00.0000000Z",
+          "2007-04-24T11:29:00.0000000Z",
+          10005,
+          60016,
+          "NEW YORK",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "ASHFORD",
+          43.8077,
+          -75.755,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-24T11:09:00.0000000Z",
+            "EndTime": "2007-04-24T11:29:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-24T12:29:00.0000000Z",
+          "2007-04-24T12:39:00.0000000Z",
+          10058,
+          60174,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Emergency Manager",
+          "ELM GROVE",
+          46.2202,
+          -95.1769,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-24T12:29:00.0000000Z",
+            "EndTime": "2007-04-24T12:39:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-25T00:07:00.0000000Z",
+          "2007-04-25T00:52:00.0000000Z",
+          10037,
+          60113,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "ASHFORD",
+          39.4718,
+          -91.4088,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-25T00:07:00.0000000Z",
+            "EndTime": "2007-04-25T00:52:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-25T05:41:00.0000000Z",
+          "2007-04-25T06:26:00.0000000Z",
+          10026,
+          60078,
+          "MINNESOTA",
+          "Hail",
+          2,
+          0,
+          0,
+          "Mesonet",
+          "FAIRVIEW",
+          46.7259,
+          -94.4916,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-25T05:41:00.0000000Z",
+            "EndTime": "2007-04-25T06:26:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-04-25T07:37:00.0000000Z",
+          "2007-04-25T10:37:00.0000000Z",
+          10036,
+          60109,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "CEDAR HILL",
+          33.2715,
+          -82.9591,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-25T07:37:00.0000000Z",
+            "EndTime": "2007-04-25T10:37:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-25T11:57:00.0000000Z",
+          "2007-04-25T12:07:00.0000000Z",
+          10042,
+          60128,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "DALTON",
+          42.0847,
+          -98.4227,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-25T11:57:00.0000000Z",
+            "EndTime": "2007-04-25T12:07:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-25T23:54:00.0000000Z",
+          "2007-04-25T23:59:00.0000000Z",
+          10035,
+          60107,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          0,
+          250000,
+          "Law Enforcement",
+          "BROOKFIELD",
+          42.8684,
+          -100.1521,
+          "A brief tornado touched down west of Brookfield, damaging two barns.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-25T23:54:00.0000000Z",
+            "EndTime": "2007-04-25T23:59:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Brookfield, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-26T07:25:00.0000000Z",
+          "2007-04-26T08:10:00.0000000Z",
+          10063,
+          60191,
+          "KANSAS",
+          "Tornado",
+          0,
+          0,
+          15000,
+          "Mesonet",
+          "BROOKFIELD",
+          39.5455,
+          -96.961,
+          "A brief tornado touched down west of Brookfield, damaging two barns.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-26T07:25:00.0000000Z",
+            "EndTime": "2007-04-26T08:10:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Brookfield, damaging two barns.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-26T10:07:00.0000000Z",
+          "2007-04-26T10:12:00.0000000Z",
+          10071,
+          60214,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "CEDAR HILL",
+          44.1945,
+          -89.645,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-26T10:07:00.0000000Z",
+            "EndTime": "2007-04-26T10:12:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-26T13:10:00.0000000Z",
+          "2007-04-26T13:20:00.0000000Z",
+          10054,
+          60163,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          4,
+          0,
+          0,
+          "Law Enforcement",
+          "BROOKFIELD",
+          41.6989,
+          -76.5653,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-26T13:10:00.0000000Z",
+            "EndTime": "2007-04-26T13:20:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-26T16:40:00.0000000Z",
+          "2007-04-26T16:50:00.0000000Z",
+          10045,
+          60137,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "DALTON",
+          38.5911,
+          -99.038,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-26T16:40:00.0000000Z",
+            "EndTime": "2007-04-26T16:50:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-26T18:00:00.0000000Z",
+          "2007-04-26T18:05:00.0000000Z",
+          10018,
+          60056,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          250000,
+          "Trained Spotter",
+          "BROOKFIELD",
+          39.4353,
+          -97.2202,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-26T18:00:00.0000000Z",
+            "EndTime": "2007-04-26T18:05:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-27T02:03:00.0000000Z",
+          "2007-04-27T02:13:00.0000000Z",
+          10066,
+          60198,
+          "TEXAS",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "FAIRVIEW",
+          31.8076,
+          -100.0417,
+          "Water up to a foot deep flowed across the main road through Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-27T02:03:00.0000000Z",
+            "EndTime": "2007-04-27T02:13:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Fairview.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-27T04:00:00.0000000Z",
+          "2007-04-27T04:05:00.0000000Z",
+          10003,
+          60009,
+          "TEXAS",
+          "Flash Flood",
+          2,
+          0,
+          15000,
+          "Law Enforcement",
+          "FAIRVIEW",
+          29.9076,
+          -99.0382,
+          "Water up to a foot deep flowed across the main road through Fairview.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-27T04:00:00.0000000Z",
+            "EndTime": "2007-04-27T04:05:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Fairview.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-27T13:06:00.0000000Z",
+          "2007-04-27T14:36:00.0000000Z",
+          10002,
+          60008,
+          "WISCONSIN",
+          "Hail",
+          4,
+          0,
+          15000,
+          "Emergency Manager",
+          "ELM GROVE",
+          44.8021,
+          -89.9948,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-04-27T13:06:00.0000000Z",
+            "EndTime": "2007-04-27T14:36:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-04-27T14:58:00.0000000Z",
+          "2007-04-27T16:28:00.0000000Z",
+          10000,
+          60001,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "GLENWOOD",
+          29.7224,
+          -98.1096,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-27T14:58:00.0000000Z",
+            "EndTime": "2007-04-27T16:28:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-27T22:42:00.0000000Z",
+          "2007-04-27T22:52:00.0000000Z",
+          10030,
+          60090,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Emergency Manager",
+          "CEDAR HILL",
+          42.562,
+          -92.0034,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-27T22:42:00.0000000Z",
+            "EndTime": "2007-04-27T22:52:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-04-28T09:30:00.0000000Z",
+          "2007-04-28T09:40:00.0000000Z",
+          10060,
+          60182,
+          "GEORGIA",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "ELM GROVE",
+          34.1825,
+          -83.6731,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-28T09:30:00.0000000Z",
+            "EndTime": "2007-04-28T09:40:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-04-29T02:54:00.0000000Z",
+          "2007-04-29T05:54:00.0000000Z",
+          10058,
+          60175,
+          "NEBRASKA",
+          "Flash Flood",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          42.4369,
+          -101.0588,
+          "Water up to a foot deep flowed across the main road through Fairview.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-04-29T02:54:00.0000000Z",
+            "EndTime": "2007-04-29T05:54:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Fairview.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-04-29T15:15:00.0000000Z",
+          "2007-04-29T16:00:00.0000000Z",
+          10031,
+          60093,
+          "NEW YORK",
+          "Tornado",
+          2,
+          0,
+          250000,
+          "Trained Spotter",
+          "CEDAR HILL",
+          42.7457,
+          -75.8615,
+          "A brief tornado touched down west of Cedar Hill, damaging two barns.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-29T15:15:00.0000000Z",
+            "EndTime": "2007-04-29T16:00:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Cedar Hill, damaging two barns.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-04-29T16:57:00.0000000Z",
+          "2007-04-29T19:57:00.0000000Z",
+          10065,
+          60197,
+          "MISSOURI",
+          "Flash Flood",
+          0,
+          0,
+          50000,
+          "Public",
+          "FAIRVIEW",
+          39.7982,
+          -91.1611,
+          "Water up to a foot deep flowed across the main road through Fairview.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-29T16:57:00.0000000Z",
+            "EndTime": "2007-04-29T19:57:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Fairview.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-04-30T05:11:00.0000000Z",
+          "2007-04-30T05:31:00.0000000Z",
+          10072,
+          60218,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          250000,
+          "Public",
+          "ASHFORD",
+          31.1368,
+          -99.0725,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-04-30T05:11:00.0000000Z",
+            "EndTime": "2007-04-30T05:31:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-04-30T05:53:00.0000000Z",
+          "2007-04-30T06:38:00.0000000Z",
+          10025,
+          60075,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "CEDAR HILL",
+          39.0444,
+          -96.8521,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-30T05:53:00.0000000Z",
+            "EndTime": "2007-04-30T06:38:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-30T14:32:00.0000000Z",
+          "2007-04-30T17:32:00.0000000Z",
+          10018,
+          60054,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          1200000,
+          "Mesonet",
+          "DALTON",
+          37.0629,
+          -96.6878,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-04-30T14:32:00.0000000Z",
+            "EndTime": "2007-04-30T17:32:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-04-30T19:19:00.0000000Z",
+          "2007-04-30T19:24:00.0000000Z",
+          10024,
+          60072,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "GLENWOOD",
+          40.0436,
+          -90.1047,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-04-30T19:19:00.0000000Z",
+            "EndTime": "2007-04-30T19:24:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-04-30T21:48:00.0000000Z",
+          "2007-04-30T22:08:00.0000000Z",
+          10000,
+          60002,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Public",
+          "BROOKFIELD",
+          40.0527,
+          -100.8966,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-04-30T21:48:00.0000000Z",
+            "EndTime": "2007-04-30T22:08:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-01T06:19:00.0000000Z",
+          "2007-05-01T07:04:00.0000000Z",
+          10028,
+          60084,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          1,
+          0,
+          0,
+          "Public",
+          "ASHFORD",
+          40.1702,
+          -100.7117,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-01T06:19:00.0000000Z",
+            "EndTime": "2007-05-01T07:04:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-01T14:25:00.0000000Z",
+          "2007-05-01T14:45:00.0000000Z",
+          10060,
+          60180,
+          "NEBRASKA",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Public",
+          "CEDAR HILL",
+          42.5393,
+          -99.6858,
+          "Water up to a foot deep flowed across the main road through Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-01T14:25:00.0000000Z",
+            "EndTime": "2007-05-01T14:45:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Cedar Hill.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-01T17:14:00.0000000Z",
+          "2007-05-01T17:34:00.0000000Z",
+          10073,
+          60221,
+          "ILLINOIS",
+          "Tornado",
+          0,
+          0,
+          1200000,
+          "Law Enforcement",
+          "GLENWOOD",
+          39.578,
+          -90.3242,
+          "A brief tornado touched down west of Glenwood, damaging two barns.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-01T17:14:00.0000000Z",
+            "EndTime": "2007-05-01T17:34:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Glenwood, damaging two barns.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-01T19:11:00.0000000Z",
+          "2007-05-01T19:31:00.0000000Z",
+          10007,
+          60022,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Mesonet",
+          "ASHFORD",
+          47.3179,
+          -95.4093,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-01T19:11:00.0000000Z",
+            "EndTime": "2007-05-01T19:31:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-02T02:36:00.0000000Z",
+          "2007-05-02T02:46:00.0000000Z",
+          10065,
+          60196,
+          "NEW YORK",
+          "Tornado",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "FAIRVIEW",
+          41.4918,
+          -76.4153,
+          "A brief tornado touched down west of Fairview, damaging two barns.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-02T02:36:00.0000000Z",
+            "EndTime": "2007-05-02T02:46:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Fairview, damaging two barns.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-02T08:12:00.0000000Z",
+          "2007-05-02T08:17:00.0000000Z",
+          10022,
+          60066,
+          "KANSAS",
+          "Hail",
+          4,
+          0,
+          15000,
+          "Trained Spotter",
+          "BROOKFIELD",
+          37.7377,
+          -96.7917,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-02T08:12:00.0000000Z",
+            "EndTime": "2007-05-02T08:17:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-02T15:16:00.0000000Z",
+          "2007-05-02T15:21:00.0000000Z",
+          10036,
+          60110,
+          "NEW YORK",
+          "Flash Flood",
+          4,
+          0,
+          15000,
+          "Mesonet",
+          "ASHFORD",
+          43.7473,
+          -75.1304,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-02T15:16:00.0000000Z",
+            "EndTime": "2007-05-02T15:21:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-03T02:49:00.0000000Z",
+          "2007-05-03T05:49:00.0000000Z",
+          10011,
+          60033,
+          "IOWA",
+          "Flash Flood",
+          0,
+          0,
+          2000,
+          "Trained Spotter",
+          "ELM GROVE",
+          41.7554,
+          -94.2653,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-03T02:49:00.0000000Z",
+            "EndTime": "2007-05-03T05:49:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-03T03:46:00.0000000Z",
+          "2007-05-03T05:16:00.0000000Z",
+          10001,
+          60003,
+          "ILLINOIS",
+          "Tornado",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "ELM GROVE",
+          39.0543,
+          -90.086,
+          "A brief tornado touched down west of Elm Grove, damaging two barns.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-03T03:46:00.0000000Z",
+            "EndTime": "2007-05-03T05:16:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Elm Grove, damaging two barns.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-03T05:59:00.0000000Z",
+          "2007-05-03T06:09:00.0000000Z",
+          10023,
+          60070,
+          "NEW YORK",
+          "Hail",
+          4,
+          0,
+          250000,
+          "Public",
+          "GLENWOOD",
+          41.4905,
+          -75.1118,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-03T05:59:00.0000000Z",
+            "EndTime": "2007-05-03T06:09:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-03T06:09:00.0000000Z",
+          "2007-05-03T06:29:00.0000000Z",
+          10049,
+          60149,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Public",
+          "FAIRVIEW",
+          38.7941,
+          -91.1132,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-03T06:09:00.0000000Z",
+            "EndTime": "2007-05-03T06:29:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-03T09:19:00.0000000Z",
+          "2007-05-03T09:29:00.0000000Z",
+          10005,
+          60017,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "BROOKFIELD",
+          39.9772,
+          -89.7527,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-03T09:19:00.0000000Z",
+            "EndTime": "2007-05-03T09:29:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-03T23:16:00.0000000Z",
+          "2007-05-03T23:21:00.0000000Z",
+          10002,
+          60007,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "BROOKFIELD",
+          42.7097,
+          -98.3662,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-03T23:16:00.0000000Z",
+            "EndTime": "2007-05-03T23:21:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-04T14:51:00.0000000Z",
+          "2007-05-04T15:01:00.0000000Z",
+          10004,
+          60014,
+          "ILLINOIS",
+          "Hail",
+          0,
+          0,
+          250000,
+          "Trained Spotter",
+          "ASHFORD",
+          41.0611,
+          -87.6206,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-04T14:51:00.0000000Z",
+            "EndTime": "2007-05-04T15:01:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-04T15:12:00.0000000Z",
+          "2007-05-04T18:12:00.0000000Z",
+          10029,
+          60089,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          2000,
+          "Trained Spotter",
+          "DALTON",
+          37.1305,
+          -97.9263,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-04T15:12:00.0000000Z",
+            "EndTime": "2007-05-04T18:12:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-04T20:38:00.0000000Z",
+          "2007-05-04T23:38:00.0000000Z",
+          10042,
+          60127,
+          "KANSAS",
+          "Hail",
+          4,
+          0,
+          0,
+          "Trained Spotter",
+          "FAIRVIEW",
+          37.5908,
+          -97.2163,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-04T20:38:00.0000000Z",
+            "EndTime": "2007-05-04T23:38:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-04T22:59:00.0000000Z",
+          "2007-05-04T23:09:00.0000000Z",
+          10048,
+          60145,
+          "GEORGIA",
+          "Flash Flood",
+          1,
+          0,
+          50000,
+          "Public",
+          "ASHFORD",
+          32.1594,
+          -82.5313,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-04T22:59:00.0000000Z",
+            "EndTime": "2007-05-04T23:09:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-05T03:41:00.0000000Z",
+          "2007-05-05T04:26:00.0000000Z",
+          10046,
+          60138,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Public",
+          "DALTON",
+          43.8402,
+          -75.2517,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-05T03:41:00.0000000Z",
+            "EndTime": "2007-05-05T04:26:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-05T05:42:00.0000000Z",
+          "2007-05-05T07:12:00.0000000Z",
+          10047,
+          60141,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "BROOKFIELD",
+          39.0398,
+          -91.7379,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-05T05:42:00.0000000Z",
+            "EndTime": "2007-05-05T07:12:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-05T12:01:00.0000000Z",
+          "2007-05-05T13:31:00.0000000Z",
+          10029,
+          60087,
+          "ILLINOIS",
+          "Hail",
+          1,
+          0,
+          2000,
+          "Public",
+          "DALTON",
+          40.6645,
+          -89.2524,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-05T12:01:00.0000000Z",
+            "EndTime": "2007-05-05T13:31:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-05T18:56:00.0000000Z",
+          "2007-05-05T20:26:00.0000000Z",
+          10042,
+          60126,
+          "MINNESOTA",
+          "Flash Flood",
+          4,
+          0,
+          2000,
+          "Emergency Manager",
+          "ASHFORD",
+          47.4078,
+          -93.996,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-05T18:56:00.0000000Z",
+            "EndTime": "2007-05-05T20:26:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-05T23:00:00.0000000Z",
+          "2007-05-05T23:10:00.0000000Z",
+          10043,
+          60130,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          0,
+          15000,
+          "Trained Spotter",
+          "GLENWOOD",
+          41.5524,
+          -99.4149,
+          "A brief tornado touched down west of Glenwood, damaging two barns.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-05T23:00:00.0000000Z",
+            "EndTime": "2007-05-05T23:10:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Glenwood, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-05T23:15:00.0000000Z",
+          "2007-05-05T23:25:00.0000000Z",
+          10050,
+          60151,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          250000,
+          "Emergency Manager",
+          "DALTON",
+          38.9826,
+          -98.6183,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-05T23:15:00.0000000Z",
+            "EndTime": "2007-05-05T23:25:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-05T23:59:00.0000000Z",
+          "2007-05-06T00:44:00.0000000Z",
+          10079,
+          60237,
+          "GEORGIA",
+          "Flash Flood",
+          2,
+          0,
+          5000,
+          "Trained Spotter",
+          "ASHFORD",
+          32.5166,
+          -83.8069,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-05T23:59:00.0000000Z",
+            "EndTime": "2007-05-06T00:44:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-06T00:17:00.0000000Z",
+          "2007-05-06T01:47:00.0000000Z",
+          10014,
+          60043,
+          "MISSOURI",
+          "Tornado",
+          0,
+          0,
+          2000,
+          "Mesonet",
+          "DALTON",
+          39.1714,
+          -93.8152,
+          "A brief tornado touched down west of Dalton, damaging two barns.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-06T00:17:00.0000000Z",
+            "EndTime": "2007-05-06T01:47:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Dalton, damaging two barns.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-07T02:36:00.0000000Z",
+          "2007-05-07T02:41:00.0000000Z",
+          10074,
+          60222,
+          "NEW YORK",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "GLENWOOD",
+          42.6241,
+          -74.3426,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-07T02:36:00.0000000Z",
+            "EndTime": "2007-05-07T02:41:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-08T00:54:00.0000000Z",
+          "2007-05-08T00:59:00.0000000Z",
+          10017,
+          60053,
+          "ILLINOIS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "GLENWOOD",
+          40.3506,
+          -89.8739,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-08T00:54:00.0000000Z",
+            "EndTime": "2007-05-08T00:59:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-08T10:13:00.0000000Z",
+          "2007-05-08T10:58:00.0000000Z",
+          10025,
+          60076,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "DALTON",
+          45.3499,
+          -95.9408,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-08T10:13:00.0000000Z",
+            "EndTime": "2007-05-08T10:58:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-08T16:30:00.0000000Z",
+          "2007-05-08T16:50:00.0000000Z",
+          10039,
+          60118,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "BROOKFIELD",
+          41.1372,
+          -99.2913,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-08T16:30:00.0000000Z",
+            "EndTime": "2007-05-08T16:50:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-08T20:23:00.0000000Z",
+          "2007-05-08T21:53:00.0000000Z",
+          10072,
+          60216,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Trained Spotter",
+          "ELM GROVE",
+          32.6261,
+          -84.3199,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-08T20:23:00.0000000Z",
+            "EndTime": "2007-05-08T21:53:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-08T21:10:00.0000000Z",
+          "2007-05-08T22:40:00.0000000Z",
+          10018,
+          60055,
+          "MINNESOTA",
+          "Hail",
+          1,
+          0,
+          15000,
+          "Public",
+          "FAIRVIEW",
+          45.6355,
+          -94.6202,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-08T21:10:00.0000000Z",
+            "EndTime": "2007-05-08T22:40:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-08T21:23:00.0000000Z",
+          "2007-05-08T21:28:00.0000000Z",
+          10064,
+          60194,
+          "TEXAS",
+          "Hail",
+          1,
+          0,
+          15000,
+          "Mesonet",
+          "DALTON",
+          30.9179,
+          -98.164,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-08T21:23:00.0000000Z",
+            "EndTime": "2007-05-08T21:28:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-09T07:12:00.0000000Z",
+          "2007-05-09T07:22:00.0000000Z",
+          10054,
+          60164,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          1200000,
+          "Emergency Manager",
+          "ELM GROVE",
+          45.6601,
+          -89.1923,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-09T07:12:00.0000000Z",
+            "EndTime": "2007-05-09T07:22:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-09T11:20:00.0000000Z",
+          "2007-05-09T14:20:00.0000000Z",
+          10054,
+          60162,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "ASHFORD",
+          33.2003,
+          -83.1955,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-09T11:20:00.0000000Z",
+            "EndTime": "2007-05-09T14:20:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-09T15:10:00.0000000Z",
+          "2007-05-09T15:15:00.0000000Z",
+          10065,
+          60195,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Trained Spotter",
+          "ASHFORD",
+          41.4914,
+          -101.0487,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-09T15:10:00.0000000Z",
+            "EndTime": "2007-05-09T15:15:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-09T19:25:00.0000000Z",
+          "2007-05-09T19:35:00.0000000Z",
+          10035,
+          60105,
+          "ILLINOIS",
+          "Hail",
+          2,
+          0,
+          50000,
+          "Trained Spotter",
+          "GLENWOOD",
+          39.4063,
+          -90.2947,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-09T19:25:00.0000000Z",
+            "EndTime": "2007-05-09T19:35:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-10T01:00:00.0000000Z",
+          "2007-05-10T01:45:00.0000000Z",
+          10069,
+          60208,
+          "NEW YORK",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "GLENWOOD",
+          43.3232,
+          -76.7183,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-10T01:00:00.0000000Z",
+            "EndTime": "2007-05-10T01:45:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-10T01:38:00.0000000Z",
+          "2007-05-10T03:08:00.0000000Z",
+          10062,
+          60186,
+          "KANSAS",
+          "Flash Flood",
+          0,
+          0,
+          15000,
+          "Public",
+          "DALTON",
+          38.8137,
+          -96.9417,
+          "Water up to a foot deep flowed across the main road through Dalton.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-10T01:38:00.0000000Z",
+            "EndTime": "2007-05-10T03:08:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Dalton.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-10T03:41:00.0000000Z",
+          "2007-05-10T04:01:00.0000000Z",
+          10062,
+          60188,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Mesonet",
+          "FAIRVIEW",
+          41.5493,
+          -94.4642,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-10T03:41:00.0000000Z",
+            "EndTime": "2007-05-10T04:01:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-10T10:02:00.0000000Z",
+          "2007-05-10T10:07:00.0000000Z",
+          10041,
+          60123,
+          "ILLINOIS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "FAIRVIEW",
+          38.5647,
+          -89.7939,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-10T10:02:00.0000000Z",
+            "EndTime": "2007-05-10T10:07:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-10T13:27:00.0000000Z",
+          "2007-05-10T14:12:00.0000000Z",
+          10040,
+          60121,
+          "IOWA",
+          "Hail",
+          2,
+          0,
+          2000,
+          "Mesonet",
+          "ELM GROVE",
+          41.2816,
+          -94.6049,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-10T13:27:00.0000000Z",
+            "EndTime": "2007-05-10T14:12:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-11T10:10:00.0000000Z",
+          "2007-05-11T10:30:00.0000000Z",
+          10028,
+          60085,
+          "NEBRASKA",
+          "Flash Flood",
+          2,
+          0,
+          0,
+          "Mesonet",
+          "ELM GROVE",
+          40.3501,
+          -101.1266,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-11T10:10:00.0000000Z",
+            "EndTime": "2007-05-11T10:30:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-11T16:33:00.0000000Z",
+          "2007-05-11T16:38:00.0000000Z",
+          10075,
+          60226,
+          "WISCONSIN",
+          "Flash Flood",
+          1,
+          0,
+          0,
+          "Trained Spotter",
+          "GLENWOOD",
+          45.1105,
+          -88.393,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-11T16:33:00.0000000Z",
+            "EndTime": "2007-05-11T16:38:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-11T17:02:00.0000000Z",
+          "2007-05-11T17:22:00.0000000Z",
+          10001,
+          60005,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Trained Spotter",
+          "FAIRVIEW",
+          38.2566,
+          -98.5737,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-11T17:02:00.0000000Z",
+            "EndTime": "2007-05-11T17:22:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-11T17:30:00.0000000Z",
+          "2007-05-11T20:30:00.0000000Z",
+          10055,
+          60166,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Public",
+          "BROOKFIELD",
+          44.042,
+          -89.215,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-11T17:30:00.0000000Z",
+            "EndTime": "2007-05-11T20:30:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-11T20:06:00.0000000Z",
+          "2007-05-11T21:36:00.0000000Z",
+          10027,
+          60082,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Public",
+          "BROOKFIELD",
+          33.36,
+          -82.5077,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-11T20:06:00.0000000Z",
+            "EndTime": "2007-05-11T21:36:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-12T04:34:00.0000000Z",
+          "2007-05-12T04:39:00.0000000Z",
+          10006,
+          60020,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "ELM GROVE",
+          42.1307,
+          -74.035,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-12T04:34:00.0000000Z",
+            "EndTime": "2007-05-12T04:39:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-12T12:53:00.0000000Z",
+          "2007-05-12T12:58:00.0000000Z",
+          10066,
+          60200,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          32.3819,
+          -97.5404,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-12T12:53:00.0000000Z",
+            "EndTime": "2007-05-12T12:58:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-13T03:55:00.0000000Z",
+          "2007-05-13T04:00:00.0000000Z",
+          10009,
+          60029,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "BROOKFIELD",
+          32.2,
+          -99.3855,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-13T03:55:00.0000000Z",
+            "EndTime": "2007-05-13T04:00:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-13T10:09:00.0000000Z",
+          "2007-05-13T10:54:00.0000000Z",
+          10008,
+          60025,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "GLENWOOD",
+          38.4103,
+          -93.2915,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-13T10:09:00.0000000Z",
+            "EndTime": "2007-05-13T10:54:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-13T10:23:00.0000000Z",
+          "2007-05-13T10:28:00.0000000Z",
+          10076,
+          60230,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "ELM GROVE",
+          33.4589,
+          -83.936,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-13T10:23:00.0000000Z",
+            "EndTime": "2007-05-13T10:28:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-13T19:47:00.0000000Z",
+          "2007-05-13T20:32:00.0000000Z",
+          10038,
+          60116,
+          "ILLINOIS",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Trained Spotter",
+          "BROOKFIELD",
+          40.4217,
+          -89.7234,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-13T19:47:00.0000000Z",
+            "EndTime": "2007-05-13T20:32:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-13T23:20:00.0000000Z",
+          "2007-05-14T02:20:00.0000000Z",
+          10020,
+          60061,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Public",
+          "CEDAR HILL",
+          42.097,
+          -75.3407,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-13T23:20:00.0000000Z",
+            "EndTime": "2007-05-14T02:20:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-13T23:49:00.0000000Z",
+          "2007-05-13T23:59:00.0000000Z",
+          10013,
+          60040,
+          "NEW YORK",
+          "Hail",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "BROOKFIELD",
+          43.1607,
+          -76.5617,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-13T23:49:00.0000000Z",
+            "EndTime": "2007-05-13T23:59:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-14T07:09:00.0000000Z",
+          "2007-05-14T10:09:00.0000000Z",
+          10069,
+          60209,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Law Enforcement",
+          "ASHFORD",
+          32.5922,
+          -84.8753,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-14T07:09:00.0000000Z",
+            "EndTime": "2007-05-14T10:09:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-14T08:46:00.0000000Z",
+          "2007-05-14T11:46:00.0000000Z",
+          10079,
+          60238,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Trained Spotter",
+          "GLENWOOD",
+          42.9027,
+          -93.7069,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-14T08:46:00.0000000Z",
+            "EndTime": "2007-05-14T11:46:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-14T12:30:00.0000000Z",
+          "2007-05-14T13:15:00.0000000Z",
+          10007,
+          60023,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "GLENWOOD",
+          43.2443,
+          -89.6424,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-14T12:30:00.0000000Z",
+            "EndTime": "2007-05-14T13:15:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-15T00:57:00.0000000Z",
+          "2007-05-15T01:42:00.0000000Z",
+          10067,
+          60202,
+          "NEW YORK",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Law Enforcement",
+          "DALTON",
+          42.9186,
+          -75.4142,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-15T00:57:00.0000000Z",
+            "EndTime": "2007-05-15T01:42:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-15T12:09:00.0000000Z",
+          "2007-05-15T12:19:00.0000000Z",
+          10045,
+          60135,
+          "NEBRASKA",
+          "Flash Flood",
+          0,
+          0,
+          2000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          41.4558,
+          -99.3322,
+          "Water up to a foot deep flowed across the main road through Fairview.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-15T12:09:00.0000000Z",
+            "EndTime": "2007-05-15T12:19:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Fairview.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-15T18:22:00.0000000Z",
+          "2007-05-15T18:32:00.0000000Z",
+          10031,
+          60094,
+          "TEXAS",
+          "Flash Flood",
+          0,
+          0,
+          250000,
+          "Mesonet",
+          "GLENWOOD",
+          30.2721,
+          -99.4755,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-15T18:22:00.0000000Z",
+            "EndTime": "2007-05-15T18:32:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-15T19:14:00.0000000Z",
+          "2007-05-15T19:34:00.0000000Z",
+          10014,
+          60044,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Law Enforcement",
+          "ASHFORD",
+          43.6045,
+          -90.4322,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-15T19:14:00.0000000Z",
+            "EndTime": "2007-05-15T19:34:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-15T20:48:00.0000000Z",
+          "2007-05-15T22:18:00.0000000Z",
+          10074,
+          60224,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Law Enforcement",
+          "GLENWOOD",
+          42.0307,
+          -93.1046,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-15T20:48:00.0000000Z",
+            "EndTime": "2007-05-15T22:18:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-16T11:11:00.0000000Z",
+          "2007-05-16T11:21:00.0000000Z",
+          10047,
+          60143,
+          "WISCONSIN",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Law Enforcement",
+          "DALTON",
+          45.017,
+          -89.0737,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-16T11:11:00.0000000Z",
+            "EndTime": "2007-05-16T11:21:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-16T14:21:00.0000000Z",
+          "2007-05-16T14:26:00.0000000Z",
+          10067,
+          60201,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "DALTON",
+          41.5898,
+          -92.7151,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-16T14:21:00.0000000Z",
+            "EndTime": "2007-05-16T14:26:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-17T04:04:00.0000000Z",
+          "2007-05-17T05:34:00.0000000Z",
+          10013,
+          60039,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Mesonet",
+          "ASHFORD",
+          37.6874,
+          -97.4239,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-17T04:04:00.0000000Z",
+            "EndTime": "2007-05-17T05:34:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-17T05:12:00.0000000Z",
+          "2007-05-17T06:42:00.0000000Z",
+          10020,
+          60060,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          2000,
+          "Trained Spotter",
+          "BROOKFIELD",
+          41.644,
+          -98.6384,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-17T05:12:00.0000000Z",
+            "EndTime": "2007-05-17T06:42:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-17T07:16:00.0000000Z",
+          "2007-05-17T08:46:00.0000000Z",
+          10070,
+          60211,
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          46.5557,
+          -94.6084,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-17T07:16:00.0000000Z",
+            "EndTime": "2007-05-17T08:46:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-17T09:41:00.0000000Z",
+          "2007-05-17T10:26:00.0000000Z",
+          10056,
+          60169,
+          "TEXAS",
+          "Flash Flood",
+          1,
+          0,
+          1200000,
+          "Mesonet",
+          "BROOKFIELD",
+          32.2908,
+          -98.294,
+          "Water up to a foot deep flowed across the main road through Brookfield.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-17T09:41:00.0000000Z",
+            "EndTime": "2007-05-17T10:26:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-17T22:32:00.0000000Z",
+          "2007-05-17T22:52:00.0000000Z",
+          10064,
+          60193,
+          "NEBRASKA",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Trained Spotter",
+          "ELM GROVE",
+          40.7223,
+          -100.5137,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-17T22:32:00.0000000Z",
+            "EndTime": "2007-05-17T22:52:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-18T12:11:00.0000000Z",
+          "2007-05-18T13:41:00.0000000Z",
+          10016,
+          60050,
+          "NEBRASKA",
+          "Flash Flood",
+          0,
+          0,
+          15000,
+          "Trained Spotter",
+          "GLENWOOD",
+          42.1654,
+          -101.1288,
+          "Water up to a foot deep flowed across the main road through Glenwood.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-18T12:11:00.0000000Z",
+            "EndTime": "2007-05-18T13:41:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Glenwood.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-18T13:25:00.0000000Z",
+          "2007-05-18T13:45:00.0000000Z",
+          10061,
+          60184,
+          "MISSOURI",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "ASHFORD",
+          38.0111,
+          -91.467,
+          "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-18T13:25:00.0000000Z",
+            "EndTime": "2007-05-18T13:45:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Ashford.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-18T23:08:00.0000000Z",
+          "2007-05-18T23:28:00.0000000Z",
+          10046,
+          60140,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "ELM GROVE",
+          38.0105,
+          -98.3971,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-18T23:08:00.0000000Z",
+            "EndTime": "2007-05-18T23:28:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-19T14:20:00.0000000Z",
+          "2007-05-19T15:05:00.0000000Z",
+          10058,
+          60176,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "ELM GROVE",
+          39.3251,
+          -92.0548,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-19T14:20:00.0000000Z",
+            "EndTime": "2007-05-19T15:05:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-19T14:26:00.0000000Z",
+          "2007-05-19T14:31:00.0000000Z",
+          10044,
+          60134,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          4,
+          0,
+          250000,
+          "Emergency Manager",
+          "GLENWOOD",
+          42.1745,
+          -75.7822,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-19T14:26:00.0000000Z",
+            "EndTime": "2007-05-19T14:31:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-19T14:48:00.0000000Z",
+          "2007-05-19T14:53:00.0000000Z",
+          10063,
+          60189,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          2000,
+          "Public",
+          "CEDAR HILL",
+          42.7143,
+          -93.8695,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-19T14:48:00.0000000Z",
+            "EndTime": "2007-05-19T14:53:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-19T18:55:00.0000000Z",
+          "2007-05-19T19:15:00.0000000Z",
+          10057,
+          60172,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "BROOKFIELD",
+          38.6444,
+          -96.5938,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-19T18:55:00.0000000Z",
+            "EndTime": "2007-05-19T19:15:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-19T20:37:00.0000000Z",
+          "2007-05-19T20:47:00.0000000Z",
+          10061,
+          60185,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "CEDAR HILL",
+          33.9002,
+          -82.1239,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-19T20:37:00.0000000Z",
+            "EndTime": "2007-05-19T20:47:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-19T22:56:00.0000000Z",
+          "2007-05-19T23:41:00.0000000Z",
+          10027,
+          60081,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          250000,
+          "Public",
+          "CEDAR HILL",
+          39.7099,
+          -98.8162,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-19T22:56:00.0000000Z",
+            "EndTime": "2007-05-19T23:41:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-20T07:47:00.0000000Z",
+          "2007-05-20T07:57:00.0000000Z",
+          10068,
+          60204,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          0,
+          1200000,
+          "Trained Spotter",
+          "FAIRVIEW",
+          40.7175,
+          -98.8311,
+          "A brief tornado touched down west of Fairview, damaging two barns.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-20T07:47:00.0000000Z",
+            "EndTime": "2007-05-20T07:57:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Fairview, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-20T21:14:00.0000000Z",
+          "2007-05-20T21:34:00.0000000Z",
+          10013,
+          60041,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "DALTON",
+          42.3996,
+          -100.8614,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-20T21:14:00.0000000Z",
+            "EndTime": "2007-05-20T21:34:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-20T23:52:00.0000000Z",
+          "2007-05-20T23:57:00.0000000Z",
+          10023,
+          60069,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          250000,
+          "Law Enforcement",
+          "ELM GROVE",
+          43.5343,
+          -89.0778,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-20T23:52:00.0000000Z",
+            "EndTime": "2007-05-20T23:57:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-21T04:59:00.0000000Z",
+          "2007-05-21T05:19:00.0000000Z",
+          10008,
+          60024,
+          "GEORGIA",
+          "Hail",
+          1,
+          0,
+          1200000,
+          "Public",
+          "ELM GROVE",
+          33.7037,
+          -84.4371,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-21T04:59:00.0000000Z",
+            "EndTime": "2007-05-21T05:19:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-21T05:49:00.0000000Z",
+          "2007-05-21T08:49:00.0000000Z",
+          10062,
+          60187,
+          "TEXAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          250000,
+          "Trained Spotter",
+          "FAIRVIEW",
+          31.813,
+          -99.9715,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-21T05:49:00.0000000Z",
+            "EndTime": "2007-05-21T08:49:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-21T14:45:00.0000000Z",
+          "2007-05-21T16:15:00.0000000Z",
+          10053,
+          60159,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Law Enforcement",
+          "BROOKFIELD",
+          30.5001,
+          -100.2755,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-21T14:45:00.0000000Z",
+            "EndTime": "2007-05-21T16:15:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-21T20:48:00.0000000Z",
+          "2007-05-21T23:48:00.0000000Z",
+          10066,
+          60199,
+          "WISCONSIN",
+          "Hail",
+          1,
+          0,
+          5000,
+          "Law Enforcement",
+          "FAIRVIEW",
+          43.0037,
+          -89.8114,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-21T20:48:00.0000000Z",
+            "EndTime": "2007-05-21T23:48:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-21T22:59:00.0000000Z",
+          "2007-05-21T23:09:00.0000000Z",
+          10039,
+          60117,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "FAIRVIEW",
+          38.4786,
+          -93.848,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-21T22:59:00.0000000Z",
+            "EndTime": "2007-05-21T23:09:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-22T06:30:00.0000000Z",
+          "2007-05-22T06:40:00.0000000Z",
+          10051,
+          60153,
+          "IOWA",
+          "Flash Flood",
+          0,
+          0,
+          50000,
+          "Law Enforcement",
+          "ELM GROVE",
+          41.9007,
+          -93.0317,
+          "Water up to a foot deep flowed across the main road through Elm Grove.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-22T06:30:00.0000000Z",
+            "EndTime": "2007-05-22T06:40:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Elm Grove.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-22T09:15:00.0000000Z",
+          "2007-05-22T09:25:00.0000000Z",
+          10031,
+          60095,
+          "NEW YORK",
+          "Thunderstorm Wind",
+          2,
+          0,
+          0,
+          "Law Enforcement",
+          "ASHFORD",
+          42.7286,
+          -76.5088,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-22T09:15:00.0000000Z",
+            "EndTime": "2007-05-22T09:25:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEW YORK"
+            }
+          }
+        ],
+        [
+          "2007-05-22T09:54:00.0000000Z",
+          "2007-05-22T10:14:00.0000000Z",
+          10052,
+          60157,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          2,
+          0,
+          0,
+          "Trained Spotter",
+          "FAIRVIEW",
+          38.0454,
+          -92.9587,
+          "Several trees were blown down near Fairview, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-22T09:54:00.0000000Z",
+            "EndTime": "2007-05-22T10:14:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Fairview, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-22T14:22:00.0000000Z",
+          "2007-05-22T15:07:00.0000000Z",
+          10024,
+          60074,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Emergency Manager",
+          "CEDAR HILL",
+          42.0674,
+          -100.2562,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-22T14:22:00.0000000Z",
+            "EndTime": "2007-05-22T15:07:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-22T20:45:00.0000000Z",
+          "2007-05-22T21:05:00.0000000Z",
+          10052,
+          60158,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Emergency Manager",
+          "DALTON",
+          41.5669,
+          -93.3653,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-22T20:45:00.0000000Z",
+            "EndTime": "2007-05-22T21:05:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-23T02:25:00.0000000Z",
+          "2007-05-23T03:55:00.0000000Z",
+          10050,
+          60150,
+          "ILLINOIS",
+          "Flash Flood",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "ASHFORD",
+          41.3135,
+          -89.2179,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-23T02:25:00.0000000Z",
+            "EndTime": "2007-05-23T03:55:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-23T17:47:00.0000000Z",
+          "2007-05-23T17:52:00.0000000Z",
+          10033,
+          60099,
+          "GEORGIA",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "FAIRVIEW",
+          31.9659,
+          -83.2186,
+          "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-23T17:47:00.0000000Z",
+            "EndTime": "2007-05-23T17:52:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Fairview.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-24T02:17:00.0000000Z",
+          "2007-05-24T02:37:00.0000000Z",
+          10010,
+          60032,
+          "TEXAS",
+          "Hail",
+          4,
+          0,
+          1200000,
+          "Trained Spotter",
+          "ELM GROVE",
+          29.8977,
+          -98.0666,
+          "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-24T02:17:00.0000000Z",
+            "EndTime": "2007-05-24T02:37:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Elm Grove.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-24T18:21:00.0000000Z",
+          "2007-05-24T21:21:00.0000000Z",
+          10061,
+          60183,
+          "GEORGIA",
+          "Thunderstorm Wind",
+          1,
+          0,
+          1200000,
+          "Mesonet",
+          "ELM GROVE",
+          33.5906,
+          -84.2863,
+          "Several trees were blown down near Elm Grove, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-24T18:21:00.0000000Z",
+            "EndTime": "2007-05-24T21:21:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Elm Grove, one onto a parked car.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-24T18:34:00.0000000Z",
+          "2007-05-24T20:04:00.0000000Z",
+          10025,
+          60077,
+          "IOWA",
+          "Tornado",
+          0,
+          0,
+          2000,
+          "Emergency Manager",
+          "ELM GROVE",
+          41.5194,
+          -94.8011,
+          "A brief tornado touched down west of Elm Grove, damaging two barns.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-24T18:34:00.0000000Z",
+            "EndTime": "2007-05-24T20:04:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Elm Grove, damaging two barns.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-24T23:46:00.0000000Z",
+          "2007-05-24T23:56:00.0000000Z",
+          10023,
+          60071,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          0,
+          0,
+          50000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          43.8126,
+          -89.8899,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-24T23:46:00.0000000Z",
+            "EndTime": "2007-05-24T23:56:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-25T00:44:00.0000000Z",
+          "2007-05-25T02:14:00.0000000Z",
+          10017,
+          60051,
+          "MINNESOTA",
+          "Hail",
+          0,
+          0,
+          250000,
+          "Mesonet",
+          "DALTON",
+          46.9776,
+          -95.3094,
+          "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+          {
+            "TotalDamages": 250000,
+            "StartTime": "2007-05-25T00:44:00.0000000Z",
+            "EndTime": "2007-05-25T02:14:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Dalton.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-25T02:16:00.0000000Z",
+          "2007-05-25T02:21:00.0000000Z",
+          10001,
+          60004,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          4,
+          0,
+          2000,
+          "Public",
+          "ASHFORD",
+          41.3652,
+          -98.342,
+          "Several trees were blown down near Ashford, one onto a parked car.",
+          {
+            "TotalDamages": 2000,
+            "StartTime": "2007-05-25T02:16:00.0000000Z",
+            "EndTime": "2007-05-25T02:21:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Ashford, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-25T03:54:00.0000000Z",
+          "2007-05-25T03:59:00.0000000Z",
+          10045,
+          60136,
+          "WISCONSIN",
+          "Hail",
+          0,
+          0,
+          15000,
+          "Mesonet",
+          "BROOKFIELD",
+          45.6069,
+          -90.257,
+          "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-25T03:54:00.0000000Z",
+            "EndTime": "2007-05-25T03:59:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Brookfield.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-25T07:29:00.0000000Z",
+          "2007-05-25T07:39:00.0000000Z",
+          10002,
+          60006,
+          "ILLINOIS",
+          "Tornado",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "ELM GROVE",
+          39.4511,
+          -89.8851,
+          "A brief tornado touched down west of Elm Grove, damaging two barns.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-25T07:29:00.0000000Z",
+            "EndTime": "2007-05-25T07:39:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Elm Grove, damaging two barns.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-25T10:31:00.0000000Z",
+          "2007-05-25T13:31:00.0000000Z",
+          10012,
+          60038,
+          "IOWA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "CEDAR HILL",
+          41.9863,
+          -93.7098,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-25T10:31:00.0000000Z",
+            "EndTime": "2007-05-25T13:31:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-25T12:02:00.0000000Z",
+          "2007-05-25T12:07:00.0000000Z",
+          10026,
+          60079,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "BROOKFIELD",
+          41.1047,
+          -100.6854,
+          "Several trees were blown down near Brookfield, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-25T12:02:00.0000000Z",
+            "EndTime": "2007-05-25T12:07:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Brookfield, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-25T15:13:00.0000000Z",
+          "2007-05-25T18:13:00.0000000Z",
+          10047,
+          60142,
+          "MINNESOTA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Mesonet",
+          "GLENWOOD",
+          47.4198,
+          -93.2041,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-25T15:13:00.0000000Z",
+            "EndTime": "2007-05-25T18:13:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-25T16:42:00.0000000Z",
+          "2007-05-25T18:12:00.0000000Z",
+          10051,
+          60155,
+          "IOWA",
+          "Hail",
+          0,
+          0,
+          50000,
+          "Public",
+          "CEDAR HILL",
+          41.0432,
+          -93.3669,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-25T16:42:00.0000000Z",
+            "EndTime": "2007-05-25T18:12:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "IOWA"
+            }
+          }
+        ],
+        [
+          "2007-05-26T03:49:00.0000000Z",
+          "2007-05-26T05:19:00.0000000Z",
+          10068,
+          60205,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          1,
+          0,
+          50000,
+          "Public",
+          "DALTON",
+          44.0335,
+          -90.9827,
+          "Several trees were blown down near Dalton, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-26T03:49:00.0000000Z",
+            "EndTime": "2007-05-26T05:19:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Dalton, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-26T19:17:00.0000000Z",
+          "2007-05-26T19:22:00.0000000Z",
+          10043,
+          60129,
+          "TEXAS",
+          "Hail",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "GLENWOOD",
+          30.0631,
+          -98.2032,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-26T19:17:00.0000000Z",
+            "EndTime": "2007-05-26T19:22:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "TEXAS"
+            }
+          }
+        ],
+        [
+          "2007-05-27T02:40:00.0000000Z",
+          "2007-05-27T05:40:00.0000000Z",
+          10073,
+          60219,
+          "ILLINOIS",
+          "Hail",
+          4,
+          0,
+          0,
+          "Emergency Manager",
+          "CEDAR HILL",
+          40.9354,
+          -88.0264,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-27T02:40:00.0000000Z",
+            "EndTime": "2007-05-27T05:40:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "ILLINOIS"
+            }
+          }
+        ],
+        [
+          "2007-05-27T11:22:00.0000000Z",
+          "2007-05-27T12:52:00.0000000Z",
+          10027,
+          60083,
+          "WISCONSIN",
+          "Thunderstorm Wind",
+          4,
+          0,
+          50000,
+          "Trained Spotter",
+          "CEDAR HILL",
+          44.0303,
+          -89.9845,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-27T11:22:00.0000000Z",
+            "EndTime": "2007-05-27T12:52:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "WISCONSIN"
+            }
+          }
+        ],
+        [
+          "2007-05-27T21:35:00.0000000Z",
+          "2007-05-27T21:40:00.0000000Z",
+          10044,
+          60132,
+          "GEORGIA",
+          "Flash Flood",
+          0,
+          0,
+          0,
+          "Public",
+          "DALTON",
+          31.515,
+          -82.5,
+          "Water up to a foot deep flowed across the main road through Dalton.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-27T21:35:00.0000000Z",
+            "EndTime": "2007-05-27T21:40:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Dalton.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-28T02:32:00.0000000Z",
+          "2007-05-28T02:37:00.0000000Z",
+          10016,
+          60049,
+          "MINNESOTA",
+          "Flash Flood",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "ASHFORD",
+          47.0277,
+          -93.2105,
+          "Water up to a foot deep flowed across the main road through Ashford.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-28T02:32:00.0000000Z",
+            "EndTime": "2007-05-28T02:37:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Ashford.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-28T07:11:00.0000000Z",
+          "2007-05-28T08:41:00.0000000Z",
+          10078,
+          60235,
+          "NEBRASKA",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Trained Spotter",
+          "GLENWOOD",
+          42.8662,
+          -100.1836,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-28T07:11:00.0000000Z",
+            "EndTime": "2007-05-28T08:41:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ],
+        [
+          "2007-05-28T07:42:00.0000000Z",
+          "2007-05-28T07:52:00.0000000Z",
+          10076,
+          60229,
+          "MINNESOTA",
+          "Tornado",
+          1,
+          0,
+          50000,
+          "Trained Spotter",
+          "ASHFORD",
+          47.0389,
+          -95.5494,
+          "A brief tornado touched down west of Ashford, damaging two barns.",
+          {
+            "TotalDamages": 50000,
+            "StartTime": "2007-05-28T07:42:00.0000000Z",
+            "EndTime": "2007-05-28T07:52:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Ashford, damaging two barns.",
+              "Location": "MINNESOTA"
+            }
+          }
+        ],
+        [
+          "2007-05-28T20:21:00.0000000Z",
+          "2007-05-28T21:51:00.0000000Z",
+          10035,
+          60106,
+          "KANSAS",
+          "Thunderstorm Wind",
+          0,
+          0,
+          0,
+          "Public",
+          "CEDAR HILL",
+          38.9793,
+          -97.3401,
+          "Several trees were blown down near Cedar Hill, one onto a parked car.",
+          {
+            "TotalDamages": 0,
+            "StartTime": "2007-05-28T20:21:00.0000000Z",
+            "EndTime": "2007-05-28T21:51:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Cedar Hill, one onto a parked car.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-29T13:58:00.0000000Z",
+          "2007-05-29T14:03:00.0000000Z",
+          10060,
+          60181,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          1200000,
+          "Law Enforcement",
+          "GLENWOOD",
+          38.4511,
+          -98.4176,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-29T13:58:00.0000000Z",
+            "EndTime": "2007-05-29T14:03:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-29T17:48:00.0000000Z",
+          "2007-05-29T18:33:00.0000000Z",
+          10017,
+          60052,
+          "GEORGIA",
+          "Flash Flood",
+          0,
+          0,
+          15000,
+          "Emergency Manager",
+          "BROOKFIELD",
+          32.7639,
+          -84.5623,
+          "Water up to a foot deep flowed across the main road through Brookfield.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-29T17:48:00.0000000Z",
+            "EndTime": "2007-05-29T18:33:00.0000000Z",
+            "Details": {
+              "Description": "Water up to a foot deep flowed across the main road through Brookfield.",
+              "Location": "GEORGIA"
+            }
+          }
+        ],
+        [
+          "2007-05-30T01:23:00.0000000Z",
+          "2007-05-30T01:33:00.0000000Z",
+          10005,
+          60015,
+          "MISSOURI",
+          "Thunderstorm Wind",
+          2,
+          0,
+          1200000,
+          "Mesonet",
+          "GLENWOOD",
+          37.0369,
+          -93.4607,
+          "Several trees were blown down near Glenwood, one onto a parked car.",
+          {
+            "TotalDamages": 1200000,
+            "StartTime": "2007-05-30T01:23:00.0000000Z",
+            "EndTime": "2007-05-30T01:33:00.0000000Z",
+            "Details": {
+              "Description": "Several trees were blown down near Glenwood, one onto a parked car.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-30T05:16:00.0000000Z",
+          "2007-05-30T06:46:00.0000000Z",
+          10020,
+          60062,
+          "KANSAS",
+          "Hail",
+          0,
+          0,
+          5000,
+          "Trained Spotter",
+          "CEDAR HILL",
+          37.158,
+          -99.4488,
+          "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-30T05:16:00.0000000Z",
+            "EndTime": "2007-05-30T06:46:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Cedar Hill.",
+              "Location": "KANSAS"
+            }
+          }
+        ],
+        [
+          "2007-05-30T08:54:00.0000000Z",
+          "2007-05-30T10:24:00.0000000Z",
+          10079,
+          60239,
+          "MISSOURI",
+          "Hail",
+          4,
+          0,
+          15000,
+          "Trained Spotter",
+          "GLENWOOD",
+          38.9517,
+          -91.4858,
+          "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+          {
+            "TotalDamages": 15000,
+            "StartTime": "2007-05-30T08:54:00.0000000Z",
+            "EndTime": "2007-05-30T10:24:00.0000000Z",
+            "Details": {
+              "Description": "Hail up to the size of golf balls fell for about ten minutes in Glenwood.",
+              "Location": "MISSOURI"
+            }
+          }
+        ],
+        [
+          "2007-05-30T20:20:00.0000000Z",
+          "2007-05-30T23:20:00.0000000Z",
+          10004,
+          60013,
+          "NEBRASKA",
+          "Tornado",
+          0,
+          0,
+          5000,
+          "Emergency Manager",
+          "FAIRVIEW",
+          40.093,
+          -99.7693,
+          "A brief tornado touched down west of Fairview, damaging two barns.",
+          {
+            "TotalDamages": 5000,
+            "StartTime": "2007-05-30T20:20:00.0000000Z",
+            "EndTime": "2007-05-30T23:20:00.0000000Z",
+            "Details": {
+              "Description": "A brief tornado touched down west of Fairview, damaging two barns.",
+              "Location": "NEBRASKA"
+            }
+          }
+        ]
+      ]
+    }
+  ],
+  "executionStartedAt": "2026-11-12T14:05:12.000Z",
+  "executionDurationMs": 412,
+  "clientRequestId": "KustoTraceTools;8a8f1f0e-2a51-4c49-9d43-1f2e4cc0d001",
+  "queryStatistics": {
+    "QueryHash": "5f1c0e9a2b7d4c31",
+    "ExecutionTime": 0.3281,
+    "resource_usage": {
+      "cache": {
+        "shards": {
+          "hot": {
+            "hitbytes": 48211840,
+            "missbytes": 1204224,
+            "retrievebytes": 1204224
+          },
+          "cold": {
+            "hitbytes": 0,
+            "missbytes": 0,
+            "retrievebytes": 0
+          },
+          "bypassbytes": 0
+        }
+      },
+      "cpu": {
+        "user": "00:00:00.2968750",
+        "kernel": "00:00:00.0156250",
+        "total cpu": "00:00:00.3125000",
+        "breakdown": {
+          "query execution": "00:00:00.2968750",
+          "query planning": "00:00:00.0156250"
+        }
+      },
+      "memory": {
+        "peak_per_node": 52428800
+      },
+      "network": {
+        "inter_cluster_total_bytes": 1843221,
+        "cross_cluster_total_bytes": 0
+      }
+    },
+    "input_dataset_statistics": {
+      "extents": {
+        "total": 1,
+        "scanned": 1
+      },
+      "rows": {
+        "total": 59066,
+        "scanned": 59066
+      }
+    },
+    "dataset_statistics": [
+      {
+        "table_row_count": 240,
+        "table_size": 96512
+      }
+    ]
+  }
+}
