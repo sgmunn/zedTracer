@@ -1,6 +1,11 @@
 # Kusto editing spike
 
-Install this directory as a Zed dev extension, then open `examples/highlighting.kql`.
+macOS builds made with `script/bundle-mac` include this extension and a self-contained language server.
+Open a `.kql` file to use them; no extension installation or .NET runtime installation is needed.
+Azure CLI authentication (`az login`) is still required for schema loading and running queries.
+
+For development outside the app bundle, install this directory as a Zed dev extension, then open
+`examples/highlighting.kql`.
 The extension recognizes `.kql` files, and a local language server provides the colours, completion, hover,
 diagnostics and the schema of your clusters.
 It also launches a local language server for completion, hover information,
@@ -647,11 +652,7 @@ Kusto's own analysis finds, such as a wrong argument type. Some rules keep this 
 
 ## Code lenses
 
-Turn code lenses on in Zed settings (they are off by default):
-
-```json
-{ "code_lens": "on" }
-```
+Code lenses are enabled by default in zedTracer. To hide them, set `"code_lens": "off"` in settings.
 
 Above each query (a run of non-blank lines, or more where a bracket stays open across a blank line) the lenses are on two lines. The first line is what to do. It starts with **▶ Run**, which runs that query. While the
 query is running it shows **⠹ Running… 12 s** (a spinner and the elapsed time, refreshed four times a second

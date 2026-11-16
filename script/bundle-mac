@@ -40,6 +40,7 @@ Options:
   -h    Display this help and exit.
 
 Environment:
+  DOTNET                    Path to the .NET 8 SDK executable (default: dotnet).
   MACOS_SIGNING_KEY          Signing identity; use - for ad-hoc signing.
   APPLE_NOTARIZATION_PROFILE Keychain profile created with notarytool store-credentials.
   "
@@ -116,6 +117,12 @@ else
     exit 1
 fi
 
+DOTNET="${DOTNET:-dotnet}"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    echo "The .NET 8 SDK is required to bundle the Kusto language server. Install it or set DOTNET to its executable." >&2
+    exit 1
+fi
+
 # Generate the licenses first, so they can be baked into the binaries
 script/generate-licenses
 
@@ -159,6 +166,30 @@ if [[ -f "${document_icon_source}" ]]; then
     cp "${document_icon_source}" "${document_icon_target}"
 else
     echo "cargo::warning=Missing ${document_icon_source}; macOS document icons may not appear in Finder."
+fi
+
+echo "Bundling Kusto extension and self-contained language server"
+kusto_extension_path="${app_path}/Contents/Resources/extensions/kusto"
+kusto_server_path="${app_path}/Contents/MacOS/kusto"
+rm -rf "$kusto_extension_path" "$kusto_server_path"
+mkdir -p "$kusto_extension_path"
+
+rustup target add wasm32-wasip2
+RUSTC_WRAPPER= cargo build --release --package zed_kusto --target wasm32-wasip2
+cp target/wasm32-wasip2/release/zed_kusto.wasm "$kusto_extension_path/extension.wasm"
+cp extensions/kusto/extension.toml "$kusto_extension_path/extension.toml"
+cp -R extensions/kusto/languages "$kusto_extension_path/languages"
+
+case "$target_triple" in
+    aarch64-apple-darwin) kusto_runtime=osx-arm64 ;;
+    x86_64-apple-darwin) kusto_runtime=osx-x64 ;;
+esac
+"$DOTNET" publish extensions/kusto/server/KustoLanguageServer.csproj \
+    --configuration Release --runtime "$kusto_runtime" --self-contained true \
+    --output "$kusto_server_path" --nologo -p:PublishSingleFile=false -p:PublishTrimmed=false
+if [[ ! -x "$kusto_server_path/kusto-lsp" || ! -f "$kusto_server_path/libcoreclr.dylib" ]]; then
+    echo "Kusto publish did not produce a self-contained language server" >&2
+    exit 1
 fi
 
 if [[ -n "${MACOS_CERTIFICATE:-}" && -n "${MACOS_CERTIFICATE_PASSWORD:-}" ]]; then
@@ -238,6 +269,18 @@ function sign_app_binaries() {
 
     echo "Downloading git binary"
     download_git "${target_triple}" "${app_path}/Contents/MacOS/git"
+
+    local kusto_sign_options=(--force --options runtime --sign "$IDENTITY")
+    if [[ $can_code_sign = true ]]; then
+        kusto_sign_options+=(--timestamp)
+    fi
+    while IFS= read -r -d '' binary; do
+        if /usr/bin/file -b "$binary" | /usr/bin/grep -q 'Mach-O'; then
+            /usr/bin/codesign "${kusto_sign_options[@]}" "$binary"
+        fi
+    done < <(find "$kusto_server_path" -type f -print0)
+    /usr/bin/codesign "${kusto_sign_options[@]}" \
+        --entitlements crates/zed/resources/kusto.entitlements "$kusto_server_path/kusto-lsp"
 
     # The profiles in crates/zed/contents are issued to Zed Industries for their bundle identifiers, so
     # they cannot be embedded in a bundle with another identifier. Nothing in zed.entitlements needs one.

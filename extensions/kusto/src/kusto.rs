@@ -15,7 +15,9 @@ fn zed_data_dir() -> Option<String> {
 }
 
 fn with_data_dir(mut environment: Vec<(String, String)>) -> Vec<(String, String)> {
-    if !environment.iter().any(|(name, _)| name == DATA_DIR_VARIABLE)
+    if !environment
+        .iter()
+        .any(|(name, _)| name == DATA_DIR_VARIABLE)
         && let Some(data_dir) = zed_data_dir()
     {
         environment.push((DATA_DIR_VARIABLE.to_string(), data_dir));
@@ -43,6 +45,14 @@ impl zed::Extension for KustoExtension {
                 command: path,
                 args: binary.arguments.unwrap_or_default(),
                 env: with_data_dir(binary.env.unwrap_or_default().into_iter().collect()),
+            });
+        }
+
+        if let Ok(path) = env::var("KUSTO_BUNDLED_SERVER") {
+            return Ok(zed::Command {
+                command: path,
+                args: Vec::new(),
+                env: with_data_dir(worktree.shell_env()),
             });
         }
 

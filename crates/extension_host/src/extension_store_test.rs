@@ -104,6 +104,7 @@ fn remote_sync_entry(id: &str, manifest_body: &str) -> ExtensionIndexEntry {
     ExtensionIndexEntry {
         manifest: Arc::new(toml::from_str(&manifest).unwrap()),
         dev: false,
+        bundled_path: None,
     }
 }
 
@@ -406,6 +407,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
+                    bundled_path: None,
                 },
             ),
             (
@@ -437,6 +439,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
+                    bundled_path: None,
                 },
             ),
         ]
@@ -623,6 +626,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                 language_model_providers: BTreeMap::default(),
             }),
             dev: false,
+            bundled_path: None,
         },
     );
     expected_index.themes.insert(
@@ -1282,6 +1286,88 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         .await
         .unwrap()
         .is_none()
+    );
+}
+
+#[gpui::test]
+async fn test_bundled_extension_discovery_and_dev_override(cx: &mut TestAppContext) {
+    init_test(cx);
+    let (store, fs) = create_extension_store(cx);
+    let manifest = |version: &str| {
+        format!("id = \"kusto\"\nname = \"Kusto\"\nversion = \"{version}\"\nschema_version = 1\n")
+    };
+    fs.insert_tree("/bundle/extensions/kusto", json!({
+        "extension.toml": manifest("1.0.0"),
+        "languages": { "kusto": { "config.toml": "name = \"Kusto\"\npath_suffixes = [\"kql\"]\n" } }
+    })).await;
+    store.update(cx, |store, _cx| {
+        store.bundled_extensions_dir = Some("/bundle/extensions".into());
+    });
+    let index = store
+        .update(cx, |store, cx| store.rebuild_extension_index(cx))
+        .await;
+    let entry = index
+        .extensions
+        .get("kusto")
+        .expect("bundled extension indexed");
+    assert!(!entry.dev);
+    assert_eq!(
+        entry.path(Path::new("/extensions/installed")),
+        Path::new("/bundle/extensions/kusto")
+    );
+    assert!(index.languages.contains_key(&LanguageName::from("Kusto")));
+
+    fs.insert_tree(
+        "/extensions/installed/kusto",
+        json!({
+            "extension.toml": manifest("0.1.0")
+        }),
+    )
+    .await;
+    let index = store
+        .update(cx, |store, cx| store.rebuild_extension_index(cx))
+        .await;
+    assert_eq!(
+        index
+            .extensions
+            .get("kusto")
+            .expect("bundled version wins")
+            .manifest
+            .version
+            .as_ref(),
+        "1.0.0"
+    );
+
+    fs.insert_tree("/dev/kusto", json!({ "extension.toml": manifest("2.0.0") }))
+        .await;
+    fs.remove_dir(
+        Path::new("/extensions/installed/kusto"),
+        RemoveOptions {
+            recursive: true,
+            ignore_if_not_exists: false,
+        },
+    )
+    .await
+    .expect("remove installed extension");
+    fs.create_symlink(
+        Path::new("/extensions/installed/kusto"),
+        PathBuf::from("/dev/kusto"),
+    )
+    .await
+    .expect("install dev extension");
+    let index = store
+        .update(cx, |store, cx| store.rebuild_extension_index(cx))
+        .await;
+    let entry = index
+        .extensions
+        .get("kusto")
+        .expect("dev extension indexed");
+    assert!(entry.dev);
+    assert!(entry.bundled_path.is_none());
+    assert_eq!(entry.manifest.version.as_ref(), "2.0.0");
+    assert_eq!(
+        entry.path(Path::new("/extensions/installed")),
+        Path::new("/extensions/installed/kusto")
     );
 }
 

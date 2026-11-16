@@ -756,6 +756,16 @@ impl WasmHost {
             .env("PWD", &path)
             .env("RUST_BACKTRACE", "full");
 
+        if manifest.id.as_ref() == "kusto"
+            && let Some(directory) = crate::bundled_extensions_dir()
+            && let Some(contents) = directory.parent().and_then(Path::parent)
+        {
+            let server = contents.join("MacOS/kusto/kusto-lsp");
+            if self.fs.is_file(&server).await {
+                ctx.env("KUSTO_BUNDLED_SERVER", server.to_string_lossy());
+            }
+        }
+
         ctx.preopened_dir(&path, ".", permissions)?;
         ctx.preopened_dir(&path, &path, permissions)?;
 

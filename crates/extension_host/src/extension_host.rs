@@ -164,6 +164,7 @@ pub struct ExtensionStore {
     pub reload_tx: UnboundedSender<Option<Arc<str>>>,
     pub reload_complete_senders: Vec<oneshot::Sender<()>>,
     pub installed_dir: PathBuf,
+    bundled_extensions_dir: Option<PathBuf>,
     pub staging_dir: PathBuf,
     pub outstanding_operations: BTreeMap<Arc<str>, ExtensionOperation>,
     pub index_path: PathBuf,
@@ -284,6 +285,28 @@ impl RemoteSyncExtensions {
 pub struct ExtensionIndexEntry {
     pub manifest: Arc<ExtensionManifest>,
     pub dev: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundled_path: Option<PathBuf>,
+}
+
+impl ExtensionIndexEntry {
+    fn path(&self, installed_dir: &Path) -> PathBuf {
+        self.bundled_path
+            .clone()
+            .unwrap_or_else(|| installed_dir.join(self.manifest.id.as_ref()))
+    }
+}
+
+pub(crate) fn bundled_extensions_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let executable = std::env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    if executable_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    Some(executable_dir.parent()?.join("Resources/extensions"))
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize, Serialize)]
@@ -388,6 +411,7 @@ impl ExtensionStore {
             proxy: extension_host_proxy.clone(),
             extension_index: Default::default(),
             installed_dir,
+            bundled_extensions_dir: bundled_extensions_dir().filter(|path| path.is_dir()),
             staging_dir,
             index_path,
             builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
@@ -442,6 +466,18 @@ impl ExtensionStore {
             {
                 extension_index_needs_rebuild = false;
             }
+        }
+
+        // Bundled resources may have changed without changing the user extensions directory,
+        // including when an app is updated in place or moved to another directory.
+        if this.bundled_extensions_dir.is_some()
+            || extension_index
+                .extensions
+                .values()
+                .any(|entry| entry.bundled_path.is_some())
+        {
+            extension_index = ExtensionIndex::default();
+            extension_index_needs_rebuild = true;
         }
 
         // Immediately load all of the extensions in the initial manifest. If the
@@ -618,8 +654,10 @@ impl ExtensionStore {
         let entry = self.extension_index.themes.get(theme_name)?;
 
         Some(
-            self.extensions_dir()
-                .join(entry.extension.as_ref())
+            self.extension_index
+                .extensions
+                .get(&entry.extension)?
+                .path(&self.installed_dir)
                 .join(&entry.path),
         )
     }
@@ -649,11 +687,12 @@ impl ExtensionStore {
     ) -> Option<(PathBuf, PathBuf)> {
         let entry = self.extension_index.icon_themes.get(icon_theme_name)?;
 
-        let icon_theme_path = self
-            .extensions_dir()
-            .join(entry.extension.as_ref())
-            .join(&entry.path);
-        let icons_root_path = self.extensions_dir().join(entry.extension.as_ref());
+        let icons_root_path = self
+            .extension_index
+            .extensions
+            .get(&entry.extension)?
+            .path(&self.installed_dir);
+        let icon_theme_path = icons_root_path.join(&entry.path);
 
         Some((icon_theme_path, icons_root_path))
     }
@@ -695,7 +734,11 @@ impl ExtensionStore {
             .extension_index
             .extensions
             .iter()
-            .filter(|(id, entry)| !entry.dev && extension_settings.should_auto_update(id))
+            .filter(|(id, entry)| {
+                !entry.dev
+                    && entry.bundled_path.is_none()
+                    && extension_settings.should_auto_update(id)
+            })
             .map(|(id, _)| id.as_ref())
             .collect::<Vec<_>>()
             .join(",");
@@ -1439,36 +1482,29 @@ impl ExtensionStore {
             };
 
             grammars_to_add.extend(extension.manifest.grammars.keys().map(|grammar_name| {
-                let mut grammar_path = self.installed_dir.clone();
-                grammar_path.extend([extension_id.as_ref(), "grammars"]);
+                let mut grammar_path = extension.path(&self.installed_dir).join("grammars");
                 grammar_path.push(grammar_name.as_ref());
                 grammar_path.set_extension("wasm");
                 (grammar_name.clone(), grammar_path)
             }));
             themes_to_add.extend(extension.manifest.themes.iter().map(|theme_path| {
-                let mut path = self.installed_dir.clone();
-                path.extend([Path::new(extension_id.as_ref()), theme_path.as_std_path()]);
-                path
+                extension
+                    .path(&self.installed_dir)
+                    .join(theme_path.as_std_path())
             }));
             icon_themes_to_add.extend(extension.manifest.icon_themes.iter().map(
                 |icon_theme_path| {
-                    let mut path = self.installed_dir.clone();
-                    path.extend([
-                        Path::new(extension_id.as_ref()),
-                        icon_theme_path.as_std_path(),
-                    ]);
-
-                    let mut icons_root_path = self.installed_dir.clone();
-                    icons_root_path.extend([Path::new(extension_id.as_ref())]);
+                    let icons_root_path = extension.path(&self.installed_dir);
+                    let path = icons_root_path.join(icon_theme_path.as_std_path());
 
                     (path, icons_root_path)
                 },
             ));
             snippets_to_add.extend(extension.manifest.snippets.iter().flat_map(|snippets| {
                 snippets.paths().map(|snippets_path| {
-                    let mut path = self.installed_dir.clone();
-                    path.extend([Path::new(extension_id.as_ref()), snippets_path.as_path()]);
-                    path
+                    extension
+                        .path(&self.installed_dir)
+                        .join(snippets_path.as_path())
                 })
             }));
         }
@@ -1496,8 +1532,10 @@ impl ExtensionStore {
                 );
                 continue;
             };
-            let mut grammar_path = self.installed_dir.clone();
-            grammar_path.extend([owner.as_ref(), "grammars"]);
+            let Some(extension) = new_index.extensions.get(owner) else {
+                continue;
+            };
+            let mut grammar_path = extension.path(&self.installed_dir).join("grammars");
             grammar_path.push(grammar_name.as_ref());
             grammar_path.set_extension("wasm");
             grammars_to_add.push((grammar_name, grammar_path));
@@ -1509,10 +1547,10 @@ impl ExtensionStore {
             .iter()
             .filter(|(_, entry)| extensions_to_load.contains(&entry.extension))
             .chain(languages_to_readd.iter().map(|(name, entry)| (name, entry)))
-            .map(|(name, entry)| {
-                let mut language_path = self.installed_dir.clone();
-                language_path.extend([Path::new(entry.extension.as_ref()), entry.path.as_path()]);
-                (name, entry, language_path)
+            .filter_map(|(name, entry)| {
+                let extension = new_index.extensions.get(&entry.extension)?;
+                let language_path = extension.path(&self.installed_dir).join(&entry.path);
+                Some((name, entry, language_path))
             })
             .collect::<Vec<_>>();
         let registrations = languages_to_add
@@ -1663,7 +1701,7 @@ impl ExtensionStore {
                     continue;
                 };
 
-                let extension_path = root_dir.join(extension.manifest.id.as_ref());
+                let extension_path = extension.path(&root_dir);
                 let wasm_extension = WasmExtension::load(
                     &extension_path,
                     &extension.manifest,
@@ -1755,6 +1793,7 @@ impl ExtensionStore {
         let fs = self.fs.clone();
         let work_dir = self.wasm_host.work_dir.clone();
         let extensions_dir = self.installed_dir.clone();
+        let bundled_extensions_dir = self.bundled_extensions_dir.clone();
         let index_path = self.index_path.clone();
         let proxy = self.proxy.clone();
         cx.background_spawn(async move {
@@ -1778,14 +1817,50 @@ impl ExtensionStore {
                         continue;
                     }
 
+                    if let Some(bundled_dir) = &bundled_extensions_dir
+                        && let Some(name) = extension_dir.file_name()
+                        && fs
+                            .is_file(&bundled_dir.join(name).join("extension.toml"))
+                            .await
+                        && fs
+                            .metadata(&extension_dir)
+                            .await
+                            .log_err()
+                            .flatten()
+                            .is_some_and(|metadata| !metadata.is_symlink)
+                    {
+                        continue;
+                    }
+
                     Self::add_extension_to_index(
                         fs.clone(),
                         extension_dir,
                         &mut index,
                         proxy.clone(),
+                        false,
                     )
                     .await
                     .log_err();
+                }
+            }
+
+            if let Some(bundled_dir) = bundled_extensions_dir
+                && let Some(mut entries) = fs.read_dir(&bundled_dir).await.log_err()
+            {
+                while let Some(entry) = entries.next().await {
+                    let Some(path) = entry.log_err() else {
+                        continue;
+                    };
+                    if path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|id| index.extensions.contains_key(id))
+                    {
+                        continue;
+                    }
+                    Self::add_extension_to_index(fs.clone(), path, &mut index, proxy.clone(), true)
+                        .await
+                        .log_err();
                 }
             }
 
@@ -1806,9 +1881,18 @@ impl ExtensionStore {
         extension_dir: PathBuf,
         index: &mut ExtensionIndex,
         proxy: Arc<ExtensionHostProxy>,
+        bundled: bool,
     ) -> Result<()> {
         let mut extension_manifest = ExtensionManifest::load(fs.clone(), &extension_dir).await?;
         let extension_id = extension_manifest.id.clone();
+        if bundled {
+            anyhow::ensure!(
+                extension_dir
+                    .file_name()
+                    .is_some_and(|name| name == extension_id.as_ref()),
+                "bundled extension directory must match its id: {extension_dir:?}"
+            );
+        }
 
         // TODO: distinguish dev extensions more explicitly, by the absence
         // of a checksum file that we'll create when downloading normal extensions.
@@ -1944,6 +2028,7 @@ impl ExtensionStore {
             extension_id.clone(),
             ExtensionIndexEntry {
                 dev: is_dev,
+                bundled_path: bundled.then_some(extension_dir),
                 manifest: Arc::new(extension_manifest),
             },
         );
@@ -1958,11 +2043,11 @@ impl ExtensionStore {
         tmp_dir: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let src_dir = self.extensions_dir().join(extension_id.as_ref());
         let Some(loaded_extension) = self.extension_index.extensions.get(&extension_id).cloned()
         else {
             return Task::ready(Err(anyhow!("extension no longer installed")));
         };
+        let src_dir = loaded_extension.path(&self.installed_dir);
         let fs = self.fs.clone();
         cx.background_spawn(async move {
             const EXTENSION_TOML: &str = "extension.toml";

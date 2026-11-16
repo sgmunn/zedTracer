@@ -65,7 +65,7 @@ StormEvents
   A lens shows the active profile and switches it, and each profile in the YAML file gets a **Make Active** lens.
 - **Code lenses** above each query: **▶ Run** (or F5 / Shift-Enter), a live **Running… 12 s** with **Cancel**,
   **Results (1,240 rows)**, **Params**, the last run's time, **Copy**, **Share**, the connection, the schema's age
-  (click it to refresh), **Snapshot functions** and **Copy CID**. Turn lenses on with `"code_lens": "on"`.
+  (click it to refresh), **Snapshot functions** and **Copy CID**. Lenses are enabled by default; hide them with `"code_lens": "off"`.
 - **Copy** writes the query so it runs anywhere: names are qualified with their cluster and database, parameters
   become `let` statements, and the functions the query uses from `// :functions` blocks are included.
 - **Control commands** such as `.show functions` run like any other query.
@@ -206,7 +206,7 @@ its result in a tab.
 
 ## Getting started
 
-1. Build and install the app. On macOS:
+1. Install the app from its DMG, or build it locally on macOS:
 
    ```sh
    script/bundle-mac -i      # builds a release bundle and installs it into /Applications
@@ -214,23 +214,24 @@ its result in a tab.
 
    Building from source works as it does for upstream Zed. See [Building Zed for macOS](./docs/src/development/macos.md).
 
-2. Build the Kusto language server (needs the .NET 8 SDK), then install the extension with
-   **zed: install dev extension** and choose [`extensions/kusto`](extensions/kusto):
+   The bundle includes the Kusto extension and its self-contained language server. Building the bundle
+   requires the .NET 8 SDK (`DOTNET=/path/to/dotnet` selects it); running the app does not require .NET.
+   Both the DMG and `-i` installation register the extension automatically, without a first-use download.
 
-   ```sh
-   extensions/kusto/install-server.sh
-   ```
+   For a development build run outside the app bundle, build the server with
+   `extensions/kusto/install-server.sh` and use **zed: install dev extension** to select
+   [`extensions/kusto`](extensions/kusto). An installed dev extension takes precedence over the bundled
+   extension; `lsp.kusto-lsp.binary.path` can override the bundled server.
 
-3. Sign in for schema and running queries with `az login`, then set a default cluster and turn on code lenses:
+2. Sign in for schema and running queries with `az login`, then set a default cluster:
 
    ```json
    {
-     "code_lens": "on",
      "kusto": { "cluster": "https://help.kusto.windows.net", "database": "Samples" }
    }
    ```
 
-4. Open a `.kql` file and press F5 on a query. To try the results workbench without a cluster, open any `.ktt` file
+3. Open a `.kql` file and press F5 on a query. To try the results workbench without a cluster, open any `.ktt` file
    in [`fork-docs/readme-demo`](fork-docs/readme-demo) or [`fork-docs/samples`](fork-docs/samples).
 
 ---

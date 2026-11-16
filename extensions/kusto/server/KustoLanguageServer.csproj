@@ -7,7 +7,17 @@
     <AssemblyName>kusto-lsp</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.Kusto.Language" Version="12.4.0" />
+    <PackageReference Include="Microsoft.Azure.Kusto.Language" Version="12.4.0" GeneratePathProperty="true" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <None Update="ThirdPartyNotices.txt" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CopyRedistributionNotices" AfterTargets="Publish">
+    <Copy SourceFiles="$(PkgMicrosoft_Azure_Kusto_Language)/EULA-agreement.txt"
+          DestinationFolder="$(PublishDir)licenses/kusto" />
+    <ItemGroup Condition="'$(SelfContained)' == 'true'">
+      <_KustoRuntimePack Include="@(ResolvedRuntimePack->WithMetadataValue('FrameworkName', 'Microsoft.NETCore.App'))" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KustoRuntimePack->'%(PackageDirectory)/LICENSE.TXT');@(_KustoRuntimePack->'%(PackageDirectory)/THIRD-PARTY-NOTICES.TXT')"
+          DestinationFolder="$(PublishDir)licenses/dotnet" />
+  </Target>
 </Project>
