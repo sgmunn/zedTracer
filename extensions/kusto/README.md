@@ -71,6 +71,9 @@ every part of a query, so everything is coloured: `declare query_parameters`, `p
 columns and functions get different colours, which a grammar that only reads the text cannot do, and the
 colours are asked for again when a schema arrives or is refreshed.
 
+While typing, completion and colours use the latest document immediately. Diagnostics and schema-reference
+discovery wait for a short pause, skipping superseded edits instead of delaying interactive requests.
+
 | Kusto | Token type |
 |---|---|
 | keywords, query and scalar operators, commands | `keyword` |
@@ -657,6 +660,8 @@ comes straight after them, with the number of rows the result has, for example `
 run's saved result in the Results panel, or in a tab in a query thread), then **Params** for a query that declares parameters, then what the last run did, for example
 `Last run: 10:42:11, took 1.8 s`. A run that failed shows `Last run failed: <the first line of the message>`. The last run is
 matched by the text of the query without its comments and layout, so reformatting a query keeps its lens.
+Undoing edits back to an earlier query restores its Results lens while that run is still in the history,
+including when long queries make the run log large.
 The second line starts with **Copy**, which copies the query (see below), and **Share** (see [Sharing a query](#sharing-a-query)), then says where the query runs: the connection, the schema lens, **Snapshot functions** (see [Functions as files](#functions-as-files)), and **Copy CID** (copies the last run's client request id).
 
 ### Copying a query

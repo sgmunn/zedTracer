@@ -125,6 +125,65 @@ class LanguageServerTest(unittest.TestCase):
         functions = self.complete(0, 33)
         self.assertIn("strlen(string)", [item["label"] for item in functions])
 
+    def test_completion_and_colours_keep_up_with_a_burst_of_edits(self):
+        text = "\n\n".join(f"print value_{index} = strlen('abc')" for index in range(250))
+        self.open_document(text)
+        started = time.monotonic()
+        for version in range(2, 22):
+            self.send(
+                None,
+                "textDocument/didChange",
+                {"textDocument": {"uri": URI, "version": version},
+                 "contentChanges": [{"text": text + f"\n\nprint latest = strle // edit {version}"}]},
+            )
+        self.send(
+            3,
+            "textDocument/completion",
+            {"textDocument": {"uri": URI}, "position": {"line": 500, "character": 20}},
+        )
+        while True:
+            message = self.receive()
+            if message.get("id") == 3:
+                break
+        self.assertIn("strlen(string)", [item["label"] for item in message["result"]])
+        self.assertLess(time.monotonic() - started, 1.0, "completion waited for superseded edits")
+        self.send(4, "textDocument/semanticTokens/full", {"textDocument": {"uri": URI}})
+        while True:
+            message = self.receive()
+            if message.get("id") == 4:
+                break
+        self.assertTrue(message["result"]["data"])
+        self.assertEqual(sum(message["result"]["data"][::5]), 500, "colours use the latest text")
+
+    def test_diagnostics_follow_the_latest_edit(self):
+        self.open_document("")
+        for version, text in [(2, "print 1"), (3, "let = 5;")]:
+            self.send(
+                None,
+                "textDocument/didChange",
+                {"textDocument": {"uri": URI, "version": version},
+                 "contentChanges": [{"text": text}]},
+            )
+        diagnostics = self.receive()["params"]
+        self.assertEqual(diagnostics["version"], 3)
+        self.assertTrue(diagnostics["diagnostics"])
+
+    def test_closing_a_document_cancels_pending_diagnostics(self):
+        self.open_document("")
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2},
+             "contentChanges": [{"text": "let = 5;"}]},
+        )
+        self.send(None, "textDocument/didClose", {"textDocument": {"uri": URI}})
+        self.assertEqual(self.receive()["params"]["diagnostics"], [])
+        time.sleep(0.2)
+        self.send(3, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        message = self.receive()
+        self.assertEqual(message.get("id"), 3, "diagnostics arrived after the document was closed")
+        self.assertEqual(message["result"], [])
+
     def test_a_completion_with_closing_text_is_a_snippet_that_keeps_the_cursor_inside(self):
         self.open_document("print x = strle")
         function = next(item for item in self.complete(0, 15) if item["label"].startswith("strlen"))
@@ -702,6 +761,29 @@ class CodeLensTest(unittest.TestCase):
             by_title["Copy CID"]["arguments"],
             ["kusto::CopyClientRequestId", {"id": "id-1"}],
         )
+
+    def test_undo_restores_results_even_when_later_runs_make_a_large_log(self):
+        self.record(
+            "finished", "original", "T1 | take 1",
+            durationMs=50, rows=7, path="/history/original.ktt",
+        )
+        self.assertIn("Results (7 rows)", self.titles(self.lenses("T1 | take 1"), 0))
+        self.assertEqual(self.titles(self.lenses("T1 | take 2"), 0), ["▶ Run"])
+        for index in range(150):
+            self.record(
+                "finished", f"later-{index}", f'print text = "{"history" * 600}{index}"',
+                durationMs=50, rows=1, path=f"/history/later-{index}.ktt",
+            )
+        self.send(
+            None,
+            "textDocument/didChange",
+            {"textDocument": {"uri": URI, "version": 2},
+             "contentChanges": [{"text": "T1 | take 1"}]},
+        )
+        lenses = self.request(8, "textDocument/codeLens", {"textDocument": {"uri": URI}})
+        self.assertIn("Results (7 rows)", self.titles(lenses, 0))
+        result = next(lens["command"] for lens in lenses if lens["command"]["title"] == "Results (7 rows)")
+        self.assertEqual(result["arguments"], ["kusto::ShowResult", {"path": "/history/original.ktt"}])
 
     def test_a_record_that_carries_parameter_values_is_read_like_any_other(self):
         self.record("started", "id-1", "T1\n| take 1", parameters={"raid": "abc"})

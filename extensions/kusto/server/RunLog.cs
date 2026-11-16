@@ -12,10 +12,11 @@ internal sealed class RunLog : IDisposable
     /// <summary>A run that never reported an end, such as one whose editor was closed, stops counting as running.</summary>
     private static readonly TimeSpan StaleRunningAfter = TimeSpan.FromMinutes(15);
 
-    private const int MaxBytesRead = 512 * 1024;
-
     private readonly string? path;
     private readonly FileChangeWatcher watcher;
+    private readonly object gate = new();
+    private (long Length, DateTime LastWrite)? lastRead;
+    private Dictionary<string, QueryRuns> cachedRuns = new(StringComparer.Ordinal);
 
     public RunLog(string? dataDirectory)
     {
@@ -23,14 +24,16 @@ internal sealed class RunLog : IDisposable
             ? null
             : Path.Combine(dataDirectory, "kusto", "history", "runs.jsonl");
         watcher = new FileChangeWatcher(path);
+        watcher.Changed += () =>
+        {
+            lock (gate)
+                lastRead = null;
+            Changed?.Invoke();
+        };
     }
 
     /// <summary>Raised, after a short quiet period, when the log changes.</summary>
-    public event Action Changed
-    {
-        add => watcher.Changed += value;
-        remove => watcher.Changed -= value;
-    }
+    public event Action? Changed;
 
     public void Watch() => watcher.Start();
 
@@ -46,9 +49,47 @@ internal sealed class RunLog : IDisposable
     /// <summary>The latest news about each query, keyed by [Key].</summary>
     public Dictionary<string, QueryRuns> Read()
     {
+        lock (gate)
+        {
+            if (path is null)
+                return cachedRuns;
+            try
+            {
+                var file = new FileInfo(path);
+                if (!file.Exists)
+                {
+                    cachedRuns = new(StringComparer.Ordinal);
+                    lastRead = null;
+                    return cachedRuns;
+                }
+                var stamp = (file.Length, file.LastWriteTimeUtc);
+                if (lastRead != stamp)
+                {
+                    cachedRuns = ReadRuns(path);
+                    lastRead = stamp;
+                }
+                foreach (var runs in cachedRuns.Values)
+                {
+                    if (runs.Running is { StartedAt: { } startedAt } && DateTimeOffset.UtcNow - startedAt > StaleRunningAfter)
+                        runs.Running = null;
+                }
+                return cachedRuns;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"Could not read {path}: {exception.Message}");
+                return new(StringComparer.Ordinal);
+            }
+        }
+    }
+
+    private static Dictionary<string, QueryRuns> ReadRuns(string path)
+    {
         var result = new Dictionary<string, QueryRuns>(StringComparer.Ordinal);
-        var queryOfRun = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var line in ReadTailLines())
+        // The editor bounds the log by record count. A byte cutoff can drop retained runs with long queries.
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (reader.ReadLine() is { } line)
         {
             JsonDocument document;
             try
@@ -68,7 +109,6 @@ internal sealed class RunLog : IDisposable
                 if (runId is null || query is null)
                     continue;
                 var key = Key(query, Text(root, "cluster"), Text(root, "database"));
-                queryOfRun[runId] = key;
                 if (!result.TryGetValue(key, out var runs))
                     result[key] = runs = new QueryRuns();
 
@@ -99,34 +139,7 @@ internal sealed class RunLog : IDisposable
             }
         }
 
-        foreach (var runs in result.Values)
-        {
-            if (runs.Running is { StartedAt: { } startedAt } && DateTimeOffset.UtcNow - startedAt > StaleRunningAfter)
-                runs.Running = null;
-        }
         return result;
-    }
-
-    private IEnumerable<string> ReadTailLines()
-    {
-        if (path is null || !File.Exists(path))
-            return [];
-        try
-        {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            var skip = Math.Max(0, stream.Length - MaxBytesRead);
-            stream.Seek(skip, SeekOrigin.Begin);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            var text = reader.ReadToEnd();
-            var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            // After a seek into the middle of the file the first line is probably cut off.
-            return skip > 0 ? lines.Skip(1) : lines;
-        }
-        catch (IOException exception)
-        {
-            Console.Error.WriteLine($"Could not read {path}: {exception.Message}");
-            return [];
-        }
     }
 
     private static string? Text(JsonElement element, string name) =>

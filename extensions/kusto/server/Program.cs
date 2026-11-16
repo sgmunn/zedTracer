@@ -21,11 +21,25 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     /// <summary>Whether names are checked against the schema, which the `schemaDiagnostics` option can turn off.</summary>
     private bool schemaDiagnostics = true;
     private readonly Dictionary<string, FileChangeWatcher> parameterWatchers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CancellationTokenSource> documentUpdates = new(StringComparer.Ordinal);
     private int nextRequestId;
     private Timer? spinner;
     private readonly object spinnerGate = new();
 
     public async Task RunAsync()
+    {
+        try
+        {
+            await ReadMessagesAsync();
+        }
+        finally
+        {
+            foreach (var uri in documentUpdates.Keys.ToArray())
+                CancelDocumentUpdate(uri);
+        }
+    }
+
+    private async Task ReadMessagesAsync()
     {
         while (await ReadMessageAsync(input) is { } message)
         {
@@ -128,7 +142,9 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                         profilesFiles[uri] = textDocument.GetProperty("text").GetString() ?? "";
                     return null;
                 }
-                var document = new DocumentSnapshot(textDocument.GetProperty("text").GetString() ?? "");
+                CancelDocumentUpdate(uri);
+                var document = new DocumentSnapshot(textDocument.GetProperty("text").GetString() ?? "",
+                    textDocument.GetProperty("version").GetInt32());
                 documents[uri] = document;
                 WatchParameterFiles();
                 await PublishDiagnosticsAsync(uri, document);
@@ -148,10 +164,10 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                 if (changes.GetArrayLength() > 0)
                 {
                     var document = new DocumentSnapshot(changes[changes.GetArrayLength() - 1]
-                        .GetProperty("text").GetString() ?? "");
+                        .GetProperty("text").GetString() ?? "",
+                        parameters.GetProperty("textDocument").GetProperty("version").GetInt32());
                     documents[uri] = document;
-                    await PublishDiagnosticsAsync(uri, document);
-                    LoadReferencedSchema(document);
+                    ScheduleDocumentUpdate(uri, document);
                 }
                 return null;
             }
@@ -163,6 +179,7 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
                     profilesFiles.TryRemove(uri, out _);
                     return null;
                 }
+                CancelDocumentUpdate(uri);
                 documents.TryRemove(uri, out _);
                 WatchParameterFiles();
                 await SendAsync(new
@@ -192,6 +209,40 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
             default:
                 return null;
         }
+    }
+
+    private void CancelDocumentUpdate(string uri)
+    {
+        if (documentUpdates.Remove(uri, out var cancellation))
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+    }
+
+    private void ScheduleDocumentUpdate(string uri, DocumentSnapshot document)
+    {
+        CancelDocumentUpdate(uri);
+        var cancellation = new CancellationTokenSource();
+        documentUpdates[uri] = cancellation;
+        var token = cancellation.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Full-document analysis must not hold up completion or run once for every keystroke.
+                await Task.Delay(100, token);
+                await PublishDiagnosticsAsync(uri, document, token);
+                LoadReferencedSchema(document, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"Could not update {uri}: {exception}");
+            }
+        });
     }
 
     private object? ExecuteCommand(JsonElement parameters)
@@ -625,10 +676,11 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
     }
 
     /// <summary>Starts fetching the schema of every cluster and database the query mentions.</summary>
-    private void LoadReferencedSchema(DocumentSnapshot document)
+    private void LoadReferencedSchema(DocumentSnapshot document, CancellationToken cancellationToken = default)
     {
         foreach (var block in QueryBlocks.Find(document.Text).Where(block => block.IsQuery || block.IsFunctions))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // Where the query runs, from the file or the defaults, and anything it names itself.
             var connection = ConnectionDirectives.Before(document.Text, block.End, schema.Defaults);
             if (connection.Cluster is not null)
@@ -726,10 +778,15 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         }
     }
 
-    private async Task PublishDiagnosticsAsync(string uri, DocumentSnapshot document)
+    private async Task PublishDiagnosticsAsync(
+        string uri, DocumentSnapshot document, CancellationToken cancellationToken = default)
     {
         var diagnostics = QueryBlocks.Find(document.Text)
-            .SelectMany(block => DiagnosticsOf(document, block))
+            .SelectMany(block =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return DiagnosticsOf(document, block);
+            })
             .Concat(ConnectionDirectives.Problems(document.Text).Select(problem => (object)new
             {
                 range = new
@@ -748,8 +805,8 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         {
             jsonrpc = "2.0",
             method = "textDocument/publishDiagnostics",
-            @params = new { uri, diagnostics }
-        });
+            @params = new { uri, version = document.Version, diagnostics }
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -885,13 +942,14 @@ internal sealed partial class KustoLanguageServer(Stream input, Stream output)
         }
     }
 
-    private async Task SendAsync(object message)
+    private async Task SendAsync(object message, CancellationToken cancellationToken = default)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(message);
         var header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
-        await writeLock.WaitAsync();
+        await writeLock.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             await output.WriteAsync(header);
             await output.WriteAsync(body);
             await output.FlushAsync();
@@ -944,9 +1002,10 @@ internal sealed class DocumentSnapshot
 {
     private readonly List<int> lineStarts = [0];
 
-    public DocumentSnapshot(string text)
+    public DocumentSnapshot(string text, int? version = null)
     {
         Text = text;
+        Version = version;
         for (var index = 0; index < text.Length; index++)
         {
             if (text[index] == '\n')
@@ -955,6 +1014,7 @@ internal sealed class DocumentSnapshot
     }
 
     public string Text { get; }
+    public int? Version { get; }
 
     public int OffsetAt(int line, int character)
     {
