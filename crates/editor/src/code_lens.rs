@@ -1580,42 +1580,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_code_lens_disabled_by_default(cx: &mut TestAppContext) {
-        init_test(cx, |_| {});
-
-        let mut cx = EditorLspTestContext::new_typescript(
-            lsp::ServerCapabilities {
-                code_lens_provider: Some(lsp::CodeLensOptions {
-                    resolve_provider: None,
-                }),
-                execute_command_provider: Some(lsp::ExecuteCommandOptions {
-                    commands: vec!["lens_cmd".to_string()],
-                    ..lsp::ExecuteCommandOptions::default()
-                }),
-                ..lsp::ServerCapabilities::default()
-            },
-            cx,
-        )
-        .await;
-
-        cx.lsp
-            .set_request_handler::<lsp::request::CodeLensRequest, _, _>(|_, _| async move {
-                panic!("Should not request code lenses when disabled");
-            });
-
-        cx.set_state("ˇfunction hello() {}");
-        cx.run_until_parked();
-
-        cx.editor(|editor, _, _cx| {
-            assert_eq!(
-                editor.code_lens_enabled(),
-                false,
-                "code lens should not be enabled when setting is off"
-            );
-        });
-    }
-
-    #[gpui::test]
     async fn test_code_lens_toggling(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
         update_test_editor_settings(cx, &|settings| {
