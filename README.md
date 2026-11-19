@@ -173,8 +173,9 @@ trace, inside its checkout's worktree, so a C# language server can go to definit
 
 A query thread keeps the queries of one investigation together without creating a file. Threads appear in the
 Threads sidebar next to agent threads, and the agent panel shows the thread's Kusto editor. Start one with
-`agent: new query thread`, or choose **Kusto query** in the agent panel's new thread menu. Each run in a thread opens
-its result in a tab.
+`agent: new query thread`, or choose **Kusto query** in the agent panel's new thread menu. With preview tabs enabled,
+each run opens its result in a preview tab (with an italic title), replacing the previous preview; double-click the tab
+to keep it open.
 
 ## Other changes to Zed
 

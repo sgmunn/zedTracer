@@ -310,7 +310,7 @@ pub(crate) fn show_thread_result(
     cx: &mut App,
 ) {
     workspace.update(cx, |workspace, cx| {
-        show_saved_result(workspace, path, Destination::Tab, window, cx)
+        show_saved_result(workspace, path, Destination::PreviewTab, window, cx)
     });
 }
 
@@ -363,7 +363,7 @@ pub(crate) fn cancel_thread_query(
 }
 
 /// Runs the query around the cursor of a thread's editor, which is in no pane, and opens the
-/// result in a tab.
+/// result in a preview tab.
 pub(crate) fn run_thread_query(
     workspace: &Entity<Workspace>,
     editor: &Entity<Editor>,
@@ -372,7 +372,14 @@ pub(crate) fn run_thread_query(
 ) {
     let runs = runs_of(workspace, cx);
     workspace.update(cx, |workspace, cx| {
-        if let Err(error) = start_run_in(workspace, &runs, editor, Destination::Tab, window, cx) {
+        if let Err(error) = start_run_in(
+            workspace,
+            &runs,
+            editor,
+            Destination::PreviewTab,
+            window,
+            cx,
+        ) {
             workspace.show_error(error, cx);
         }
     });
@@ -546,8 +553,8 @@ enum ParameterSource {
 pub(crate) enum Destination {
     /// The Results panel or a tab, as `kusto.results_location` says.
     Configured,
-    /// A tab of its own, whatever the setting says.
-    Tab,
+    /// A preview tab, whatever `kusto.results_location` says.
+    PreviewTab,
 }
 
 /// What becomes of a run's result.
@@ -914,22 +921,41 @@ pub(crate) async fn display(
 
     workspace
         .update_in(cx, |workspace, window, cx| match outcome {
-            Ok(path) => workspace
-                .open_abs_path(
-                    path,
-                    OpenOptions {
-                        visible: Some(OpenVisible::None),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )
-                .detach_and_prompt_err(
+            Ok(path) => {
+                let open = if destination == Destination::PreviewTab {
+                    let project_path = Workspace::project_path_for_path(
+                        workspace.project().clone(),
+                        &path,
+                        false,
+                        cx,
+                    );
+                    cx.spawn_in(window, async move |workspace, cx| {
+                        let (_worktree, path) = project_path.await?;
+                        workspace
+                            .update_in(cx, |workspace, window, cx| {
+                                workspace
+                                    .open_path_preview(path, None, true, true, true, window, cx)
+                            })?
+                            .await
+                    })
+                } else {
+                    workspace.open_abs_path(
+                        path,
+                        OpenOptions {
+                            visible: Some(OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                };
+                open.detach_and_prompt_err(
                     "Could not open the query results",
                     window,
                     cx,
                     |_, _, _| None,
-                ),
+                );
+            }
             Err(error) => workspace.show_error(error, cx),
         })
         .log_err();

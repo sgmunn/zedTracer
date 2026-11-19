@@ -210,7 +210,7 @@ impl Render for QueryThread {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{BorrowAppContext as _, TestAppContext, VisualTestContext};
     use serde_json::json;
 
     use super::*;
@@ -364,7 +364,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_run_from_a_thread_opens_a_tab_whatever_the_setting_says(cx: &mut TestAppContext) {
+    async fn a_run_from_a_thread_opens_a_preview_tab_whatever_the_setting_says(
+        cx: &mut TestAppContext,
+    ) {
         let (workspace, _editor, sent, cx) = setup(cx, 200, ANSWER).await;
         let panel = workspace
             .read_with(cx, |workspace, cx| workspace.panel::<ResultsPanel>(cx))
@@ -380,14 +382,69 @@ mod tests {
             panel.read_with(cx, |panel, _| panel.shown_viewer().is_none()),
             "the panel shows nothing"
         );
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let first = pane
+            .read_with(cx, |pane, _| pane.preview_item_id())
+            .expect("the result is a preview tab");
 
         run(&thread, cx);
 
         assert_eq!(
             results_viewers(&workspace, cx),
-            2,
-            "each run opens its own tab"
+            1,
+            "the next run replaces the preview tab"
         );
+        let second = pane
+            .read_with(cx, |pane, _| pane.preview_item_id())
+            .expect("the next result is also a preview tab");
+        assert_ne!(first, second, "the preview shows the new run");
+    }
+
+    #[gpui::test]
+    async fn keeping_a_thread_result_preserves_it_when_the_next_run_opens(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        let thread = open(&workspace, "one", cx).await;
+        write(&thread, "Traces\n| take 1", cx);
+        run(&thread, cx);
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let kept = pane
+            .read_with(cx, |pane, _| pane.preview_item_id())
+            .expect("the result starts as a preview tab");
+        pane.update(cx, |pane, _| pane.unpreview_item_if_preview(kept));
+
+        run(&thread, cx);
+
+        assert_eq!(results_viewers(&workspace, cx), 2);
+        assert!(pane.read_with(cx, |pane, _| {
+            pane.items().any(|item| item.item_id() == kept)
+        }));
+        assert_ne!(
+            pane.read_with(cx, |pane, _| pane.preview_item_id())
+                .expect("the next result is a preview tab"),
+            kept
+        );
+    }
+
+    #[gpui::test]
+    async fn a_threads_results_respect_disabled_preview_tabs(cx: &mut TestAppContext) {
+        let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(false);
+                });
+            });
+        });
+        let thread = open(&workspace, "one", cx).await;
+        write(&thread, "Traces\n| take 1", cx);
+
+        run(&thread, cx);
+        run(&thread, cx);
+
+        assert_eq!(results_viewers(&workspace, cx), 2);
+        assert!(workspace.read_with(cx, |workspace, cx| {
+            workspace.active_pane().read(cx).preview_item_id().is_none()
+        }));
     }
 
     #[gpui::test]
@@ -405,7 +462,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_result_a_lens_names_opens_in_a_tab_whatever_the_setting_says(
+    async fn a_result_a_lens_names_opens_in_a_preview_tab_whatever_the_setting_says(
         cx: &mut TestAppContext,
     ) {
         let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
@@ -417,6 +474,10 @@ mod tests {
         write(&thread, "Traces\n| take 1", cx);
         run(&thread, cx);
         assert_eq!(results_viewers(&workspace, cx), 1);
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let first = pane
+            .read_with(cx, |pane, _| pane.preview_item_id())
+            .expect("the run opens a preview tab");
 
         // The result of the run is already in a tab, which showing it again would only
         // bring forward, so the lens names a copy.
@@ -441,10 +502,35 @@ mod tests {
         });
         cx.run_until_parked();
 
-        assert_eq!(results_viewers(&workspace, cx), 2, "the earlier result is a tab");
+        assert_eq!(
+            results_viewers(&workspace, cx),
+            1,
+            "the earlier result replaces the preview tab"
+        );
+        let earlier = pane
+            .read_with(cx, |pane, _| pane.preview_item_id())
+            .expect("the earlier result is a preview tab");
+        assert_ne!(first, earlier);
         assert!(
             panel.read_with(cx, |panel, _| panel.shown_viewer().is_none()),
             "the panel shows nothing"
+        );
+
+        thread.update_in(cx, |thread, window, cx| {
+            thread.show_result(
+                &ShowResult {
+                    path: copy.to_string_lossy().into_owned(),
+                },
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            pane.read_with(cx, |pane, _| pane.preview_item_id()),
+            Some(earlier),
+            "showing the same result again does not make it permanent"
         );
     }
 
