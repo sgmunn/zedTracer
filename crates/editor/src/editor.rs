@@ -72,6 +72,7 @@ mod diagnostics;
 mod edit_prediction;
 mod input;
 mod markdown_actions;
+mod markdown_concealment;
 mod navigation;
 mod rewrap;
 mod selection;
@@ -1213,6 +1214,7 @@ pub struct Editor {
     use_document_folding_ranges: bool,
     inlay_hints: Option<LspInlayHintData>,
     folding_newlines: Task<()>,
+    markdown_concealment: markdown_concealment::MarkdownConcealment,
     select_next_options: Option<SelectSearchOptions>,
     pub lookup_key: Option<Box<dyn Any + Send + Sync>>,
     on_local_selections_changed:
@@ -2599,6 +2601,7 @@ impl Editor {
             mode,
             selection_drag_state: SelectionDragState::None,
             folding_newlines: Task::ready(()),
+            markdown_concealment: Default::default(),
             lookup_key: None,
             select_next_options: None,
             on_local_selections_changed: None,
@@ -2758,6 +2761,7 @@ impl Editor {
             if let Some(buffer) = multi_buffer.read(cx).as_singleton() {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
             }
+            editor.refresh_markdown_concealment(cx);
             editor.report_editor_event(ReportEditorEvent::EditorOpened, None, cx);
         }
 
@@ -10135,6 +10139,7 @@ impl Editor {
                 self.refresh_active_diagnostics(cx);
                 self.refresh_code_actions_for_selection(window, cx);
                 self.refresh_single_line_folds(window, cx);
+                self.refresh_markdown_concealment(cx);
                 let snapshot = self.snapshot(window, cx);
                 self.refresh_matching_bracket_highlights(&snapshot, cx);
                 self.refresh_outline_symbols_at_cursor(cx);
@@ -10252,6 +10257,7 @@ impl Editor {
                 });
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
+                self.markdown_syntax_changed(cx);
                 self.refresh_runnables(Some(*buffer_id), window, cx);
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 self.colorize_brackets(true, cx);
@@ -10279,6 +10285,7 @@ impl Editor {
                     self.refresh_document_highlights(cx);
                 }
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
+                self.markdown_syntax_changed(cx);
                 cx.emit(EditorEvent::Reparsed(*buffer_id));
                 self.update_edit_prediction_settings(cx);
                 cx.notify();
@@ -10406,6 +10413,7 @@ impl Editor {
             cx,
         );
         self.refresh_inline_values(cx);
+        self.markdown_syntax_changed(cx);
 
         let old_cursor_shape = self.cursor_shape;
         let old_breadcrumbs_visible = self.breadcrumbs_visible();

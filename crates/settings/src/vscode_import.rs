@@ -337,6 +337,7 @@ impl VsCodeSettings {
                 },
             ),
             selection_highlight: self.read_bool("editor.selectionHighlight"),
+            conceal_markdown_syntax: None,
             show_signature_help_after_edits: self.read_bool("editor.parameterHints.enabled"),
             snippet_sort_order: None,
             toolbar: None,

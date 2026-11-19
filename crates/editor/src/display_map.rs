@@ -180,6 +180,10 @@ pub enum HighlightKey {
     HoveredLinkState,
     InlineAssist,
     InputComposition,
+    MarkdownEmphasis,
+    MarkdownStrikethrough,
+    MarkdownStrongEmphasis,
+    MarkdownSyntax,
     MatchingBracket,
     NavigationOverlay(NavigationOverlayKey),
     PendingInput,
@@ -785,6 +789,40 @@ impl DisplayMap {
             });
 
         self.block_map.write(snapshot, edits, None).insert(blocks);
+    }
+
+    /// Hides exactly the given ranges from the display, replacing any previously
+    /// concealed ranges. Returns whether the display changed.
+    #[instrument(skip_all)]
+    pub fn set_concealed_ranges(
+        &mut self,
+        ranges: Vec<Range<MultiBufferOffset>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.companion().is_some() {
+            return false;
+        }
+
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let edits = self.buffer_subscription.consume().into_inner();
+        let tab_size = Self::tab_size(&self.buffer, cx);
+
+        let (snapshot, edits) = self.inlay_map.sync(snapshot, edits);
+        let (mut fold_map, snapshot, edits) = self.fold_map.write(snapshot, edits);
+        let (snapshot, edits) = self.tab_map.sync(snapshot, edits, tab_size);
+        let (snapshot, edits) = self
+            .wrap_map
+            .update(cx, |map, cx| map.sync(snapshot, edits, cx));
+        self.block_map.read(snapshot, edits, None);
+
+        let (snapshot, edits) = fold_map.set_concealments(ranges);
+        let changed = !edits.is_empty();
+        let (snapshot, edits) = self.tab_map.sync(snapshot, edits, tab_size);
+        let (snapshot, edits) = self
+            .wrap_map
+            .update(cx, |map, cx| map.sync(snapshot, edits, cx));
+        self.block_map.write(snapshot, edits, None);
+        changed
     }
 
     /// Removes any folds with the given ranges.

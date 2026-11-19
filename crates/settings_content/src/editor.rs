@@ -36,6 +36,12 @@ pub struct EditorSettingsContent {
     ///
     /// Default: true
     pub selection_highlight: Option<bool>,
+    /// Whether to hide Markdown syntax such as `**`, `_`, `~~`, backticks and
+    /// link destinations in Markdown files, revealing it only while the cursor
+    /// or selection touches the formatted text.
+    ///
+    /// Default: true
+    pub conceal_markdown_syntax: Option<bool>,
     /// Whether the text selection should have rounded corners.
     ///
     /// Default: true

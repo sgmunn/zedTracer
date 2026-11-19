@@ -49,7 +49,26 @@ impl Default for FoldPlaceholder {
     }
 }
 
+/// Tags folds that hide syntax (such as Markdown emphasis markers) rather than
+/// folds the user created, so that fold commands and indicators ignore them.
+struct Concealment;
+
 impl FoldPlaceholder {
+    /// A zero-width placeholder used to hide syntax from the display.
+    pub fn concealment() -> Self {
+        Self {
+            render: Arc::new(|_, _, _| gpui::Empty.into_any_element()),
+            constrain_width: false,
+            merge_adjacent: false,
+            type_tag: Some(TypeId::of::<Concealment>()),
+            collapsed_text: None,
+        }
+    }
+
+    pub fn is_concealment(&self) -> bool {
+        self.type_tag == Some(TypeId::of::<Concealment>())
+    }
+
     /// Returns a styled `Div` container with the standard fold‐placeholder
     /// look (background, hover, active, rounded corners, full size).
     /// Callers add children and event handlers on top.
@@ -173,6 +192,76 @@ impl FoldMapWriter<'_> {
         ranges: impl IntoIterator<Item = (Range<T>, FoldPlaceholder)>,
     ) -> (FoldSnapshot, Vec<FoldEdit>) {
         let mut edits = Vec::new();
+        self.insert_folds(ranges, &mut edits);
+        self.sync_inlay_edits(edits)
+    }
+
+    /// Replaces all concealment folds with folds covering the given ranges, leaving
+    /// concealments that are already present untouched.
+    #[ztracing::instrument(skip_all)]
+    pub(crate) fn set_concealments(
+        &mut self,
+        ranges: impl IntoIterator<Item = Range<MultiBufferOffset>>,
+    ) -> (FoldSnapshot, Vec<FoldEdit>) {
+        let buffer = self.0.snapshot.inlay_snapshot.buffer.clone();
+        let offset_range = |fold: &Fold| {
+            (
+                fold.range.start.to_offset(&buffer),
+                fold.range.end.to_offset(&buffer),
+            )
+        };
+
+        let mut desired = ranges
+            .into_iter()
+            .filter(|range| range.start < range.end)
+            .map(|range| (range.start, range.end))
+            .collect::<Vec<_>>();
+        desired.sort_unstable();
+        desired.dedup();
+
+        let mut existing = self
+            .0
+            .snapshot
+            .folds
+            .iter()
+            .filter(|fold| fold.placeholder.is_concealment())
+            .map(|fold| offset_range(fold))
+            .collect::<Vec<_>>();
+        existing.sort_unstable();
+
+        let mut edits = Vec::new();
+        self.delete_folds(
+            [MultiBufferOffset(0)..buffer.len()],
+            |fold| {
+                fold.placeholder.is_concealment()
+                    && desired.binary_search(&offset_range(fold)).is_err()
+            },
+            true,
+            &mut edits,
+        );
+        let placeholder = FoldPlaceholder::concealment();
+        self.insert_folds(
+            desired
+                .iter()
+                .filter(|range| existing.binary_search(range).is_err())
+                .map(|(start, end)| (*start..*end, placeholder.clone())),
+            &mut edits,
+        );
+        self.sync_inlay_edits(edits)
+    }
+
+    fn sync_inlay_edits(&mut self, edits: Vec<InlayEdit>) -> (FoldSnapshot, Vec<FoldEdit>) {
+        let snapshot = self.0.snapshot.inlay_snapshot.clone();
+        let edits = consolidate_inlay_edits(edits);
+        let edits = self.0.sync(snapshot, edits);
+        (self.0.snapshot.clone(), edits)
+    }
+
+    fn insert_folds<T: ToOffset>(
+        &mut self,
+        ranges: impl IntoIterator<Item = (Range<T>, FoldPlaceholder)>,
+        edits: &mut Vec<InlayEdit>,
+    ) {
         let mut folds = Vec::new();
         let snapshot = self.0.snapshot.inlay_snapshot.clone();
         for (range, fold_text) in ranges.into_iter() {
@@ -227,10 +316,6 @@ impl FoldMapWriter<'_> {
             new_tree.append(cursor.suffix(), buffer);
             new_tree
         };
-
-        let edits = consolidate_inlay_edits(edits);
-        let edits = self.0.sync(snapshot.clone(), edits);
-        (self.0.snapshot.clone(), edits)
     }
 
     /// Removes any folds with the given ranges.
@@ -254,7 +339,7 @@ impl FoldMapWriter<'_> {
         ranges: impl IntoIterator<Item = Range<T>>,
         inclusive: bool,
     ) -> (FoldSnapshot, Vec<FoldEdit>) {
-        self.remove_folds_with(ranges, |_| true, inclusive)
+        self.remove_folds_with(ranges, |fold| !fold.placeholder.is_concealment(), inclusive)
     }
 
     /// Removes any folds that intersect the given ranges and for which the given predicate
@@ -267,6 +352,17 @@ impl FoldMapWriter<'_> {
         inclusive: bool,
     ) -> (FoldSnapshot, Vec<FoldEdit>) {
         let mut edits = Vec::new();
+        self.delete_folds(ranges, should_unfold, inclusive, &mut edits);
+        self.sync_inlay_edits(edits)
+    }
+
+    fn delete_folds<T: ToOffset>(
+        &mut self,
+        ranges: impl IntoIterator<Item = Range<T>>,
+        should_unfold: impl Fn(&Fold) -> bool,
+        inclusive: bool,
+        edits: &mut Vec<InlayEdit>,
+    ) {
         let mut fold_ixs_to_delete = Vec::new();
         let snapshot = self.0.snapshot.inlay_snapshot.clone();
         let buffer = &snapshot.buffer;
@@ -306,10 +402,6 @@ impl FoldMapWriter<'_> {
             folds.append(cursor.suffix(), buffer);
             folds
         };
-
-        let edits = consolidate_inlay_edits(edits);
-        let edits = self.0.sync(snapshot.clone(), edits);
-        (self.0.snapshot.clone(), edits)
     }
 
     #[ztracing::instrument(skip_all)]
@@ -545,7 +637,7 @@ impl FoldMap {
                     .peek()
                     .is_some_and(|(_, fold_range)| fold_range.start < edit.new.end)
                 {
-                    let (fold, mut fold_range) = folds.next().unwrap();
+                    let (mut fold, mut fold_range) = folds.next().unwrap();
                     let sum = new_transforms.summary();
 
                     assert!(fold_range.start.0 >= sum.input.len);
@@ -556,7 +648,13 @@ impl FoldMap {
                                 && fold.placeholder.merge_adjacent
                                 && next_fold.placeholder.merge_adjacent)
                     }) {
-                        let (_, next_fold_range) = folds.next().unwrap();
+                        let (next_fold, next_fold_range) = folds.next().unwrap();
+                        // A user fold overlapping a concealment should keep its visible placeholder.
+                        if fold.placeholder.is_concealment()
+                            && !next_fold.placeholder.is_concealment()
+                        {
+                            fold = next_fold;
+                        }
                         if next_fold_range.end > fold_range.end {
                             fold_range.end = next_fold_range.end;
                         }
@@ -583,6 +681,7 @@ impl FoldMap {
                             });
 
                         let fold_id = fold.id;
+                        let is_concealment = fold.placeholder.is_concealment();
                         new_transforms.push(
                             Transform {
                                 summary: TransformSummary {
@@ -593,6 +692,7 @@ impl FoldMap {
                                 placeholder: Some(TransformPlaceholder {
                                     text: placeholder_text,
                                     chars: chars_bitmap,
+                                    is_concealment,
                                     renderer: ChunkRenderer {
                                         id: ChunkRendererId::Fold(fold.id),
                                         render: Arc::new(move |cx| {
@@ -933,6 +1033,7 @@ impl FoldSnapshot {
     }
 
     #[ztracing::instrument(skip_all)]
+    /// Returns the folds intersecting the given range, excluding concealments.
     pub fn folds_in_range<T>(&self, range: Range<T>) -> impl Iterator<Item = &Fold>
     where
         T: ToOffset,
@@ -945,6 +1046,15 @@ impl FoldSnapshot {
             folds.next();
             item
         })
+        .filter(|fold| !fold.placeholder.is_concealment())
+    }
+
+    pub fn concealed_ranges(&self) -> impl Iterator<Item = Range<MultiBufferOffset>> + '_ {
+        let buffer = &self.inlay_snapshot.buffer;
+        self.folds
+            .iter()
+            .filter(|fold| fold.placeholder.is_concealment())
+            .map(|fold| fold.range.start.to_offset(buffer)..fold.range.end.to_offset(buffer))
     }
 
     #[ztracing::instrument(skip_all)]
@@ -970,7 +1080,11 @@ impl FoldSnapshot {
                     let buffer_point = self.inlay_snapshot.to_buffer_point(inlay_point);
                     if buffer_point.row != buffer_row.0 {
                         return false;
-                    } else if transform.placeholder.is_some() {
+                    } else if transform
+                        .placeholder
+                        .as_ref()
+                        .is_some_and(|placeholder| !placeholder.is_concealment)
+                    {
                         return true;
                     }
                 }
@@ -1259,6 +1373,7 @@ struct Transform {
 struct TransformPlaceholder {
     text: SharedString,
     chars: u128,
+    is_concealment: bool,
     renderer: ChunkRenderer,
 }
 

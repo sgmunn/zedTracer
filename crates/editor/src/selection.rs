@@ -1675,6 +1675,7 @@ impl Editor {
             }
         }
 
+        self.refresh_markdown_concealment(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
 
         if local && !self.suppress_selection_callback {
