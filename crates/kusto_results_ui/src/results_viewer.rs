@@ -32,7 +32,9 @@ use ui::{Button, ButtonSize, Icon, IconName, prelude::*};
 use util::rel_path::RelPath;
 use workspace::Pane;
 use workspace::Workspace;
-use workspace::item::{Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem};
+use workspace::item::{
+    Item, ItemBufferKind, ProjectItem as WorkspaceProjectItem, TabContentParams,
+};
 use worktree::Worktree;
 
 use crate::chart_view::{ChartView, ChartViewEvent};
@@ -547,6 +549,14 @@ impl ResultsViewer {
 
 impl Item for ResultsViewer {
     type Event = ();
+
+    fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> gpui::AnyElement {
+        Label::new(self.tab_content_text(params.detail.unwrap_or_default(), cx))
+            .single_line()
+            .color(params.text_color())
+            .when(params.preview, |label| label.italic())
+            .into_any_element()
+    }
 
     fn tab_content_text(&self, _: usize, cx: &App) -> SharedString {
         self.results_file.read(cx).file_name.clone()
