@@ -219,6 +219,20 @@ to keep it open.
    requires the .NET 8 SDK (`DOTNET=/path/to/dotnet` selects it); running the app does not require .NET.
    Both the DMG and `-i` installation register the extension automatically, without a first-use download.
 
+   The app also bundles its own remote-development servers for Linux x86-64/ARM64 and macOS matching
+   the app's architecture. Building the bundle requires [Zig](https://ziglang.org/download/) and
+   `cargo install --locked cargo-zigbuild` on the build machine. Neither is needed to run the installed app.
+   Open a remote folder normally: ZedTracer uploads the appropriate server automatically, without
+   downloading upstream Zed binaries or compiling on either end of the connection.
+
+   Each app bundle and its servers share a unique build ID, including locally built DMGs with uncommitted
+   changes. Servers are installed under `~/.zedtracer_server`, separately from Zed's `~/.zed_server`,
+   and reused only when their build ID matches. Updating the app installs a new matching server on the
+   next connection. The remote host still needs SSH access and `sh`/`gzip` for installation; Linux servers
+   are statically linked with musl. Windows remotes and macOS remotes of the other architecture are not
+   included in the macOS bundle yet. A missing or incompatible bundled server is an error, never a fallback
+   to an upstream release.
+
    For a development build run outside the app bundle, build the server with
    `extensions/kusto/install-server.sh` and use **zed: install dev extension** to select
    [`extensions/kusto`](extensions/kusto). An installed dev extension takes precedence over the bundled

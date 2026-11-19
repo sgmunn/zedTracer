@@ -258,6 +258,30 @@ fn handle_rpc_messages_over_child_process_stdio(
     })
 }
 
+async fn local_server_binary(
+    platform: &crate::RemotePlatform,
+    delegate: &dyn crate::RemoteClientDelegate,
+    binary_exists_on_server: bool,
+    cx: &mut AsyncApp,
+) -> Result<Option<std::path::PathBuf>> {
+    if crate::server_binary::BUNDLED_SERVER_BUILD_ID.is_some() {
+        return if binary_exists_on_server {
+            Ok(None)
+        } else {
+            crate::server_binary::bundled_archive(*platform).await
+        };
+    }
+
+    #[cfg(any(debug_assertions, feature = "build-remote-server-binary"))]
+    return build_remote_server_from_source(platform, delegate, binary_exists_on_server, cx).await;
+
+    #[cfg(not(any(debug_assertions, feature = "build-remote-server-binary")))]
+    {
+        let _ = (platform, delegate, binary_exists_on_server, cx);
+        Ok(None)
+    }
+}
+
 #[cfg(any(debug_assertions, feature = "build-remote-server-binary"))]
 async fn build_remote_server_from_source(
     platform: &crate::RemotePlatform,

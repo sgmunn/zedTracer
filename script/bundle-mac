@@ -43,6 +43,10 @@ Environment:
   DOTNET                    Path to the .NET 8 SDK executable (default: dotnet).
   MACOS_SIGNING_KEY          Signing identity; use - for ad-hoc signing.
   APPLE_NOTARIZATION_PROFILE Keychain profile created with notarytool store-credentials.
+
+Remote connections:
+  Bundles matching macOS (app architecture) and Linux (x86-64/ARM64) servers.
+  Zig and cargo-zigbuild are required on the build machine for Linux servers.
   "
 }
 
@@ -103,6 +107,7 @@ export CXXFLAGS="-stdlib=libc++"
 version_info=$(rustc --version --verbose)
 host_line=$(echo "$version_info" | grep host)
 target_triple=${host_line#*: }
+host_triple="$target_triple"
 if [[ $# -gt 0 && -n "$1" ]]; then
     target_triple="$1"
 fi
@@ -122,9 +127,23 @@ if ! command -v "$DOTNET" >/dev/null 2>&1; then
     echo "The .NET 8 SDK is required to bundle the Kusto language server. Install it or set DOTNET to its executable." >&2
     exit 1
 fi
+if ! command -v zig >/dev/null 2>&1 || ! command -v cargo-zigbuild >/dev/null 2>&1; then
+    echo "Bundling Linux remote servers requires Zig and cargo-zigbuild on the build machine." >&2
+    echo "Install Zig (https://ziglang.org/download/) and run: cargo install --locked cargo-zigbuild" >&2
+    exit 1
+fi
+
+# Local DMGs can contain uncommitted changes, so a commit SHA alone cannot
+# identify the matching server set.
+ZEDTRACER_REMOTE_SERVER_BUILD_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+export ZEDTRACER_REMOTE_SERVER_BUILD_ID
+remote_servers_directory="target/remote-servers/$ZEDTRACER_REMOTE_SERVER_BUILD_ID"
 
 # Generate the licenses first, so they can be baked into the binaries
 script/generate-licenses
+
+script/build-remote-servers "$remote_servers_directory" \
+    x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 
 rustup target add $target_triple
 
@@ -433,7 +452,25 @@ fi
 
 cp target/${target_triple}/${target_dir}/zed "${app_path}/Contents/MacOS/zed"
 cp target/${target_triple}/${target_dir}/cli "${app_path}/Contents/MacOS/cli"
-sign_app_binaries
 
-sign_binary "target/$target_triple/release/remote-server"
-gzip -f --stdout --best target/$target_triple/release/remote-server > target/zed-remote-server-macos-$arch_suffix.gz
+remote_server_binary="target/$target_triple/$target_dir/remote-server"
+if [[ "$target_triple" == "$host_triple" ]]; then
+    remote_server_version=$("$remote_server_binary" version)
+    if [[ "$remote_server_version" != "zedtracer-$ZEDTRACER_REMOTE_SERVER_BUILD_ID" ]]; then
+        echo "The macOS remote server does not match this app build: $remote_server_version" >&2
+        exit 1
+    fi
+fi
+sign_binary "$remote_server_binary"
+gzip -n -c "$remote_server_binary" > "target/zed-remote-server-macos-$arch_suffix.gz"
+
+bundled_remote_servers="${app_path}/Contents/Resources/remote_servers"
+rm -rf "$bundled_remote_servers"
+mkdir -p "$bundled_remote_servers/$ZEDTRACER_REMOTE_SERVER_BUILD_ID"
+cp "$remote_servers_directory/zedtracer-remote-server-linux-x86_64.gz" \
+    "$remote_servers_directory/zedtracer-remote-server-linux-aarch64.gz" \
+    "$bundled_remote_servers/$ZEDTRACER_REMOTE_SERVER_BUILD_ID/"
+cp "target/zed-remote-server-macos-$arch_suffix.gz" \
+    "$bundled_remote_servers/$ZEDTRACER_REMOTE_SERVER_BUILD_ID/zedtracer-remote-server-macos-$arch_suffix.gz"
+
+sign_app_binaries

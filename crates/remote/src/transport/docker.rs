@@ -13,7 +13,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use util::ResultExt;
 use util::command::Stdio;
 use util::redact::{is_valid_environment_name, redact_command};
 use util::shell::ShellKind;
@@ -224,11 +223,8 @@ impl DockerExecConnection {
             ReleaseChannel::Dev => "build".to_string(),
             _ => version.to_string(),
         };
-        let binary_name = format!(
-            "zed-remote-server-{}-{}",
-            release_channel.dev_name(),
-            version_str
-        );
+        let binary_name =
+            crate::server_binary::binary_name(release_channel, &version_str, remote_platform);
         let dst_path =
             paths::remote_server_dir_relative().join(RelPath::from_unix_str(&binary_name).unwrap());
 
@@ -240,9 +236,8 @@ impl DockerExecConnection {
                 &["version"],
             )
             .await
-            .is_ok();
-        #[cfg(any(debug_assertions, feature = "build-remote-server-binary"))]
-        if let Some(remote_server_path) = super::build_remote_server_from_source(
+            .is_ok_and(|output| crate::server_binary::version_matches(&output));
+        if let Some(remote_server_path) = super::local_server_binary(
             &remote_platform,
             delegate.as_ref(),
             binary_exists_on_server,
@@ -268,6 +263,21 @@ impl DockerExecConnection {
             .await?;
             self.extract_server_binary(&dst_path, &tmp_path, &remote_dir_for_server, delegate, cx)
                 .await?;
+            if crate::server_binary::BUNDLED_SERVER_BUILD_ID.is_some() {
+                let output = self
+                    .run_docker_exec(
+                        &dst_path.display(self.path_style()),
+                        Some(remote_dir_for_server),
+                        &Default::default(),
+                        &["version"],
+                    )
+                    .await
+                    .context("checking the installed ZedTracer remote server")?;
+                anyhow::ensure!(
+                    crate::server_binary::version_matches(&output),
+                    "The installed ZedTracer remote server does not match this app build"
+                );
+            }
             return Ok(dst_path.into());
         }
 
@@ -393,7 +403,7 @@ impl DockerExecConnection {
             &args,
         )
         .await
-        .log_err();
+        .context("extracting the remote server binary")?;
         Ok(())
     }
 

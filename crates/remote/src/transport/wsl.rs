@@ -224,11 +224,8 @@ impl WslRemoteConnection {
             _ => version.to_string(),
         };
 
-        let binary_name = format!(
-            "zed-remote-server-{}-{}",
-            release_channel.dev_name(),
-            version_str
-        );
+        let binary_name =
+            crate::server_binary::binary_name(release_channel, &version_str, self.platform);
 
         let dst_path =
             paths::remote_server_dir_relative().join(RelPath::from_unix_str(&binary_name).unwrap());
@@ -242,12 +239,11 @@ impl WslRemoteConnection {
         }
 
         let binary_exists_on_server = self
-            .run_wsl_command(&dst_path.display(PathStyle::Unix), &["version"])
+            .run_wsl_command_with_output(&dst_path.display(PathStyle::Unix), &["version"])
             .await
-            .is_ok();
+            .is_ok_and(|output| crate::server_binary::version_matches(&output));
 
-        #[cfg(any(debug_assertions, feature = "build-remote-server-binary"))]
-        if let Some(remote_server_path) = super::build_remote_server_from_source(
+        if let Some(remote_server_path) = super::local_server_binary(
             &self.platform,
             delegate.as_ref(),
             binary_exists_on_server,
@@ -267,6 +263,16 @@ impl WslRemoteConnection {
                 .await?;
             self.extract_and_install(&tmp_path, &dst_path, delegate, cx)
                 .await?;
+            if crate::server_binary::BUNDLED_SERVER_BUILD_ID.is_some() {
+                let output = self
+                    .run_wsl_command_with_output(&dst_path.display(PathStyle::Unix), &["version"])
+                    .await
+                    .context("checking the installed ZedTracer remote server")?;
+                anyhow::ensure!(
+                    crate::server_binary::version_matches(&output),
+                    "The installed ZedTracer remote server does not match this app build"
+                );
+            }
             return Ok(dst_path.into());
         }
 

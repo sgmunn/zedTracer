@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: ZEDTRACER_REMOTE_SERVER_BUILD_ID=<id> $0 <output-directory> <target>..." >&2
+    exit 1
+fi
+if [[ ! "${ZEDTRACER_REMOTE_SERVER_BUILD_ID:-}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+    echo "Set ZEDTRACER_REMOTE_SERVER_BUILD_ID to the app's nonempty alphanumeric/hyphen build ID." >&2
+    exit 1
+fi
+
+output_directory="$1"
+shift
+host_triple=$(rustc -vV | sed -n 's/^host: //p')
+
+for target_triple in "$@"; do
+    case "$target_triple" in
+        x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+            if [[ "$target_triple" != "$host_triple" ]] &&
+                { ! command -v zig >/dev/null 2>&1 || ! command -v cargo-zigbuild >/dev/null 2>&1; }; then
+                echo "Cross-compiling Linux remote servers requires Zig and cargo-zigbuild on the build machine." >&2
+                echo "Install Zig (https://ziglang.org/download/) and run: cargo install --locked cargo-zigbuild" >&2
+                exit 1
+            fi
+            ;;
+        x86_64-apple-darwin|aarch64-apple-darwin)
+            if [[ "$host_triple" != *-apple-darwin ]]; then
+                echo "Build macOS remote servers on a Mac with Xcode installed." >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported ZedTracer remote server target: $target_triple" >&2
+            exit 1
+            ;;
+    esac
+done
+
+mkdir -p "$output_directory"
+for target_triple in "$@"; do
+    echo "Building ZedTracer remote server for $target_triple (build $ZEDTRACER_REMOTE_SERVER_BUILD_ID)"
+    rustup target add "$target_triple"
+    build_arguments=(
+        --locked --release --package remote_server --features debug-embed
+        --target "$target_triple" --target-dir target/remote_server
+        --config 'profile.release.strip="debuginfo"'
+    )
+    case "$target_triple" in
+        *-unknown-linux-musl)
+            platform="linux"
+            build_command=(cargo build)
+            if [[ "$target_triple" != "$host_triple" ]]; then
+                build_command=(cargo zigbuild)
+            fi
+            RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static" \
+                env -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u CXXFLAGS \
+                "${build_command[@]}" "${build_arguments[@]}"
+            ;;
+        *-apple-darwin)
+            platform="macos"
+            cargo build "${build_arguments[@]}"
+            ;;
+    esac
+    binary_path="target/remote_server/$target_triple/release/remote-server"
+    if [[ "$target_triple" == "$host_triple" ]]; then
+        version=$("$binary_path" version)
+        if [[ "$version" != "zedtracer-$ZEDTRACER_REMOTE_SERVER_BUILD_ID" ]]; then
+            echo "The built remote server has the wrong build ID: $version" >&2
+            exit 1
+        fi
+    fi
+    gzip -n -c "$binary_path" > "$output_directory/zedtracer-remote-server-$platform-${target_triple%%-*}.gz"
+done

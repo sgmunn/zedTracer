@@ -116,6 +116,10 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
         #[cfg(unix)]
         Commands::Exec => execute_command(),
         Commands::Version => {
+            if let Some(build_id) = remote::server_binary::BUNDLED_SERVER_BUILD_ID {
+                println!("zedtracer-{build_id}");
+                return Ok(());
+            }
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {
                 ReleaseChannel::Stable | ReleaseChannel::Preview => {
@@ -893,7 +897,7 @@ impl ServerPaths {
         let stdin_socket = server_dir.join("stdin.sock");
         let stdout_socket = server_dir.join("stdout.sock");
         let stderr_socket = server_dir.join("stderr.sock");
-        let log_file = logs_dir().join(format!("server-{}.log", identifier));
+        let log_file = logs_dir().join(format!("zedtracer-server-{}.log", identifier));
 
         Ok(Self {
             pid_file,
@@ -1427,9 +1431,14 @@ fn read_proxy_settings(cx: &mut Context<HeadlessProject>) -> Option<Url> {
 }
 
 fn cleanup_old_binaries() -> Result<()> {
+    // Bundle IDs are not ordered versions. Keep other installed apps' servers
+    // so reconnecting with an older app does not remove a newer app's binary.
+    if remote::server_binary::BUNDLED_SERVER_BUILD_ID.is_some() {
+        return Ok(());
+    }
     let server_dir = paths::remote_server_dir_relative();
     let release_channel = release_channel::RELEASE_CHANNEL.dev_name();
-    let prefix = format!("zed-remote-server-{}-", release_channel);
+    let prefix = format!("zedtracer-remote-server-{}-", release_channel);
 
     for entry in std::fs::read_dir(server_dir.as_std_path())? {
         let path = entry?.path();
