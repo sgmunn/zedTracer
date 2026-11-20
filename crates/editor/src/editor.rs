@@ -5383,6 +5383,9 @@ impl Editor {
         if self.move_to_prev_snippet_tabstop(window, cx) {
             return;
         }
+        if self.markdown_table_tab(false, window, cx) {
+            return;
+        }
         self.outdent(&Outdent, window, cx);
     }
 
@@ -5430,6 +5433,9 @@ impl Editor {
             return;
         }
         if self.read_only(cx) {
+            return;
+        }
+        if self.markdown_table_tab(true, window, cx) {
             return;
         }
         let mut selections = self.selections.all_adjusted(&self.display_snapshot(cx));

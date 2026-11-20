@@ -87,7 +87,7 @@ pub use block_map::{
 pub use crease_map::*;
 pub use fold_map::{
     ChunkRenderer, ChunkRendererContext, ChunkRendererId, Concealment, Fold, FoldId,
-    FoldPlaceholder, FoldPoint,
+    FoldPlaceholder, FoldPoint, concealment_highlight_background,
 };
 pub use inlay_map::{InlayOffset, InlayPoint};
 use invisibles::is_standalone_grapheme;
@@ -185,6 +185,8 @@ pub enum HighlightKey {
     MarkdownStrikethrough,
     MarkdownStrongEmphasis,
     MarkdownSyntax,
+    MarkdownTableColumn,
+    MarkdownTableHeader,
     MatchingBracket,
     NavigationOverlay(NavigationOverlayKey),
     PendingInput,

@@ -544,6 +544,9 @@ impl Editor {
         if self.read_only(cx) {
             return;
         }
+        if self.markdown_table_newline(window, cx) {
+            return;
+        }
 
         self.transact(window, cx, |this, window, cx| {
             let (edits_with_flags, selection_info): (Vec<_>, Vec<_>) = {
