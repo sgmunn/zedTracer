@@ -53,6 +53,19 @@ struct TableRow {
     trailing_pipe: bool,
 }
 
+impl ConcealableSpan {
+    fn shifted(self, offset: usize) -> Self {
+        let shift = |range: Range<usize>| range.start + offset..range.end + offset;
+        let [opening, closing] = self.syntax;
+        Self {
+            kind: self.kind,
+            reveal_range: shift(self.reveal_range),
+            content: shift(self.content),
+            syntax: [shift(opening), shift(closing)],
+        }
+    }
+}
+
 impl MarkdownTable {
     fn range(&self) -> Range<usize> {
         match (self.rows.first(), self.rows.last()) {
@@ -565,40 +578,85 @@ fn markdown_structure(
     buffer: &BufferSnapshot,
 ) -> (Vec<ConcealableSpan>, Vec<Range<usize>>, Vec<MarkdownTable>) {
     let mut spans = Vec::new();
+    let mut inline_spans = Vec::new();
     let mut code_blocks = Vec::new();
     let mut tables = Vec::new();
-    for layer in buffer.syntax_layers() {
-        let is_inline = match layer.language.name().as_ref() {
-            "Markdown-Inline" => true,
-            "Markdown" => false,
-            _ => continue,
-        };
-
-        let mut cursor = layer.node().walk();
-        'walk: loop {
-            let node = cursor.node();
-            if is_inline {
-                spans.extend(inline_span(node));
-            } else if matches!(node.kind(), "fenced_code_block" | "indented_code_block") {
-                code_blocks.push(node.byte_range());
-            } else if node.kind() == "pipe_table" {
-                tables.extend(markdown_table(node, buffer));
-            } else {
-                spans.extend(list_marker_span(node, buffer));
+    let layers = buffer.syntax_layers().collect::<Vec<_>>();
+    let inline_grammar = layers
+        .iter()
+        .find(|layer| layer.language.name().as_ref() == "Markdown-Inline")
+        .and_then(|layer| layer.language.grammar());
+    let mut reparsed_from = None;
+    for layer in &layers {
+        match layer.language.name().as_ref() {
+            "Markdown-Inline" => {
+                walk_nodes(layer.node(), |node| inline_spans.extend(inline_span(node)));
             }
-            if cursor.goto_first_child() {
-                continue;
-            }
-            loop {
-                if cursor.goto_next_sibling() {
-                    continue 'walk;
+            "Markdown" => {
+                let mut resume_offset = markdown_blocks(
+                    layer.node(),
+                    0,
+                    buffer,
+                    &mut spans,
+                    &mut code_blocks,
+                    &mut tables,
+                );
+                // tree-sitter-md misparses everything following a table whose
+                // last row has only empty cells (such as a newly added row), so
+                // the rest of the document is parsed again on its own.
+                let is_root_layer = layer.node().start_byte() == 0;
+                while let Some(resume) = resume_offset.filter(|_| is_root_layer) {
+                    let Some(grammar) = layer.language.grammar() else {
+                        break;
+                    };
+                    let text = buffer
+                        .text_for_range(resume..buffer.len())
+                        .collect::<String>();
+                    let Some(tree) = language::with_parser(|parser| {
+                        parser.set_language(&grammar.ts_language).ok()?;
+                        parser.parse(&text, None)
+                    }) else {
+                        break;
+                    };
+                    reparsed_from.get_or_insert(resume);
+                    if let Some(inline_grammar) = inline_grammar {
+                        let mut inline_ranges = Vec::new();
+                        walk_nodes(tree.root_node(), |node| {
+                            if node.kind() == "inline" {
+                                inline_ranges.push(node.byte_range());
+                            }
+                        });
+                        for range in inline_ranges {
+                            let Some(inline_tree) = language::with_parser(|parser| {
+                                parser.set_language(&inline_grammar.ts_language).ok()?;
+                                parser.parse(&text[range.clone()], None)
+                            }) else {
+                                continue;
+                            };
+                            let base = resume + range.start;
+                            walk_nodes(inline_tree.root_node(), |node| {
+                                spans.extend(inline_span(node).map(|span| span.shifted(base)));
+                            });
+                        }
+                    }
+                    resume_offset = markdown_blocks(
+                        tree.root_node(),
+                        resume,
+                        buffer,
+                        &mut spans,
+                        &mut code_blocks,
+                        &mut tables,
+                    );
                 }
-                if !cursor.goto_parent() {
-                    break 'walk;
-                }
             }
+            _ => {}
         }
     }
+    // Inline syntax after a misparsed table comes from parsing it again above.
+    if let Some(reparsed_from) = reparsed_from.filter(|_| inline_grammar.is_some()) {
+        inline_spans.retain(|span| span.reveal_range.start < reparsed_from);
+    }
+    spans.extend(inline_spans);
 
     // Markdown embedded in a code block (such as a ```markdown fence) is shown verbatim.
     spans.retain(|span| {
@@ -618,11 +676,79 @@ fn markdown_structure(
     (spans, code_blocks, tables)
 }
 
+fn walk_nodes<'a>(root: Node<'a>, mut visit: impl FnMut(Node<'a>)) {
+    let mut cursor = root.walk();
+    'walk: loop {
+        visit(cursor.node());
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+}
+
+/// Collects list markers, code blocks and tables from a Markdown block tree
+/// whose offsets start at `base` in the buffer. When a table's rows extend past
+/// its parsed node, the tree is unreliable after the table, so only the blocks
+/// preceding the offset following the table are kept and that offset is returned.
+fn markdown_blocks(
+    root: Node,
+    base: usize,
+    buffer: &BufferSnapshot,
+    spans: &mut Vec<ConcealableSpan>,
+    code_blocks: &mut Vec<Range<usize>>,
+    tables: &mut Vec<MarkdownTable>,
+) -> Option<usize> {
+    let mut new_spans = Vec::new();
+    let mut new_code_blocks = Vec::new();
+    let mut new_tables = Vec::new();
+    let mut resume_offset: Option<usize> = None;
+    walk_nodes(root, |node| match node.kind() {
+        "fenced_code_block" | "indented_code_block" => {
+            let range = node.byte_range();
+            new_code_blocks.push(base + range.start..base + range.end);
+        }
+        "pipe_table" => {
+            let Some(table) = markdown_table(node, base, buffer) else {
+                return;
+            };
+            let table_end = table.range().end;
+            if table_end > base + node.end_byte() {
+                let next_row = buffer.offset_to_point(table_end).row + 1;
+                if next_row <= buffer.max_point().row {
+                    let next_line = buffer.point_to_offset(Point::new(next_row, 0));
+                    resume_offset =
+                        Some(resume_offset.map_or(next_line, |offset| offset.min(next_line)));
+                }
+            }
+            new_tables.push(table);
+        }
+        _ => new_spans.extend(list_marker_span(node, base, buffer)),
+    });
+
+    if let Some(resume) = resume_offset {
+        new_spans.retain(|span| span.reveal_range.start < resume);
+        new_code_blocks.retain(|range| range.start < resume);
+        new_tables.retain(|table| table.range().start < resume);
+    }
+    spans.extend(new_spans);
+    code_blocks.extend(new_code_blocks);
+    tables.extend(new_tables);
+    resume_offset
+}
+
 /// Reads a table's rows from the text following its header. Rows are found
-/// textually because tree-sitter-md fails to parse a table once one of its rows
-/// has only empty cells, which is the case for every newly added row.
-fn markdown_table(node: Node, buffer: &BufferSnapshot) -> Option<MarkdownTable> {
-    let header_start = node.start_byte();
+/// textually because tree-sitter-md fails to parse a table whose last row has
+/// only empty cells, which is the case for every newly added row.
+fn markdown_table(node: Node, base: usize, buffer: &BufferSnapshot) -> Option<MarkdownTable> {
+    let header_start = base + node.start_byte();
     let first_row = buffer.offset_to_point(header_start).row;
     let first_line_start = buffer.point_to_offset(Point::new(first_row, 0));
     // Text preceding the rows, such as a block quote marker, which each row repeats.
@@ -851,7 +977,7 @@ fn layout_table(
     }
 }
 
-fn list_marker_span(node: Node, buffer: &BufferSnapshot) -> Option<ConcealableSpan> {
+fn list_marker_span(node: Node, base: usize, buffer: &BufferSnapshot) -> Option<ConcealableSpan> {
     if !matches!(
         node.kind(),
         "list_marker_minus" | "list_marker_star" | "list_marker_plus"
@@ -868,7 +994,7 @@ fn list_marker_span(node: Node, buffer: &BufferSnapshot) -> Option<ConcealableSp
         return None;
     }
 
-    let marker_start = node.start_byte();
+    let marker_start = base + node.start_byte();
     if !matches!(buffer.chars_at(marker_start).next(), Some('-' | '*' | '+')) {
         return None;
     }
@@ -1176,5 +1302,45 @@ mod tests {
             | ccc | d |
             ˇ
         "});
+    }
+
+    #[gpui::test]
+    async fn test_markdown_after_table_with_empty_last_row(cx: &mut TestAppContext) {
+        let mut cx = markdown_test_context(cx).await;
+
+        cx.set_state(indoc::indoc! {"
+            ˇ- before
+
+            | a | b |
+            |---|---|
+            | c | d |
+            |  |  |
+
+            - after
+            - **bold**
+
+            ```
+            - code
+            ```
+        "});
+        cx.run_until_parked();
+        assert_eq!(
+            cx.display_text(),
+            indoc::indoc! {"
+                - before
+
+                │ a │ b │
+                ├───┼───┤
+                │ c │ d │
+                │   │   │
+
+                • after
+                • ⋯bold⋯
+
+                ```
+                - code
+                ```
+            "}
+        );
     }
 }

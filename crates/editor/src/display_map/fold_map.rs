@@ -83,6 +83,115 @@ pub fn concealment_highlight_background(theme: &theme::Theme) -> gpui::Hsla {
     theme.colors().editor_foreground.opacity(0.08)
 }
 
+/// Renders a concealment's replacement text on the buffer font's character grid.
+/// Box-drawing characters are drawn as lines spanning the full line height, so
+/// table borders connect across rows and stay aligned even when the buffer font
+/// lacks those glyphs and a fallback font with different advances would be used.
+fn render_concealment_replacement(text: &str, highlight_padding: bool, cx: &mut App) -> AnyElement {
+    use gpui::{ParentElement as _, Styled as _, prelude::FluentBuilder as _};
+    use settings::Settings as _;
+    use theme::ActiveTheme as _;
+    use theme_settings::ThemeSettings;
+    use util::ResultExt as _;
+
+    let settings = ThemeSettings::get_global(cx);
+    let font = settings.buffer_font.clone();
+    let font_size = settings.buffer_font_size(cx);
+    let text_color = cx.theme().colors().text_muted;
+    let highlight = concealment_highlight_background(cx.theme());
+    let text_system = cx.text_system();
+    let column_width = text_system
+        .em_advance(text_system.resolve_font(&font), font_size)
+        .log_err();
+    let container = gpui::div()
+        .h_full()
+        .flex()
+        .items_center()
+        .whitespace_nowrap()
+        .font(font)
+        .text_size(font_size)
+        .text_color(text_color);
+    let Some(column_width) = column_width else {
+        return container
+            .child(SharedString::from(text.to_string()))
+            .into_any_element();
+    };
+
+    let is_box_drawing = |character: char| matches!(character, '│' | '─' | '├' | '┼' | '┤');
+    let char_count = text.chars().count();
+    let highlighted_count = if highlight_padding {
+        char_count.saturating_sub(1)
+    } else {
+        0
+    };
+    // Runs of characters drawn the same way: (first char, char count, highlighted, text).
+    let mut runs: Vec<(char, usize, bool, String)> = Vec::new();
+    for (index, character) in text.chars().enumerate() {
+        let highlighted = index < highlighted_count;
+        match runs.last_mut() {
+            Some((first, count, run_highlighted, run_text))
+                if *run_highlighted == highlighted
+                    && (*first == character
+                        || (!is_box_drawing(*first) && !is_box_drawing(character))) =>
+            {
+                *count += 1;
+                run_text.push(character);
+            }
+            _ => runs.push((character, 1, highlighted, character.to_string())),
+        }
+    }
+
+    let line_offset = (column_width * 0.5).floor();
+    let line_thickness = gpui::px(1.);
+    let mut container = container.w(column_width * char_count as f32);
+    for (character, count, highlighted, run_text) in runs {
+        let width = column_width * count as f32;
+        let run = gpui::div()
+            .flex_none()
+            .relative()
+            .h_full()
+            .w(width)
+            .flex()
+            .items_center()
+            .when(highlighted, |run| run.bg(highlight));
+        let run = if is_box_drawing(character) {
+            let horizontal = match character {
+                '─' | '┼' => Some((gpui::px(0.), width)),
+                '├' => Some((line_offset, width - line_offset)),
+                '┤' => Some((gpui::px(0.), line_offset + line_thickness)),
+                _ => None,
+            };
+            let run = run.when_some(horizontal, |run, (margin, line_width)| {
+                run.child(
+                    gpui::div()
+                        .flex_none()
+                        .ml(margin)
+                        .w(line_width)
+                        .h(line_thickness)
+                        .bg(text_color),
+                )
+            });
+            if character == '─' {
+                run
+            } else {
+                run.children((0..count).map(|index| {
+                    gpui::div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(column_width * index as f32 + line_offset)
+                        .w(line_thickness)
+                        .bg(text_color)
+                }))
+            }
+        } else {
+            run.child(SharedString::from(run_text))
+        };
+        container = container.child(run);
+    }
+    container.into_any_element()
+}
+
 impl PartialOrd for Concealment {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -96,38 +205,7 @@ impl FoldPlaceholder {
         let render: Arc<dyn Send + Sync + Fn(FoldId, Range<Anchor>, &mut App) -> AnyElement> =
             match replacement.clone() {
                 Some(text) => Arc::new(move |_, _, cx| {
-                    use gpui::{ParentElement as _, Styled as _};
-                    use settings::Settings as _;
-                    use theme::ActiveTheme as _;
-                    use theme_settings::ThemeSettings;
-                    let settings = ThemeSettings::get_global(cx);
-                    let container = gpui::div()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .whitespace_nowrap()
-                        .font(settings.buffer_font.clone())
-                        .text_size(settings.buffer_font_size(cx))
-                        .text_color(cx.theme().colors().text_muted);
-                    let padding_len = text
-                        .char_indices()
-                        .last()
-                        .map_or(0, |(last_char_index, _)| last_char_index);
-                    if highlight_padding && padding_len > 0 {
-                        container
-                            .child(
-                                gpui::div()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .bg(concealment_highlight_background(cx.theme()))
-                                    .child(SharedString::from(text[..padding_len].to_string())),
-                            )
-                            .child(SharedString::from(text[padding_len..].to_string()))
-                            .into_any_element()
-                    } else {
-                        container.child(text.clone()).into_any_element()
-                    }
+                    render_concealment_replacement(&text, highlight_padding, cx)
                 }),
                 None => Arc::new(|_, _, _| gpui::Empty.into_any_element()),
             };
