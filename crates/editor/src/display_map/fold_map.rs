@@ -373,6 +373,22 @@ impl FoldMapWriter<'_> {
         let mut desired = concealments
             .into_iter()
             .filter(|concealment| concealment.range.start < concealment.range.end)
+            .map(|mut concealment| {
+                // Chunk bitmaps are 128 bits wide, so longer placeholder text
+                // would corrupt the character and tab positions of its line.
+                if let Some(replacement) = concealment
+                    .replacement
+                    .as_ref()
+                    .filter(|replacement| replacement.len() > u128::BITS as usize)
+                {
+                    let mut end = u128::BITS as usize;
+                    while !replacement.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    concealment.replacement = Some(replacement[..end].to_string().into());
+                }
+                concealment
+            })
             .collect::<Vec<_>>();
         desired.sort_unstable();
         desired.dedup();

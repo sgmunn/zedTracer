@@ -915,25 +915,51 @@ fn layout_table(
 
     for (row, widths) in table.rows.iter().zip(&cell_widths) {
         if !editing && row.kind == TableRowKind::Delimiter {
-            let mut text = String::new();
-            if row.leading_pipe {
-                let leading_width = display_width(&row.segments[0], buffer, sorted_concealments);
-                text.extend(std::iter::repeat_n(' ', leading_width));
-                text.push('├');
+            if row.leading_pipe
+                && let Some(&pipe) = row.pipes.first()
+            {
+                concealments.push(Concealment {
+                    range: to_offsets(pipe..pipe + 1),
+                    replacement: Some("├".into()),
+                    highlight_padding: false,
+                });
             }
-            for (column, _) in row.cells().iter().enumerate() {
+            let cells = row.cells();
+            for (column, cell) in cells.iter().enumerate() {
                 let width = column_widths.get(column).copied().unwrap_or_default();
-                text.extend(std::iter::repeat_n('─', width));
-                if row.pipe_after_cell(column).is_some() {
-                    let is_last = column + 1 == row.cells().len();
-                    text.push(if is_last { '┤' } else { '┼' });
+                let line = "─".repeat(width);
+                let pipe = row.pipe_after_cell(column);
+                if cell.is_empty() {
+                    if let Some(pipe) = pipe {
+                        let junction = if column + 1 == cells.len() {
+                            '┤'
+                        } else {
+                            '┼'
+                        };
+                        conceal_within_chunk_limit(
+                            pipe..pipe + 1,
+                            format!("{line}{junction}"),
+                            false,
+                            buffer,
+                            concealments,
+                        );
+                    }
+                    continue;
+                }
+                conceal_within_chunk_limit(cell.clone(), line, false, buffer, concealments);
+                if let Some(pipe) = pipe {
+                    let junction = if column + 1 == cells.len() {
+                        "┤"
+                    } else {
+                        "┼"
+                    };
+                    concealments.push(Concealment {
+                        range: to_offsets(pipe..pipe + 1),
+                        replacement: Some(junction.into()),
+                        highlight_padding: false,
+                    });
                 }
             }
-            concealments.push(Concealment {
-                range: to_offsets(row.range.clone()),
-                replacement: Some(text.into()),
-                highlight_padding: false,
-            });
             continue;
         }
 
@@ -957,7 +983,8 @@ fn layout_table(
                 .get(column)
                 .copied()
                 .unwrap_or_default()
-                .saturating_sub(widths.get(column).copied().unwrap_or_default());
+                .saturating_sub(widths.get(column).copied().unwrap_or_default())
+                .min(MAX_REPLACEMENT_LEN - pipe_char.len_utf8());
             let padding_char = if row.kind == TableRowKind::Delimiter
                 && buffer.reversed_chars_at(cell.end).next() == Some('-')
             {
@@ -974,6 +1001,49 @@ fn layout_table(
                 highlight_padding: is_current_column && padding > 0,
             });
         }
+    }
+}
+
+/// Display map chunks are limited to 128 bytes, which bounds a concealment's replacement.
+const MAX_REPLACEMENT_LEN: usize = 128;
+
+/// Conceals `range` with `replacement`, spreading a replacement that is too long
+/// for a single concealment across the characters of the range.
+fn conceal_within_chunk_limit(
+    range: Range<usize>,
+    replacement: String,
+    highlight_padding: bool,
+    buffer: &BufferSnapshot,
+    concealments: &mut Vec<Concealment>,
+) {
+    let to_offsets =
+        |range: Range<usize>| MultiBufferOffset(range.start)..MultiBufferOffset(range.end);
+    let mut piece_start = range.start;
+    let mut remaining = replacement.as_str();
+    let mut char_end = range.start;
+    for character in buffer.chars_at(range.start) {
+        char_end += character.len_utf8();
+        let is_last_char = char_end >= range.end;
+        let mut split = remaining.len().min(MAX_REPLACEMENT_LEN);
+        while !remaining.is_char_boundary(split) {
+            split -= 1;
+        }
+        let (piece, rest) = remaining.split_at(split);
+        let piece_end = if is_last_char || rest.is_empty() {
+            range.end
+        } else {
+            char_end
+        };
+        concealments.push(Concealment {
+            range: to_offsets(piece_start..piece_end),
+            replacement: (!piece.is_empty()).then(|| piece.to_string().into()),
+            highlight_padding,
+        });
+        if piece_end >= range.end {
+            break;
+        }
+        piece_start = piece_end;
+        remaining = rest;
     }
 }
 
@@ -1075,7 +1145,9 @@ fn inline_span(node: Node) -> Option<ConcealableSpan> {
 mod tests {
     use super::MarkdownCodeBlock;
     use crate::actions::{Backtab, Newline, Tab};
-    use crate::{editor_tests::init_test, test::editor_test_context::EditorTestContext};
+    use crate::{
+        DisplayRow, editor_tests::init_test, test::editor_test_context::EditorTestContext,
+    };
     use gpui::{BorrowAppContext, TestAppContext};
     use language::{LanguageRegistry, Point};
     use multi_buffer::ToPoint as _;
@@ -1240,6 +1312,49 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(highlighted_column, [" a ", "---", " ccc "]);
+    }
+
+    #[gpui::test]
+    async fn test_markdown_table_soft_wrap(cx: &mut TestAppContext) {
+        let mut cx = markdown_test_context(cx).await;
+
+        cx.set_state(indoc::indoc! {"
+            | Section | What to capture |
+            | --- | --- |
+            | **Metadata**| Record ID, references, agent, dates, status |
+            |  |  |
+
+            ˇtext
+        "});
+        cx.run_until_parked();
+        cx.update_editor(|editor, _, cx| {
+            editor.set_wrap_width(Some(140.0.into()), cx);
+        });
+        cx.run_until_parked();
+
+        let lines = cx.update_editor(|editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            (0..=snapshot.max_point().row().0)
+                .map(|row| snapshot.display_snapshot.line(DisplayRow(row)))
+                .collect::<Vec<_>>()
+        });
+        let delimiter = lines
+            .iter()
+            .skip_while(|line| !line.starts_with('├'))
+            .take_while(|line| line.starts_with(['├', '─']))
+            .map(String::as_str)
+            .collect::<String>();
+        let columns = delimiter
+            .strip_prefix('├')
+            .and_then(|rest| rest.strip_suffix('┤'))
+            .map(|rest| rest.split('┼').collect::<Vec<_>>());
+        assert!(
+            columns.is_some_and(|columns| columns.len() == 2
+                && columns
+                    .iter()
+                    .all(|column| !column.is_empty() && column.chars().all(|c| c == '─'))),
+            "the delimiter row should be drawn in full: {lines:#?}"
+        );
     }
 
     #[gpui::test]

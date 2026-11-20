@@ -4206,6 +4206,50 @@ pub mod tests {
     }
 
     #[gpui::test]
+    async fn test_soft_wrap_never_splits_unmeasured_concealment(cx: &mut gpui::TestAppContext) {
+        cx.background_executor
+            .set_block_on_ticks(usize::MAX..=usize::MAX);
+        cx.update(|cx| init_test(cx, &|_| {}));
+
+        let buffer = cx.update(|cx| MultiBuffer::build_simple("ab|cd\nef", cx));
+        let map = cx.new(|cx| {
+            DisplayMap::new(
+                buffer,
+                font("Courier"),
+                px(16.0),
+                Some(px(40.0)),
+                1,
+                1,
+                FoldPlaceholder::test(),
+                DiagnosticSeverity::Warning,
+                cx,
+            )
+        });
+        let replacement = "─".repeat(20);
+        map.update(cx, |map, cx| {
+            map.set_concealments(
+                vec![Concealment {
+                    range: MultiBufferOffset(2)..MultiBufferOffset(3),
+                    replacement: Some(replacement.clone().into()),
+                    highlight_padding: false,
+                }],
+                cx,
+            )
+        });
+
+        let lines = map.update(cx, |map, cx| {
+            let snapshot = map.snapshot(cx);
+            (0..=snapshot.max_point().row().0)
+                .map(|row| snapshot.line(DisplayRow(row)))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            lines.iter().any(|line| line.contains(&replacement)),
+            "the concealment should stay on one line: {lines:#?}"
+        );
+    }
+
+    #[gpui::test]
     async fn test_chunks_with_text_highlights(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| init_test(cx, &|_| {}));
 

@@ -1,7 +1,7 @@
 use super::{
     Highlights,
     dimensions::RowDelta,
-    fold_map::{Chunk, FoldRows},
+    fold_map::{Chunk, ChunkRendererId, FoldRows},
     invisibles::{is_invisible, is_standalone_grapheme, replacement},
     tab_map::{self, TabEdit, TabPoint, TabSnapshot},
 };
@@ -94,6 +94,7 @@ struct LineFragmentBuilder {
     font_id: FontId,
     font_size: Pixels,
     cached_replacement_widths: HashMap<char, Pixels>,
+    cached_char_widths: HashMap<char, Pixels>,
 }
 
 impl LineFragmentBuilder {
@@ -104,6 +105,7 @@ impl LineFragmentBuilder {
             font_id,
             font_size,
             cached_replacement_widths: HashMap::default(),
+            cached_char_widths: HashMap::default(),
         }
     }
 
@@ -141,6 +143,17 @@ impl LineFragmentBuilder {
                     .layout_width(self.font_id, self.font_size, replacement_char)
             });
         Some(width)
+    }
+
+    fn estimated_width(&mut self, text: &str) -> Pixels {
+        text.chars()
+            .map(|character| {
+                *self.cached_char_widths.entry(character).or_insert_with(|| {
+                    self.text_system
+                        .layout_width(self.font_id, self.font_size, character)
+                })
+            })
+            .fold(Pixels::ZERO, |total, width| total + width)
     }
 }
 
@@ -664,9 +677,16 @@ impl WrapSnapshot {
                             });
                             break;
                         } else {
-                            if let Some(width) =
-                                chunk.renderer.as_ref().and_then(|r| r.measured_width)
-                            {
+                            if let Some(width) = chunk.renderer.as_ref().and_then(|renderer| {
+                                renderer.measured_width.or_else(|| {
+                                    // A fold placeholder is a single element, so it must never be
+                                    // wrapped in the middle, even before its width is measured.
+                                    let is_splittable = chunk.text.chars().nth(1).is_some();
+                                    (matches!(renderer.id, ChunkRendererId::Fold(_))
+                                        && is_splittable)
+                                        .then(|| fragment_builder.estimated_width(chunk.text))
+                                })
+                            }) {
                                 line_fragments
                                     .push(gpui::LineFragment::element(width, chunk.text.len()));
                             } else {
