@@ -86,7 +86,8 @@ pub use block_map::{
 };
 pub use crease_map::*;
 pub use fold_map::{
-    ChunkRenderer, ChunkRendererContext, ChunkRendererId, Fold, FoldId, FoldPlaceholder, FoldPoint,
+    ChunkRenderer, ChunkRendererContext, ChunkRendererId, Concealment, Fold, FoldId,
+    FoldPlaceholder, FoldPoint, concealment_highlight_background,
 };
 pub use inlay_map::{InlayOffset, InlayPoint};
 use invisibles::is_standalone_grapheme;
@@ -142,12 +143,6 @@ pub(crate) use tab_map::TabPoint;
 use tab_map::{TabPointCursor, TabSnapshot};
 use wrap_map::{WrapMap, WrapPatch, WrapPointCursor};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FoldStatus {
-    Folded,
-    Foldable,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NavigationOverlayKey(TypeId);
 
@@ -180,6 +175,12 @@ pub enum HighlightKey {
     HoveredLinkState,
     InlineAssist,
     InputComposition,
+    MarkdownEmphasis,
+    MarkdownStrikethrough,
+    MarkdownStrongEmphasis,
+    MarkdownSyntax,
+    MarkdownTableColumn,
+    MarkdownTableHeader,
     MatchingBracket,
     NavigationOverlay(NavigationOverlayKey),
     PendingInput,
@@ -787,6 +788,40 @@ impl DisplayMap {
         self.block_map.write(snapshot, edits, None).insert(blocks);
     }
 
+    /// Hides exactly the given ranges from the display, replacing any previously
+    /// concealed ranges. Returns whether the display changed.
+    #[instrument(skip_all)]
+    pub fn set_concealments(
+        &mut self,
+        concealments: Vec<Concealment>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.companion().is_some() {
+            return false;
+        }
+
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let edits = self.buffer_subscription.consume().into_inner();
+        let tab_size = Self::tab_size(&self.buffer, cx);
+
+        let (snapshot, edits) = self.inlay_map.sync(snapshot, edits);
+        let (mut fold_map, snapshot, edits) = self.fold_map.write(snapshot, edits);
+        let (snapshot, edits) = self.tab_map.sync(snapshot, edits, tab_size);
+        let (snapshot, edits) = self
+            .wrap_map
+            .update(cx, |map, cx| map.sync(snapshot, edits, cx));
+        self.block_map.read(snapshot, edits, None);
+
+        let (snapshot, edits) = fold_map.set_concealments(concealments);
+        let changed = !edits.is_empty();
+        let (snapshot, edits) = self.tab_map.sync(snapshot, edits, tab_size);
+        let (snapshot, edits) = self
+            .wrap_map
+            .update(cx, |map, cx| map.sync(snapshot, edits, cx));
+        self.block_map.write(snapshot, edits, None);
+        changed
+    }
+
     /// Removes any folds with the given ranges.
     #[instrument(skip_all)]
     pub fn remove_folds_with_type<T: ToOffset>(
@@ -960,9 +995,7 @@ impl DisplayMap {
             .lsp_folding_crease_ids
             .remove(&buffer_id)
             .unwrap_or_default();
-        if !old_ids.is_empty() {
-            self.crease_map.remove(old_ids, &snapshot);
-        }
+        self.crease_map.remove(old_ids, &snapshot);
 
         if ranges.is_empty() {
             return;
@@ -1806,11 +1839,6 @@ impl DisplaySnapshot {
     pub fn display_point_to_inlay_offset(&self, point: DisplayPoint, bias: Bias) -> InlayOffset {
         self.inlay_snapshot()
             .to_offset(self.display_point_to_inlay_point(point, bias))
-    }
-
-    pub fn anchor_to_inlay_offset(&self, anchor: Anchor) -> InlayOffset {
-        self.inlay_snapshot()
-            .to_inlay_offset(anchor.to_offset(self.buffer_snapshot()))
     }
 
     pub fn display_point_to_anchor(&self, point: DisplayPoint, bias: Bias) -> Anchor {
@@ -4909,7 +4937,7 @@ pub mod tests {
         let buffer = cx.new(|cx| Buffer::local("initial", cx));
         let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
 
-        // Edit the buffer. This sets buffer_changed_since_sync = true.
+        // Edit the buffer. This adds it to the multibuffer's changed buffers.
         // Importantly, do NOT call multibuffer.snapshot() yet.
         buffer.update(cx, |buffer, cx| {
             buffer.edit([(0..0, "prefix ")], None, cx);

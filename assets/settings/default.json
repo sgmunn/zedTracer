@@ -453,6 +453,13 @@
   "current_line_highlight": "all",
   // Whether to highlight all occurrences of the selected text in an editor.
   "selection_highlight": true,
+  // Whether to hide Markdown syntax (such as `**`, `_`, `~~`, backticks and link
+  // destinations) in Markdown files, revealing it only while the cursor or
+  // selection touches the formatted text. List markers are shown as bullets
+  // away from the cursor's line, and code blocks get a background. Table
+  // columns are aligned and drawn with box lines away from the cursor, and
+  // Tab and Enter move between cells and add rows.
+  "conceal_markdown_syntax": true,
   // Whether the text selection should have rounded corners.
   "rounded_selection": true,
   // The debounce delay before querying highlights from the language
@@ -994,7 +1001,7 @@
     //   "icon"
     // 2. A disclosure chevron:
     //   "chevron"
-    // 3. A disclosure chevron followed by a folder icon:
+    // 3. A disclosure chevron followed by a folder icon, with no chevron on empty folders in local projects:
     //   "both"
     "folder_indicator": "icon",
     // Whether to show the git status in the project panel.
@@ -1356,7 +1363,9 @@
       // Global default permission when no tool-specific rules match.
       // "allow" - Auto-approve without prompting
       // "deny" - Auto-reject
-      // "confirm" - Always prompt (default)
+      // "confirm" - Prompt for approval (default). The edit_file and
+      //   write_file tools don't prompt for files inside the project unless
+      //   an "always_confirm" pattern matches.
       "default": "confirm",
       // Per-tool permission rules. Regex patterns match against tool input text.
       // The per-tool "default" also applies to MCP tools.

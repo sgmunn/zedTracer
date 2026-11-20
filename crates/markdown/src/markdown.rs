@@ -2768,6 +2768,7 @@ impl Element for MarkdownElement {
         };
         let mut code_block_ids = HashSet::default();
         let mut current_code_block_text = None;
+        let mut block_quote_depth = 0usize;
 
         let mut current_img_block_range: Option<Range<usize>> = None;
         let mut handled_html_block = false;
@@ -2880,6 +2881,7 @@ impl Element for MarkdownElement {
                             );
                         }
                         MarkdownTag::BlockQuote(kind) => {
+                            block_quote_depth += 1;
                             self.push_markdown_block_quote(
                                 &mut builder,
                                 *kind,
@@ -3266,6 +3268,7 @@ impl Element for MarkdownElement {
                         self.pop_markdown_heading(&mut builder);
                     }
                     MarkdownTagEnd::BlockQuote(_kind) => {
+                        block_quote_depth = block_quote_depth.saturating_sub(1);
                         self.pop_markdown_block_quote(&mut builder);
                     }
                     MarkdownTagEnd::CodeBlock => {
@@ -3470,7 +3473,10 @@ impl Element for MarkdownElement {
                     );
                     builder.pop_div()
                 }
-                MarkdownEvent::SoftBreak if !self.style.soft_break_as_hard_break => {
+                // Quoted text is usually quoted line by line, so keep its line breaks.
+                MarkdownEvent::SoftBreak
+                    if !self.style.soft_break_as_hard_break && block_quote_depth == 0 =>
+                {
                     builder.push_soft_break(range.clone());
                 }
                 MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
@@ -4276,10 +4282,28 @@ impl MarkdownElementBuilder {
         source_range: Range<usize>,
         highlights: Option<&ResolvedHighlights>,
     ) {
+        let rendered_start = self.pending_line.text.len();
         self.pending_line.source_mappings.push(SourceMapping {
-            rendered_index: self.pending_line.text.len(),
+            rendered_index: rendered_start,
             source_index: source_range.start,
         });
+        // Within a mapping, a rendered index and its source index advance together. Text
+        // longer than its source, such as dashes substituted for a run of hyphens, would
+        // run out of source that way, so each of its characters gets a mapping of its own.
+        if text.len() > source_range.len() {
+            let mut previous_source_index = source_range.start;
+            for (char_index, _) in text.char_indices().skip(1) {
+                let source_index =
+                    source_range.start + char_index * source_range.len() / text.len();
+                if source_index > previous_source_index {
+                    self.pending_line.source_mappings.push(SourceMapping {
+                        rendered_index: rendered_start + char_index,
+                        source_index,
+                    });
+                    previous_source_index = source_index;
+                }
+            }
+        }
         self.pending_line.text.push_str(text);
         self.current_source_index = source_range.end;
 
@@ -4737,34 +4761,55 @@ impl RenderedLine {
         }
     }
 
+    /// Returns the rendered index for a source index, which may lie in syntax this line hides.
+    ///
+    /// A source index in hidden syntax maps to the nearest rendered text: the end of the segment
+    /// before it, or the start of the line. The result is not necessarily a character boundary,
+    /// because rendered text can differ from its source.
     fn rendered_index_for_source_index(&self, source_index: usize) -> usize {
         if source_index >= self.source_end {
             return self.layout.len();
         }
 
-        let mapping = match self
+        let mapping_ix = self
             .source_mappings
-            .binary_search_by_key(&source_index, |probe| probe.source_index)
-        {
-            Ok(ix) => &self.source_mappings[ix],
-            Err(ix) => &self.source_mappings[ix - 1],
+            .partition_point(|mapping| mapping.source_index <= source_index)
+            .saturating_sub(1);
+        let Some(mapping) = self.source_mappings.get(mapping_ix) else {
+            return 0;
         };
-        (mapping.rendered_index + (source_index - mapping.source_index)).min(self.layout.len())
+        let segment_end = self
+            .source_mappings
+            .get(mapping_ix + 1)
+            .map_or(self.layout.len(), |next_mapping| {
+                next_mapping.rendered_index
+            });
+        (mapping.rendered_index + source_index.saturating_sub(mapping.source_index))
+            .min(segment_end)
     }
 
+    /// Returns the source index for a rendered index.
+    ///
+    /// Rendered text can be longer than its source, so the result is kept within the source of
+    /// the segment containing the index.
     fn source_index_for_rendered_index(&self, rendered_index: usize) -> usize {
         if rendered_index >= self.layout.len() {
             return self.source_end;
         }
 
-        let mapping = match self
+        let mapping_ix = match self
             .source_mappings
             .binary_search_by_key(&rendered_index, |probe| probe.rendered_index)
         {
-            Ok(ix) => &self.source_mappings[ix],
-            Err(ix) => &self.source_mappings[ix - 1],
+            Ok(ix) => ix,
+            Err(ix) => ix - 1,
         };
-        mapping.source_index + (rendered_index - mapping.rendered_index)
+        let mapping = &self.source_mappings[mapping_ix];
+        let segment_source_end = self
+            .source_mappings
+            .get(mapping_ix + 1)
+            .map_or(self.source_end, |next_mapping| next_mapping.source_index);
+        (mapping.source_index + (rendered_index - mapping.rendered_index)).min(segment_source_end)
     }
 
     /// Returns the source index for use as an exclusive range end at a word/selection boundary.
@@ -4781,10 +4826,7 @@ impl RenderedLine {
             .binary_search_by_key(&rendered_index, |probe| probe.rendered_index)
         {
             Ok(ix) => ix,
-            Err(ix) => {
-                return self.source_mappings[ix - 1].source_index
-                    + (rendered_index - self.source_mappings[ix - 1].rendered_index);
-            }
+            Err(_) => return self.source_index_for_rendered_index(rendered_index),
         };
 
         // Exact match at the start of a segment. Check if there's a gap from the previous segment.
@@ -5120,9 +5162,10 @@ impl RenderedText {
             }
 
             let line_rendered_start = line.source_mappings.first().unwrap().rendered_index;
-            let rendered_index_in_line =
-                line.rendered_index_for_source_index(source_index) - line_rendered_start;
             let text = line.layout.text();
+            let rendered_index_in_line = text.floor_char_boundary(
+                line.rendered_index_for_source_index(source_index) - line_rendered_start,
+            );
 
             let scope = line.language.as_ref().map(|l| l.default_scope());
             let classifier = CharClassifier::new(scope);
@@ -5195,8 +5238,11 @@ impl RenderedText {
                 line.rendered_index_for_source_index(line.source_end)
             } else {
                 line.rendered_index_for_source_index(range.end)
-            }
-            .min(text.len());
+            };
+            // A source index can map into the middle of a rendered character: rendered text
+            // can differ from its source, and a selection can outlive the source it was made in.
+            let end = text.floor_char_boundary(end);
+            let start = text.floor_char_boundary(start).min(end);
 
             accumulator.push_str(&text[start..end]);
             accumulator.push('\n');
@@ -5528,6 +5574,12 @@ mod tests {
         assert_mappings(
             &render_markdown("\"hey\"", cx),
             vec![vec![(0, 0), (3, 1), (4, 2), (5, 3), (6, 4), (9, 5)]],
+        );
+
+        // Dashes are longer than the run of hyphens they are substituted for.
+        assert_mappings(
+            &render_markdown("--------я", cx),
+            vec![vec![(0, 0), (3, 2), (6, 4), (9, 6), (12, 8), (14, 10)]],
         );
 
         // HTML Comments are ignored
@@ -5906,7 +5958,7 @@ mod tests {
             let languages_by_name = &markdown.parsed_markdown().languages_by_name;
             let resolved_name = |info: &str| {
                 languages_by_name
-                    .get(&SharedString::from(info.to_string()))
+                    .get(&SharedString::from(info))
                     .map(|language| language.name())
             };
             assert_eq!(resolved_name("Go Mod"), Some("Go Mod".into()));
@@ -6118,6 +6170,26 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_soft_break_in_block_quote_keeps_line_break(cx: &mut TestAppContext) {
+        let rendered_lines = |markdown: &str, cx: &mut TestAppContext| {
+            render_markdown(markdown, cx)
+                .lines
+                .iter()
+                .map(|line| line.layout.wrapped_text())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            rendered_lines("> line 1\n> line 2", cx),
+            vec!["line 1\nline 2".to_string()]
+        );
+        assert_eq!(
+            rendered_lines("line 1\nline 2", cx),
+            vec!["line 1 line 2".to_string()]
+        );
+    }
+
+    #[gpui::test]
     fn test_soft_break_keeps_space_in_paragraph_with_image(cx: &mut TestAppContext) {
         let image = test_image(cx);
         let rendered = render_markdown_with_image_resolver(
@@ -6286,6 +6358,10 @@ mod tests {
         let word_range = rendered.surrounding_word_range(5); // Simulate click on space between "Hello" and "world", expect highlighting word to the left
         let selected_text = rendered.text_for_range(word_range);
         assert_eq!(selected_text, "Hello");
+
+        // A source index in the list marker, before the line's first rendered text.
+        let rendered = render_markdown("- foo", cx);
+        assert_eq!(rendered.surrounding_word_range(0), 2..5);
     }
 
     #[gpui::test]

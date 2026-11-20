@@ -1915,15 +1915,21 @@ mod tests {
 
             let given: super::MermaidAccentColors = Arc::new(move |_| vec![(red, blue)]);
             markdown.set_mermaid_accent_colors(Some(given), cx);
-            let theme = super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
+            let theme =
+                super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
             let [accent] = theme.accent_colors.as_slice() else {
                 panic!("one accent color, not {}", theme.accent_colors.len());
             };
             assert_eq!((accent.foreground, accent.background), (red, blue));
 
             markdown.set_mermaid_accent_colors(None, cx);
-            let theme = super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
-            assert_eq!(theme.accent_colors.len(), players.len(), "the player colors again");
+            let theme =
+                super::build_mermaid_theme(cx, markdown.mermaid_state.accent_colors.as_ref());
+            assert_eq!(
+                theme.accent_colors.len(),
+                players.len(),
+                "the player colors again"
+            );
         });
     }
 
@@ -1931,9 +1937,15 @@ mod tests {
     fn a_wheel_that_moves_only_sideways_is_a_horizontal_scroll() {
         use super::is_horizontal_scroll;
         assert!(is_horizontal_scroll(ScrollDelta::Lines(point(-3., 0.))));
-        assert!(is_horizontal_scroll(ScrollDelta::Pixels(point(px(12.), px(0.)))));
+        assert!(is_horizontal_scroll(ScrollDelta::Pixels(point(
+            px(12.),
+            px(0.)
+        ))));
         assert!(!is_horizontal_scroll(ScrollDelta::Lines(point(0., -3.))));
-        assert!(!is_horizontal_scroll(ScrollDelta::Pixels(point(px(12.), px(1.)))), "a diagonal one is not");
+        assert!(
+            !is_horizontal_scroll(ScrollDelta::Pixels(point(px(12.), px(1.)))),
+            "a diagonal one is not"
+        );
         assert!(!is_horizontal_scroll(ScrollDelta::Lines(point(0., 0.))));
     }
 
@@ -1972,13 +1984,20 @@ mod tests {
             diagram: ScrollHandle::new(),
         });
         cx.simulate_resize(size(px(600.), px(400.)));
-        let draw = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        let draw =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
         draw(cx);
         let (view, diagram) = scrolling.read_with(cx, |scrolling, _| {
             (scrolling.view.clone(), scrolling.diagram.clone())
         });
-        assert!(diagram.max_offset().x > px(0.), "the diagram is wider than the view");
-        assert!(view.max_offset().y > px(0.), "and the view is taller than the window");
+        assert!(
+            diagram.max_offset().x > px(0.),
+            "the diagram is wider than the view"
+        );
+        assert!(
+            view.max_offset().y > px(0.),
+            "and the view is taller than the window"
+        );
 
         let over_diagram = point(px(100.), px(50.));
         let wheel = |delta: ScrollDelta, cx: &mut gpui::VisualTestContext| {
@@ -1994,10 +2013,17 @@ mod tests {
 
         wheel(ScrollDelta::Lines(point(-3., 0.)), cx);
         assert!(diagram.offset().x < px(0.), "the diagram scrolled sideways");
-        assert_eq!(view.offset().y, px(0.), "and the view around it did not scroll down");
+        assert_eq!(
+            view.offset().y,
+            px(0.),
+            "and the view around it did not scroll down"
+        );
 
         wheel(ScrollDelta::Lines(point(0., -3.)), cx);
-        assert!(view.offset().y < px(0.), "a vertical wheel still scrolls the view");
+        assert!(
+            view.offset().y < px(0.),
+            "a vertical wheel still scrolls the view"
+        );
     }
 
     /// A `Markdown` that holds a diagram whose natural width is 200px, in a pane that is

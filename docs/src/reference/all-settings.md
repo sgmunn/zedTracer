@@ -1314,6 +1314,12 @@ Set `[]` to clear the inherited list. Omit this setting to inherit it unchanged.
 - Setting: `selection_highlight`
 - Default: `true`
 
+## Conceal Markdown Syntax
+
+- Description: Whether to hide Markdown syntax (such as `**`, `_`, `~~`, backticks and link destinations) in Markdown files, revealing it only while the cursor or selection touches the formatted text. List markers are shown as bullets away from the cursor's line, and code blocks get a background. Table columns are aligned and drawn with box lines away from the cursor, and Tab and Enter move between cells and add rows.
+- Setting: `conceal_markdown_syntax`
+- Default: `true`
+
 ## Rounded Selection
 
 - Description: Whether the text selection should have rounded corners.

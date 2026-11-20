@@ -189,7 +189,6 @@ impl Editor {
             });
         });
         self.request_autoscroll(Autoscroll::newest(), cx);
-        cx.notify();
     }
 
     pub fn select_to_end(&mut self, _: &SelectToEnd, window: &mut Window, cx: &mut Context<Self>) {
@@ -1562,7 +1561,7 @@ impl Editor {
                 }
             }
 
-            if !text.is_empty() {
+            if selections.iter().any(|selection| !selection.is_empty()) {
                 cx.write_to_primary(ClipboardItem::new_string(text));
             }
         }
@@ -1675,6 +1674,7 @@ impl Editor {
             }
         }
 
+        self.refresh_markdown_concealment(cx);
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
 
         if local && !self.suppress_selection_callback {

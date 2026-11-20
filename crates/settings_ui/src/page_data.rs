@@ -1530,7 +1530,7 @@ fn appearance_page() -> SettingsPage {
         ]
     }
 
-    fn highlighting_section() -> [SettingsPageItem; 6] {
+    fn highlighting_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("Highlighting"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1572,6 +1572,22 @@ fn appearance_page() -> SettingsPage {
                     pick: |settings_content| settings_content.editor.selection_highlight.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.editor.selection_highlight = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Conceal Markdown Syntax",
+                description: "Hide Markdown syntax in Markdown files unless the cursor touches the formatted text, show list markers as bullets, give code blocks a background, and align tables.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("conceal_markdown_syntax"),
+                    pick: |settings_content| {
+                        settings_content.editor.conceal_markdown_syntax.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.editor.conceal_markdown_syntax = value;
                     },
                 }),
                 metadata: None,

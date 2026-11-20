@@ -72,6 +72,7 @@ mod diagnostics;
 mod edit_prediction;
 mod input;
 mod markdown_actions;
+mod markdown_concealment;
 mod navigation;
 mod rewrap;
 mod selection;
@@ -345,9 +346,6 @@ pub enum ConflictsOurs {}
 pub enum ConflictsTheirs {}
 pub enum ConflictsOursMarker {}
 pub enum ConflictsTheirsMarker {}
-
-pub struct HunkAddedColor;
-pub struct HunkRemovedColor;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Navigated {
@@ -1050,7 +1048,6 @@ pub struct Editor {
     show_diff_review_button: bool,
     show_wrap_guides: Option<bool>,
     show_indent_guides: Option<bool>,
-    buffers_with_disabled_indent_guides: HashSet<BufferId>,
     highlight_order: usize,
     highlighted_rows: TypeIdHashMap<Vec<RowHighlight>>,
     background_highlights: HashMap<HighlightKey, BackgroundHighlight>,
@@ -1213,6 +1210,7 @@ pub struct Editor {
     use_document_folding_ranges: bool,
     inlay_hints: Option<LspInlayHintData>,
     folding_newlines: Task<()>,
+    markdown_concealment: markdown_concealment::MarkdownConcealment,
     select_next_options: Option<SelectSearchOptions>,
     pub lookup_key: Option<Box<dyn Any + Send + Sync>>,
     on_local_selections_changed:
@@ -1921,8 +1919,6 @@ impl Editor {
             .clone_state(&self.scroll_manager, &my_snapshot, &clone_snapshot, cx);
         clone.searchable = self.searchable;
         clone.read_only = self.read_only;
-        clone.buffers_with_disabled_indent_guides =
-            self.buffers_with_disabled_indent_guides.clone();
         clone.enable_mouse_wheel_zoom = self.enable_mouse_wheel_zoom;
         clone.enable_lsp_data = self.enable_lsp_data;
         clone.needs_initial_data_update = self.enable_lsp_data;
@@ -2440,7 +2436,6 @@ impl Editor {
             show_diff_review_button: false,
             show_wrap_guides: None,
             show_indent_guides,
-            buffers_with_disabled_indent_guides: HashSet::default(),
             highlight_order: 0,
             highlighted_rows: Default::default(),
             background_highlights: HashMap::default(),
@@ -2599,6 +2594,7 @@ impl Editor {
             mode,
             selection_drag_state: SelectionDragState::None,
             folding_newlines: Task::ready(()),
+            markdown_concealment: Default::default(),
             lookup_key: None,
             select_next_options: None,
             on_local_selections_changed: None,
@@ -2758,6 +2754,7 @@ impl Editor {
             if let Some(buffer) = multi_buffer.read(cx).as_singleton() {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
             }
+            editor.refresh_markdown_concealment(cx);
             editor.report_editor_event(ReportEditorEvent::EditorOpened, None, cx);
         }
 
@@ -3874,7 +3871,6 @@ impl Editor {
                         |_, theme| theme.colors().editor_document_highlight_write_background,
                         cx,
                     );
-                    cx.notify();
                 })
                 .log_err();
             }
@@ -5196,11 +5192,10 @@ impl Editor {
                         let autoclose_enabled =
                             self.use_autoclose && snapshot_settings.use_autoclose;
                         if autoclose_enabled {
-                            let start = snapshot.anchor_after(selection_head);
-                            let end = snapshot.anchor_after(selection_head);
+                            let anchor = snapshot.anchor_after(selection_head);
                             self.autoclose_regions.push(AutocloseRegion {
                                 selection_id: selection.id,
-                                range: start..end,
+                                range: anchor..anchor,
                                 pair,
                             });
                         }
@@ -5379,6 +5374,9 @@ impl Editor {
         if self.move_to_prev_snippet_tabstop(window, cx) {
             return;
         }
+        if self.markdown_table_tab(false, window, cx) {
+            return;
+        }
         self.outdent(&Outdent, window, cx);
     }
 
@@ -5426,6 +5424,9 @@ impl Editor {
             return;
         }
         if self.read_only(cx) {
+            return;
+        }
+        if self.markdown_table_tab(true, window, cx) {
             return;
         }
         let mut selections = self.selections.all_adjusted(&self.display_snapshot(cx));
@@ -10135,6 +10136,7 @@ impl Editor {
                 self.refresh_active_diagnostics(cx);
                 self.refresh_code_actions_for_selection(window, cx);
                 self.refresh_single_line_folds(window, cx);
+                self.refresh_markdown_concealment(cx);
                 let snapshot = self.snapshot(window, cx);
                 self.refresh_matching_bracket_highlights(&snapshot, cx);
                 self.refresh_outline_symbols_at_cursor(cx);
@@ -10252,6 +10254,7 @@ impl Editor {
                 });
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
+                self.markdown_syntax_changed(cx);
                 self.refresh_runnables(Some(*buffer_id), window, cx);
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 self.colorize_brackets(true, cx);
@@ -10279,6 +10282,7 @@ impl Editor {
                     self.refresh_document_highlights(cx);
                 }
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
+                self.markdown_syntax_changed(cx);
                 cx.emit(EditorEvent::Reparsed(*buffer_id));
                 self.update_edit_prediction_settings(cx);
                 cx.notify();
@@ -10406,6 +10410,7 @@ impl Editor {
             cx,
         );
         self.refresh_inline_values(cx);
+        self.markdown_syntax_changed(cx);
 
         let old_cursor_shape = self.cursor_shape;
         let old_breadcrumbs_visible = self.breadcrumbs_visible();

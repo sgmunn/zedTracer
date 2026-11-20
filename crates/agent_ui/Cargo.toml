@@ -71,6 +71,7 @@ jsonschema.workspace = true
 kusto_results_ui.workspace = true
 language.workspace = true
 language_model.workspace = true
+language_model_selector.workspace = true
 language_models.workspace = true
 log.workspace = true
 lru.workspace = true
