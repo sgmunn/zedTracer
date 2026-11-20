@@ -1579,7 +1579,7 @@ fn appearance_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Conceal Markdown Syntax",
-                description: "Hide Markdown syntax in Markdown files unless the cursor touches the formatted text.",
+                description: "Hide Markdown syntax in Markdown files unless the cursor touches the formatted text, show list markers as bullets, and give code blocks a background.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("conceal_markdown_syntax"),

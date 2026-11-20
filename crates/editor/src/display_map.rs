@@ -86,7 +86,8 @@ pub use block_map::{
 };
 pub use crease_map::*;
 pub use fold_map::{
-    ChunkRenderer, ChunkRendererContext, ChunkRendererId, Fold, FoldId, FoldPlaceholder, FoldPoint,
+    ChunkRenderer, ChunkRendererContext, ChunkRendererId, Concealment, Fold, FoldId,
+    FoldPlaceholder, FoldPoint,
 };
 pub use inlay_map::{InlayOffset, InlayPoint};
 use invisibles::is_standalone_grapheme;
@@ -794,9 +795,9 @@ impl DisplayMap {
     /// Hides exactly the given ranges from the display, replacing any previously
     /// concealed ranges. Returns whether the display changed.
     #[instrument(skip_all)]
-    pub fn set_concealed_ranges(
+    pub fn set_concealments(
         &mut self,
-        ranges: Vec<Range<MultiBufferOffset>>,
+        concealments: Vec<Concealment>,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.companion().is_some() {
@@ -815,7 +816,7 @@ impl DisplayMap {
             .update(cx, |map, cx| map.sync(snapshot, edits, cx));
         self.block_map.read(snapshot, edits, None);
 
-        let (snapshot, edits) = fold_map.set_concealments(ranges);
+        let (snapshot, edits) = fold_map.set_concealments(concealments);
         let changed = !edits.is_empty();
         let (snapshot, edits) = self.tab_map.sync(snapshot, edits, tab_size);
         let (snapshot, edits) = self

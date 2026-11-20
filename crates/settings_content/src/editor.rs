@@ -38,7 +38,8 @@ pub struct EditorSettingsContent {
     pub selection_highlight: Option<bool>,
     /// Whether to hide Markdown syntax such as `**`, `_`, `~~`, backticks and
     /// link destinations in Markdown files, revealing it only while the cursor
-    /// or selection touches the formatted text.
+    /// or selection touches the formatted text. List markers are shown as
+    /// bullets away from the cursor's line, and code blocks get a background.
     ///
     /// Default: true
     pub conceal_markdown_syntax: Option<bool>,

@@ -51,22 +51,66 @@ impl Default for FoldPlaceholder {
 
 /// Tags folds that hide syntax (such as Markdown emphasis markers) rather than
 /// folds the user created, so that fold commands and indicators ignore them.
-struct Concealment;
+struct ConcealmentTag;
+
+/// A range hidden from the display, optionally shown as replacement text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Concealment {
+    pub range: Range<MultiBufferOffset>,
+    pub replacement: Option<SharedString>,
+}
+
+impl Ord for Concealment {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.range
+            .start
+            .cmp(&other.range.start)
+            .then_with(|| self.range.end.cmp(&other.range.end))
+            .then_with(|| self.replacement.cmp(&other.replacement))
+    }
+}
+
+impl PartialOrd for Concealment {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl FoldPlaceholder {
-    /// A zero-width placeholder used to hide syntax from the display.
-    pub fn concealment() -> Self {
+    /// A placeholder used to hide syntax from the display. Without replacement
+    /// text it is zero-width.
+    pub fn concealment(replacement: Option<SharedString>) -> Self {
+        let render: Arc<dyn Send + Sync + Fn(FoldId, Range<Anchor>, &mut App) -> AnyElement> =
+            match replacement.clone() {
+                Some(text) => Arc::new(move |_, _, cx| {
+                    use gpui::{ParentElement as _, Styled as _};
+                    use settings::Settings as _;
+                    use theme::ActiveTheme as _;
+                    use theme_settings::ThemeSettings;
+                    let settings = ThemeSettings::get_global(cx);
+                    gpui::div()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .font(settings.buffer_font.clone())
+                        .text_size(settings.buffer_font_size(cx))
+                        .text_color(cx.theme().colors().text_muted)
+                        .child(text.clone())
+                        .into_any_element()
+                }),
+                None => Arc::new(|_, _, _| gpui::Empty.into_any_element()),
+            };
         Self {
-            render: Arc::new(|_, _, _| gpui::Empty.into_any_element()),
-            constrain_width: false,
+            render,
+            constrain_width: replacement.is_some(),
             merge_adjacent: false,
-            type_tag: Some(TypeId::of::<Concealment>()),
-            collapsed_text: None,
+            type_tag: Some(TypeId::of::<ConcealmentTag>()),
+            collapsed_text: replacement,
         }
     }
 
     pub fn is_concealment(&self) -> bool {
-        self.type_tag == Some(TypeId::of::<Concealment>())
+        self.type_tag == Some(TypeId::of::<ConcealmentTag>())
     }
 
     /// Returns a styled `Div` container with the standard fold‐placeholder
@@ -196,25 +240,22 @@ impl FoldMapWriter<'_> {
         self.sync_inlay_edits(edits)
     }
 
-    /// Replaces all concealment folds with folds covering the given ranges, leaving
+    /// Replaces all concealment folds with the given concealments, leaving
     /// concealments that are already present untouched.
     #[ztracing::instrument(skip_all)]
     pub(crate) fn set_concealments(
         &mut self,
-        ranges: impl IntoIterator<Item = Range<MultiBufferOffset>>,
+        concealments: impl IntoIterator<Item = Concealment>,
     ) -> (FoldSnapshot, Vec<FoldEdit>) {
         let buffer = self.0.snapshot.inlay_snapshot.buffer.clone();
-        let offset_range = |fold: &Fold| {
-            (
-                fold.range.start.to_offset(&buffer),
-                fold.range.end.to_offset(&buffer),
-            )
+        let fold_concealment = |fold: &Fold| Concealment {
+            range: fold.range.start.to_offset(&buffer)..fold.range.end.to_offset(&buffer),
+            replacement: fold.placeholder.collapsed_text.clone(),
         };
 
-        let mut desired = ranges
+        let mut desired = concealments
             .into_iter()
-            .filter(|range| range.start < range.end)
-            .map(|range| (range.start, range.end))
+            .filter(|concealment| concealment.range.start < concealment.range.end)
             .collect::<Vec<_>>();
         desired.sort_unstable();
         desired.dedup();
@@ -225,7 +266,7 @@ impl FoldMapWriter<'_> {
             .folds
             .iter()
             .filter(|fold| fold.placeholder.is_concealment())
-            .map(|fold| offset_range(fold))
+            .map(|fold| fold_concealment(fold))
             .collect::<Vec<_>>();
         existing.sort_unstable();
 
@@ -234,17 +275,23 @@ impl FoldMapWriter<'_> {
             [MultiBufferOffset(0)..buffer.len()],
             |fold| {
                 fold.placeholder.is_concealment()
-                    && desired.binary_search(&offset_range(fold)).is_err()
+                    && desired.binary_search(&fold_concealment(fold)).is_err()
             },
             true,
             &mut edits,
         );
-        let placeholder = FoldPlaceholder::concealment();
+        let empty_placeholder = FoldPlaceholder::concealment(None);
         self.insert_folds(
             desired
-                .iter()
-                .filter(|range| existing.binary_search(range).is_err())
-                .map(|(start, end)| (*start..*end, placeholder.clone())),
+                .into_iter()
+                .filter(|concealment| existing.binary_search(concealment).is_err())
+                .map(|concealment| {
+                    let placeholder = match concealment.replacement {
+                        Some(text) => FoldPlaceholder::concealment(Some(text)),
+                        None => empty_placeholder.clone(),
+                    };
+                    (concealment.range, placeholder)
+                }),
             &mut edits,
         );
         self.sync_inlay_edits(edits)
@@ -1047,14 +1094,6 @@ impl FoldSnapshot {
             item
         })
         .filter(|fold| !fold.placeholder.is_concealment())
-    }
-
-    pub fn concealed_ranges(&self) -> impl Iterator<Item = Range<MultiBufferOffset>> + '_ {
-        let buffer = &self.inlay_snapshot.buffer;
-        self.folds
-            .iter()
-            .filter(|fold| fold.placeholder.is_concealment())
-            .map(|fold| fold.range.start.to_offset(buffer)..fold.range.end.to_offset(buffer))
     }
 
     #[ztracing::instrument(skip_all)]

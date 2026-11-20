@@ -455,7 +455,8 @@
   "selection_highlight": true,
   // Whether to hide Markdown syntax (such as `**`, `_`, `~~`, backticks and link
   // destinations) in Markdown files, revealing it only while the cursor or
-  // selection touches the formatted text.
+  // selection touches the formatted text. List markers are shown as bullets
+  // away from the cursor's line, and code blocks get a background.
   "conceal_markdown_syntax": true,
   // Whether the text selection should have rounded corners.
   "rounded_selection": true,

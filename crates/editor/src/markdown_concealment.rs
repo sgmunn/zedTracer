@@ -12,6 +12,10 @@ pub(crate) struct MarkdownConcealment {
     syntax_changed: bool,
 }
 
+struct MarkdownCodeBlock;
+
+const BULLET: SharedString = SharedString::new_static("•");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpanKind {
     Emphasis,
@@ -19,12 +23,14 @@ enum SpanKind {
     Strikethrough,
     Code,
     Link,
+    ListMarker,
 }
 
 #[derive(Debug)]
 struct ConcealableSpan {
     kind: SpanKind,
-    range: Range<usize>,
+    /// Selections touching this range reveal the span's syntax.
+    reveal_range: Range<usize>,
     content: Range<usize>,
     syntax: [Range<usize>; 2],
 }
@@ -48,12 +54,9 @@ impl Editor {
             if self.markdown_concealment.computed_for.take().is_some() {
                 self.markdown_concealment = MarkdownConcealment::default();
                 self.clear_markdown_highlights(cx);
-                if self
-                    .display_map
-                    .update(cx, |map, cx| map.set_concealed_ranges(Vec::new(), cx))
-                {
-                    cx.notify();
-                }
+                self.display_map
+                    .update(cx, |map, cx| map.set_concealments(Vec::new(), cx));
+                cx.notify();
             }
             return;
         };
@@ -66,9 +69,10 @@ impl Editor {
                     *buffer_id == buffer_snapshot.remote_id()
                         && version == buffer_snapshot.version()
                 });
+        let mut changed = false;
         if !is_current || self.markdown_concealment.syntax_changed {
-            let spans = concealable_spans(buffer_snapshot);
-            self.highlight_markdown_spans(&spans, &multibuffer_snapshot, cx);
+            let (spans, code_blocks) = markdown_structure(buffer_snapshot);
+            self.highlight_markdown_spans(&spans, &code_blocks, &multibuffer_snapshot, cx);
             self.markdown_concealment = MarkdownConcealment {
                 spans,
                 computed_for: Some((
@@ -77,6 +81,7 @@ impl Editor {
                 )),
                 syntax_changed: false,
             };
+            changed = true;
         }
 
         let selections = self
@@ -92,23 +97,29 @@ impl Editor {
                 range.start.0..range.end.0
             })
             .collect::<Vec<_>>();
-        let concealed_ranges = self
+        let concealments = self
             .markdown_concealment
             .spans
             .iter()
             .filter(|span| {
                 !selections.iter().any(|selection| {
-                    selection.start <= span.range.end && span.range.start <= selection.end
+                    selection.start <= span.reveal_range.end
+                        && span.reveal_range.start <= selection.end
                 })
             })
-            .flat_map(|span| span.syntax.iter())
-            .map(|range| MultiBufferOffset(range.start)..MultiBufferOffset(range.end))
+            .flat_map(|span| {
+                let replacement = (span.kind == SpanKind::ListMarker).then_some(BULLET);
+                span.syntax.iter().map(move |range| Concealment {
+                    range: MultiBufferOffset(range.start)..MultiBufferOffset(range.end),
+                    replacement: replacement.clone(),
+                })
+            })
             .collect();
 
-        if self
+        changed |= self
             .display_map
-            .update(cx, |map, cx| map.set_concealed_ranges(concealed_ranges, cx))
-        {
+            .update(cx, |map, cx| map.set_concealments(concealments, cx));
+        if changed {
             cx.notify();
         }
     }
@@ -116,6 +127,7 @@ impl Editor {
     fn highlight_markdown_spans(
         &mut self,
         spans: &[ConcealableSpan],
+        code_blocks: &[Range<usize>],
         snapshot: &MultiBufferSnapshot,
         cx: &mut Context<Self>,
     ) {
@@ -130,8 +142,10 @@ impl Editor {
                 .map(|span| to_anchors(&span.content))
                 .collect::<Vec<_>>()
         };
+        // List markers keep their existing syntax highlighting when revealed.
         let syntax_ranges = spans
             .iter()
+            .filter(|span| span.kind != SpanKind::ListMarker)
             .flat_map(|span| span.syntax.iter())
             .filter(|range| !range.is_empty())
             .map(to_anchors)
@@ -180,6 +194,18 @@ impl Editor {
                 self.highlight_text(key, ranges, style, cx);
             }
         }
+
+        for code_block in code_blocks {
+            self.highlight_rows::<MarkdownCodeBlock>(
+                to_anchors(code_block),
+                |cx| cx.theme().colors().editor_foreground.opacity(0.04),
+                RowHighlightOptions {
+                    include_gutter: false,
+                    ..Default::default()
+                },
+                cx,
+            );
+        }
     }
 
     fn clear_markdown_highlights(&mut self, cx: &mut Context<Self>) {
@@ -191,19 +217,31 @@ impl Editor {
         ] {
             self.clear_highlights(key, cx);
         }
+        self.clear_row_highlights::<MarkdownCodeBlock>();
     }
 }
 
-fn concealable_spans(buffer: &BufferSnapshot) -> Vec<ConcealableSpan> {
+/// Returns the concealable spans and the code block ranges of a Markdown buffer.
+fn markdown_structure(buffer: &BufferSnapshot) -> (Vec<ConcealableSpan>, Vec<Range<usize>>) {
     let mut spans = Vec::new();
+    let mut code_blocks = Vec::new();
     for layer in buffer.syntax_layers() {
-        if layer.language.name() != "Markdown-Inline" {
-            continue;
-        }
+        let is_inline = match layer.language.name().as_ref() {
+            "Markdown-Inline" => true,
+            "Markdown" => false,
+            _ => continue,
+        };
 
         let mut cursor = layer.node().walk();
         'walk: loop {
-            spans.extend(concealable_span(cursor.node()));
+            let node = cursor.node();
+            if is_inline {
+                spans.extend(inline_span(node));
+            } else if matches!(node.kind(), "fenced_code_block" | "indented_code_block") {
+                code_blocks.push(node.byte_range());
+            } else {
+                spans.extend(list_marker_span(node, buffer));
+            }
             if cursor.goto_first_child() {
                 continue;
             }
@@ -217,11 +255,54 @@ fn concealable_spans(buffer: &BufferSnapshot) -> Vec<ConcealableSpan> {
             }
         }
     }
-    spans.sort_unstable_by_key(|span| (span.range.start, Reverse(span.range.end)));
-    spans
+
+    // Markdown embedded in a code block (such as a ```markdown fence) is shown verbatim.
+    spans.retain(|span| {
+        !code_blocks.iter().any(|code_block| {
+            code_block.start <= span.reveal_range.start && span.reveal_range.end <= code_block.end
+        })
+    });
+    spans.sort_unstable_by_key(|span| (span.reveal_range.start, Reverse(span.reveal_range.end)));
+    code_blocks.sort_unstable_by_key(|range| range.start);
+    (spans, code_blocks)
 }
 
-fn concealable_span(node: Node) -> Option<ConcealableSpan> {
+fn list_marker_span(node: Node, buffer: &BufferSnapshot) -> Option<ConcealableSpan> {
+    if !matches!(
+        node.kind(),
+        "list_marker_minus" | "list_marker_star" | "list_marker_plus"
+    ) {
+        return None;
+    }
+    // Task list items keep their marker so the checkbox syntax stays readable.
+    if node.next_sibling().is_some_and(|sibling| {
+        matches!(
+            sibling.kind(),
+            "task_list_marker_checked" | "task_list_marker_unchecked"
+        )
+    }) {
+        return None;
+    }
+
+    let marker_start = node.start_byte();
+    if !matches!(buffer.chars_at(marker_start).next(), Some('-' | '*' | '+')) {
+        return None;
+    }
+    let row = buffer.offset_to_point(marker_start).row;
+    let line_start = buffer.point_to_offset(Point::new(row, 0));
+    let line_end = buffer.point_to_offset(Point::new(row, buffer.line_len(row)));
+    Some(ConcealableSpan {
+        kind: SpanKind::ListMarker,
+        reveal_range: line_start..line_end,
+        content: marker_start + 1..marker_start + 1,
+        syntax: [
+            marker_start..marker_start + 1,
+            marker_start + 1..marker_start + 1,
+        ],
+    })
+}
+
+fn inline_span(node: Node) -> Option<ConcealableSpan> {
     let (kind, delimiter_kind) = match node.kind() {
         "emphasis" => (SpanKind::Emphasis, "emphasis_delimiter"),
         "strong_emphasis" => (SpanKind::StrongEmphasis, "emphasis_delimiter"),
@@ -240,7 +321,7 @@ fn concealable_span(node: Node) -> Option<ConcealableSpan> {
                     range.start..link_text.start_byte(),
                     link_text.end_byte()..range.end,
                 ],
-                range,
+                reveal_range: range,
             });
         }
         _ => return None,
@@ -276,19 +357,20 @@ fn concealable_span(node: Node) -> Option<ConcealableSpan> {
         kind,
         content: content_start..content_end,
         syntax: [range.start..content_start, content_end..range.end],
-        range,
+        reveal_range: range,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::MarkdownCodeBlock;
     use crate::{editor_tests::init_test, test::editor_test_context::EditorTestContext};
     use gpui::{BorrowAppContext, TestAppContext};
-    use language::LanguageRegistry;
+    use language::{LanguageRegistry, Point};
+    use multi_buffer::ToPoint as _;
     use std::sync::Arc;
 
-    #[gpui::test]
-    async fn test_markdown_syntax_concealed_unless_selection_touches(cx: &mut TestAppContext) {
+    async fn markdown_test_context(cx: &mut TestAppContext) -> EditorTestContext {
         init_test(cx, |_| {});
         let mut cx = EditorTestContext::new(cx).await;
         let language_registry = Arc::new(LanguageRegistry::test(cx.executor()));
@@ -300,6 +382,51 @@ mod tests {
             buffer.set_language_registry(language_registry);
             buffer.set_language(Some(language::markdown_lang()), cx);
         });
+        cx
+    }
+
+    #[gpui::test]
+    async fn test_markdown_list_markers_and_code_blocks(cx: &mut TestAppContext) {
+        let mut cx = markdown_test_context(cx).await;
+
+        cx.set_state(indoc::indoc! {"
+            - one
+              * nested **bold**
+            - ˇtwo
+            - [ ] task
+
+            ```md
+            - not a bullet
+            ```
+        "});
+        cx.run_until_parked();
+        assert_eq!(
+            cx.display_text(),
+            indoc::indoc! {"
+                • one
+                  • nested ⋯bold⋯
+                - two
+                - [ ] task
+
+                ```md
+                - not a bullet
+                ```
+            "}
+        );
+
+        let code_block_rows = cx.update_editor(|editor, _, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            editor
+                .highlighted_rows::<MarkdownCodeBlock>(cx)
+                .map(|(range, _)| range.start.to_point(&snapshot)..range.end.to_point(&snapshot))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(code_block_rows, vec![Point::new(5, 0)..Point::new(8, 0)]);
+    }
+
+    #[gpui::test]
+    async fn test_markdown_syntax_concealed_unless_selection_touches(cx: &mut TestAppContext) {
+        let mut cx = markdown_test_context(cx).await;
 
         cx.set_state("ˇSome **bold** and *it* and `code` and [link](https://zed.dev).");
         cx.run_until_parked();
