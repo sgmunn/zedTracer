@@ -2085,12 +2085,12 @@ impl Editor {
 
         let element_bounds = element.layout_as_root(AvailableSpace::min_size(), window, cx);
 
-        let can_position_to_the_right = x_after_longest < text_bounds.right()
-            && element_bounds.width <= popover_right_bound - text_bounds.left();
+        let can_position_to_the_right =
+            x_after_longest + element_bounds.width <= popover_right_bound;
 
         let mut origin = if can_position_to_the_right {
             point(
-                x_after_longest.min(popover_right_bound - element_bounds.width),
+                x_after_longest,
                 text_bounds.origin.y
                     + Pixels::from(
                         edit_start.row().as_f64() * ScrollPixelOffset::from(line_height)
@@ -2112,24 +2112,28 @@ impl Editor {
             // Place the edit popover adjacent to the edit if there is a location
             // available that is onscreen and does not obscure the cursor. Otherwise,
             // place it adjacent to the cursor.
+            let row_top = |row: DisplayRow| {
+                content_origin.y
+                    + Pixels::from((row.as_f64() - scroll_position.y) * f64::from(line_height))
+            };
             let row_target = [above_edit, below_edit, above_cursor, below_cursor]
                 .into_iter()
                 .flatten()
                 .find(|&start_row| {
                     let end_row = start_row + line_count as u32;
-                    visible_row_range.contains(&start_row)
-                        && visible_row_range.contains(&end_row)
+                    // Rows past the end of the buffer are not in `visible_row_range`, but
+                    // the popover can still be shown there when it fits in the viewport,
+                    // e.g. when editing the last line.
+                    start_row >= visible_row_range.start
+                        && row_top(end_row) <= text_bounds.bottom()
                         && cursor_row
                             .is_none_or(|cursor_row| !((start_row..end_row).contains(&cursor_row)))
                 })?;
 
-            content_origin
-                + point(
-                    Pixels::from(-scroll_pixel_position.x),
-                    Pixels::from(
-                        (row_target.as_f64() - scroll_position.y) * f64::from(line_height),
-                    ),
-                )
+            point(
+                content_origin.x + Pixels::from(-scroll_pixel_position.x),
+                row_top(row_target),
+            )
         };
 
         origin.x -= BORDER_WIDTH;

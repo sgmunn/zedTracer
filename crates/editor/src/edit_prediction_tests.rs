@@ -116,7 +116,11 @@ async fn assert_edit_prediction_diff_popover_avoids_right_occluders(
     });
     cx.set_state("abcdefghijklmnopqrstuvwxyzabcdefghijklmnˇopqrstuvwxyzabcdef");
 
-    propose_edits(&provider, vec![(40..41, "REPLACEMENT")], &mut cx);
+    propose_edits(
+        &provider,
+        vec![(40..41, "REPLACEMENT_REPLACEMENT_REPLACEMENT")],
+        &mut cx,
+    );
     cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
     cx.editor(|editor, _, _| {
         assert!(!editor.edit_prediction_visible_in_cursor_popover(true));
@@ -136,17 +140,31 @@ async fn assert_edit_prediction_diff_popover_avoids_right_occluders(
         let _ = window.draw(cx);
     });
 
-    cx.editor(|editor, _, _| {
-        assert!(
-            editor.last_position_map.is_some(),
-            "editor should have rendered a position map"
-        );
+    let edited_line_bounds = cx.editor(|editor, _, _| {
+        let position_map = editor
+            .last_position_map
+            .as_ref()
+            .expect("editor should have rendered a position map");
+        let line_width = position_map
+            .line_layouts
+            .first()
+            .expect("edited line should be laid out")
+            .width;
+        gpui::Bounds::new(
+            position_map.content_origin,
+            size(line_width, position_map.line_height),
+        )
     });
 
     let popover_bounds = cx
         .cx
         .debug_bounds("edit_prediction_diff_popover")
         .expect("diff popover should render");
+
+    assert!(
+        !popover_bounds.intersects(&edited_line_bounds),
+        "diff popover {popover_bounds:?} should not cover the edited line {edited_line_bounds:?}"
+    );
 
     for selector in ["right_dock", "right_sidebar"] {
         if let Some(occluder_bounds) = cx.cx.debug_bounds(selector) {
