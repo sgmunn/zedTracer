@@ -3220,7 +3220,9 @@ impl Element for MarkdownElement {
                                 .flex_col()
                                 .h_full()
                                 .when(col_index > 0, |this| this.border_l_1())
-                                .when(row_index > 0, |this| this.border_t_1())
+                                // Header cells don't advance `row_index`, so every body row
+                                // (including the first) draws the line above it.
+                                .when(!is_header, |this| this.border_t_1())
                                 .border_color(cx.theme().colors().border)
                                 .px(self.style.table_cell_padding.x)
                                 .py(self.style.table_cell_padding.y)
