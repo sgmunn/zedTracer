@@ -2768,6 +2768,7 @@ impl Element for MarkdownElement {
         };
         let mut code_block_ids = HashSet::default();
         let mut current_code_block_text = None;
+        let mut block_quote_depth = 0usize;
 
         let mut current_img_block_range: Option<Range<usize>> = None;
         let mut handled_html_block = false;
@@ -2880,6 +2881,7 @@ impl Element for MarkdownElement {
                             );
                         }
                         MarkdownTag::BlockQuote(kind) => {
+                            block_quote_depth += 1;
                             self.push_markdown_block_quote(
                                 &mut builder,
                                 *kind,
@@ -3266,6 +3268,7 @@ impl Element for MarkdownElement {
                         self.pop_markdown_heading(&mut builder);
                     }
                     MarkdownTagEnd::BlockQuote(_kind) => {
+                        block_quote_depth = block_quote_depth.saturating_sub(1);
                         self.pop_markdown_block_quote(&mut builder);
                     }
                     MarkdownTagEnd::CodeBlock => {
@@ -3470,7 +3473,10 @@ impl Element for MarkdownElement {
                     );
                     builder.pop_div()
                 }
-                MarkdownEvent::SoftBreak if !self.style.soft_break_as_hard_break => {
+                // Quoted text is usually quoted line by line, so keep its line breaks.
+                MarkdownEvent::SoftBreak
+                    if !self.style.soft_break_as_hard_break && block_quote_depth == 0 =>
+                {
                     builder.push_soft_break(range.clone());
                 }
                 MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
@@ -6114,6 +6120,26 @@ mod tests {
                 ("two".to_string(), chip_background),
                 ("four".to_string(), chip_background)
             ]
+        );
+    }
+
+    #[gpui::test]
+    fn test_soft_break_in_block_quote_keeps_line_break(cx: &mut TestAppContext) {
+        let rendered_lines = |markdown: &str, cx: &mut TestAppContext| {
+            render_markdown(markdown, cx)
+                .lines
+                .iter()
+                .map(|line| line.layout.wrapped_text())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            rendered_lines("> line 1\n> line 2", cx),
+            vec!["line 1\nline 2".to_string()]
+        );
+        assert_eq!(
+            rendered_lines("line 1\nline 2", cx),
+            vec!["line 1 line 2".to_string()]
         );
     }
 
