@@ -546,24 +546,36 @@ impl ThemeSettings {
             base_theme.styles.window_background_appearance =
                 window_background_appearance.into_gpui();
         }
+        // Overrides only see their own palette: the base theme has already been resolved to
+        // concrete colors, so its palette entries no longer exist by this point.
+        let palette = &theme_overrides.palette;
         if let Some(window_gradient) = theme_overrides
             .window_gradient
             .as_ref()
-            .and_then(window_gradient_from_content)
+            .and_then(|gradient| window_gradient_from_content(gradient, palette))
         {
             base_theme.styles.window_gradient = Some(window_gradient);
         }
-        let status_color_refinement = status_colors_refinement(&theme_overrides.status);
+        let status_color_refinement = status_colors_refinement(&theme_overrides.status, palette);
 
         let theme_color_refinement = theme_colors_refinement(
             &theme_overrides.colors,
             &status_color_refinement,
             base_theme.appearance.is_light(),
+            palette,
         );
         base_theme.styles.colors.refine(&theme_color_refinement);
         base_theme.styles.status.refine(&status_color_refinement);
-        merge_player_colors(&mut base_theme.styles.player, &theme_overrides.players);
-        merge_accent_colors(&mut base_theme.styles.accents, &theme_overrides.accents);
+        merge_player_colors(
+            &mut base_theme.styles.player,
+            &theme_overrides.players,
+            palette,
+        );
+        merge_accent_colors(
+            &mut base_theme.styles.accents,
+            &theme_overrides.accents,
+            palette,
+        );
         base_theme.styles.syntax = SyntaxTheme::merge(
             base_theme.styles.syntax.clone(),
             syntax_overrides(theme_overrides),
@@ -922,7 +934,10 @@ mod tests {
 
         assert_eq!(
             test_theme.styles.window_gradient,
-            window_gradient_from_content(&gradient_content("#0a0f2e", "#2a1050"))
+            window_gradient_from_content(
+                &gradient_content("#0a0f2e", "#2a1050"),
+                &Default::default()
+            )
         );
         assert!(test_theme.styles.window_gradient.is_some());
     }

@@ -10,22 +10,23 @@ mod settings;
 
 use std::sync::Arc;
 
-use ::settings::{IntoGpui, Settings, SettingsStore};
+use ::settings::{IntoGpui, Settings, SettingsStore, ThemeColor};
 use anyhow::{Context as _, Result};
-use gpui::{App, Font, HighlightStyle, Pixels, Refineable, ScrollDelta, px};
+use collections::IndexMap;
+use gpui::{App, Font, Pixels, Refineable, ScrollDelta, px};
 use gpui_util::ResultExt;
 use theme::{
     AccentColors, Appearance, AppearanceContent, DEFAULT_DARK_THEME, DEFAULT_ICON_THEME_NAME,
     GlobalTheme, LoadThemes, PlayerColor, PlayerColors, StatusColors, SyntaxTheme,
     SystemAppearance, SystemColors, Theme, ThemeColors, ThemeFamily, ThemeRegistry,
-    ThemeSettingsProvider, ThemeStyles, default_color_scales, try_parse_color,
+    ThemeSettingsProvider, ThemeStyles, default_color_scales,
 };
 
 pub use crate::schema::{
     FontStyleContent, FontWeightContent, HighlightStyleContent, StatusColorsContent,
     ThemeColorsContent, ThemeContent, ThemeFamilyContent, ThemeStyleContent,
-    WindowBackgroundContent, status_colors_refinement, syntax_overrides, theme_colors_refinement,
-    window_gradient_from_content,
+    WindowBackgroundContent, resolve_color, status_colors_refinement, syntax_overrides,
+    theme_colors_refinement, window_gradient_from_content,
 };
 use crate::settings::adjust_buffer_font_size;
 pub use crate::settings::{
@@ -302,7 +303,8 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         AppearanceContent::Light => StatusColors::light(),
         AppearanceContent::Dark => StatusColors::dark(),
     };
-    let mut status_colors_refinement = status_colors_refinement(&theme.style.status);
+    let palette = &theme.style.palette;
+    let mut status_colors_refinement = status_colors_refinement(&theme.style.status, palette);
     theme::apply_status_color_defaults(&mut status_colors_refinement);
     refined_status_colors.refine(&status_colors_refinement);
 
@@ -310,7 +312,7 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         AppearanceContent::Light => PlayerColors::light(),
         AppearanceContent::Dark => PlayerColors::dark(),
     };
-    merge_player_colors(&mut refined_player_colors, &theme.style.players);
+    merge_player_colors(&mut refined_player_colors, &theme.style.players, palette);
 
     let mut refined_theme_colors = match theme.appearance {
         AppearanceContent::Light => ThemeColors::light(),
@@ -320,6 +322,7 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         &theme.style.colors,
         &status_colors_refinement,
         theme.appearance == AppearanceContent::Light,
+        palette,
     );
     theme::apply_theme_color_defaults(&mut theme_colors_refinement, &refined_player_colors);
     refined_theme_colors.refine(&theme_colors_refinement);
@@ -328,27 +331,9 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         AppearanceContent::Light => AccentColors::light(),
         AppearanceContent::Dark => AccentColors::dark(),
     };
-    merge_accent_colors(&mut refined_accent_colors, &theme.style.accents);
+    merge_accent_colors(&mut refined_accent_colors, &theme.style.accents, palette);
 
-    let syntax_highlights = theme.style.syntax.iter().map(|(syntax_token, highlight)| {
-        (
-            syntax_token.clone(),
-            HighlightStyle {
-                color: highlight
-                    .color
-                    .as_ref()
-                    .and_then(|color| try_parse_color(color).ok()),
-                background_color: highlight
-                    .background_color
-                    .as_ref()
-                    .and_then(|color| try_parse_color(color).ok()),
-                font_style: highlight.font_style.map(|s| s.into_gpui()),
-                font_weight: highlight.font_weight.map(|w| w.into_gpui()),
-                ..Default::default()
-            },
-        )
-    });
-    let syntax_theme = Arc::new(SyntaxTheme::new(syntax_highlights));
+    let syntax_theme = Arc::new(SyntaxTheme::new(syntax_overrides(&theme.style)));
 
     let window_background_appearance = theme
         .style
@@ -360,7 +345,7 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         .style
         .window_gradient
         .as_ref()
-        .and_then(window_gradient_from_content);
+        .and_then(|gradient| window_gradient_from_content(gradient, palette));
 
     Theme {
         id: uuid::Uuid::new_v4().to_string(),
@@ -383,6 +368,7 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
 pub fn merge_player_colors(
     player_colors: &mut PlayerColors,
     user_player_colors: &[::settings::PlayerColorContent],
+    palette: &IndexMap<String, ThemeColor>,
 ) {
     if user_player_colors.is_empty() {
         return;
@@ -392,15 +378,15 @@ pub fn merge_player_colors(
         let cursor = player
             .cursor
             .as_ref()
-            .and_then(|color| try_parse_color(color).ok());
+            .and_then(|color| resolve_color(color, palette).ok());
         let background = player
             .background
             .as_ref()
-            .and_then(|color| try_parse_color(color).ok());
+            .and_then(|color| resolve_color(color, palette).ok());
         let selection = player
             .selection
             .as_ref()
-            .and_then(|color| try_parse_color(color).ok());
+            .and_then(|color| resolve_color(color, palette).ok());
 
         if let Some(player_color) = player_colors.0.get_mut(idx) {
             *player_color = PlayerColor {
@@ -422,6 +408,7 @@ pub fn merge_player_colors(
 pub fn merge_accent_colors(
     accent_colors: &mut AccentColors,
     user_accent_colors: &[::settings::AccentContent],
+    palette: &IndexMap<String, ThemeColor>,
 ) {
     if user_accent_colors.is_empty() {
         return;
@@ -433,7 +420,7 @@ pub fn merge_accent_colors(
             accent_color
                 .0
                 .as_ref()
-                .and_then(|color| try_parse_color(color).ok())
+                .and_then(|color| resolve_color(color, palette).ok())
         })
         .collect::<Vec<_>>();
 

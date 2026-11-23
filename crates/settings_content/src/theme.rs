@@ -124,7 +124,7 @@ impl JsonSchema for ThemeColor {
         use schemars::json_schema;
         json_schema!({
             "type": "string",
-            "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+            "pattern": "^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|@[A-Za-z0-9_.-]+)$",
             "format": "color"
         })
     }
@@ -533,6 +533,12 @@ pub struct ThemeStyleContent {
     /// background color let it show through.
     #[serde(rename = "background.gradient")]
     pub window_gradient: Option<WindowGradientContent>,
+
+    /// Named colors that any other color in this theme style can reference as `"@name"`.
+    ///
+    /// Palette values must be hex colors; they cannot reference other palette entries.
+    #[serde(default)]
+    pub palette: IndexMap<String, ThemeColor>,
 
     #[serde(default)]
     pub accents: Vec<AccentContent>,
