@@ -81,9 +81,8 @@ actions!(
 
 /// A first width for a column without a saved one: wide enough for its label and the start of
 /// its values, and never wider than 500 px.
-fn content_width(table: &kusto_results::Table, column: usize) -> Pixels {
+fn content_width(table: &kusto_results::Table, column: usize, character_width: Pixels) -> Pixels {
     const SAMPLED_ROWS: usize = 200;
-    const CHARACTER_WIDTH: f32 = 7.5;
     // Room for the sort and filter buttons in the header.
     const HEADER_CHROME: f32 = 64.;
     let label = table
@@ -99,7 +98,22 @@ fn content_width(table: &kusto_results::Table, column: usize) -> Pixels {
         .max()
         .unwrap_or(0);
     let characters = label.max(longest_value) as f32;
-    px((characters * CHARACTER_WIDTH + HEADER_CHROME).clamp(96., 500.))
+    px((characters * f32::from(character_width) + HEADER_CHROME)
+        .round()
+        .clamp(96., 500.))
+}
+
+/// The width of one character in the buffer font, which the grid's cells are drawn in.
+fn buffer_character_width(window: &Window, cx: &gpui::App) -> Pixels {
+    let theme_settings = theme::theme_settings(cx);
+    let font_size = theme_settings.buffer_font_size(cx);
+    let text_system = window.text_system();
+    let font_id = text_system.resolve_font(theme_settings.buffer_font(cx));
+    text_system
+        .em_advance(font_id, font_size)
+        .log_err()
+        // Most coding fonts advance about 0.6 em per character.
+        .unwrap_or(font_size * 0.6)
 }
 
 /// Work that is still running after this long shows a busy indicator (GRD-9).
@@ -274,6 +288,7 @@ impl ResultGrid {
                 .and_then(|saved| saved.width)
                 .map(|width| px(width as f32))
         };
+        let character_width = buffer_character_width(window, cx);
         let mut widths = vec![
             layout
                 .and_then(|layout| layout.gutter_width)
@@ -281,7 +296,7 @@ impl ResultGrid {
         ];
         widths.extend(column_order.iter().map(|&index| {
             saved_width(index)
-                .or_else(|| table.map(|table| content_width(table, index)))
+                .or_else(|| table.map(|table| content_width(table, index, character_width)))
                 .unwrap_or(DEFAULT_COLUMN_WIDTH)
         }));
         let mut behavior = vec![TableResizeBehavior::None];
@@ -1560,6 +1575,15 @@ impl Render for ResultGrid {
         } else {
             "No results match your search query"
         };
+        let theme_settings = theme::theme_settings(cx);
+        // Cells use the buffer font so values line up with the editors and the row details panel
+        // showing the same data.
+        let table_container = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .font(theme_settings.buffer_font(cx).clone())
+            .text_size(theme_settings.buffer_font_size(cx));
         let colors = cx.theme().colors();
         let has_filters = self
             .result
@@ -1691,14 +1715,16 @@ impl Render for ResultGrid {
             )
             .child(toolbar)
             .child(
-                div().relative().flex_1().min_h_0().child(
+                table_container.child(
                     Table::new(column_count)
+                        .no_ui_font()
                         .interactable(&self.interaction_state)
                         .width_config(ColumnWidthConfig::Resizable(self.column_widths.clone()))
                         .header(headers)
-                        .empty_table_callback(move |_, _| {
+                        .empty_table_callback(move |_, cx| {
                             div()
                                 .p_3()
+                                .font_ui(cx)
                                 .child(Label::new(no_rows_message).color(Color::Muted))
                                 .into_any_element()
                         })
