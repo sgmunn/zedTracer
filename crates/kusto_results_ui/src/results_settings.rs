@@ -29,6 +29,8 @@ pub struct ResultsSettings {
     pub waterfall: WaterfallOptions,
     /// The folders that hold the checkouts the code behind a row is looked for in.
     pub code_roots: Vec<PathBuf>,
+    /// The side the Code References panel docks on.
+    pub code_dock: DockSide,
     /// How a chart looks when it does not say.
     pub chart: ChartDefaults,
     /// Whether a result that has a chart opens on it rather than on its data.
@@ -260,6 +262,12 @@ impl Settings for ResultsSettings {
                 .unwrap_or_else(|| TimelineOptions::default().structural_messages),
             waterfall: waterfall_options(content),
             code_roots: code_roots(content),
+            code_dock: content
+                .kusto_results
+                .as_ref()
+                .and_then(|results| results.code.as_ref())
+                .and_then(|code| code.dock)
+                .unwrap_or(DockSide::Left),
             chart: chart_defaults(content),
             open_on_chart: content
                 .kusto_results
@@ -526,6 +534,7 @@ mod tests {
                     "~".into(),
                     "~other/x".into(),
                 ]),
+                dock: None,
             }),
             ..Default::default()
         });

@@ -47,7 +47,7 @@ use gpui::{
     actions, image_cache, img, point, px, retain_all,
 };
 use image_viewer::ImageInfo;
-use kusto_results_ui::{ResultsPanel, RowDetailsPanel};
+use kusto_results_ui::{CodeReferences, ResultsPanel, RowDetailsPanel};
 use language::Capability;
 use language_onboarding::BasedPyrightBanner;
 use language_tools::lsp_button::{self, LspButton};
@@ -780,6 +780,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
     cx.spawn_in(window, async move |workspace_handle, cx| {
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
         let row_details_panel = RowDetailsPanel::load(workspace_handle.clone(), cx.clone());
+        let code_references_panel = CodeReferences::load(workspace_handle.clone(), cx.clone());
         let results_panel = ResultsPanel::load(workspace_handle.clone(), cx.clone());
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
@@ -806,6 +807,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(row_details_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(code_references_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(results_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),

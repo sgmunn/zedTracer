@@ -167,6 +167,8 @@
       // Folders that hold git checkouts, such as "~/Projects/mwc": each folder directly inside a
       // root that is a checkout is searched, and so is a root that is itself a checkout.
       "roots": [],
+      // Where the Code References panel docks: "left" or "right"
+      "dock": "left",
     },
     // How the Timeline tab of a trace is drawn.
     "waterfall": {

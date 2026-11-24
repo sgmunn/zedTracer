@@ -1633,11 +1633,18 @@ pub enum KustoChartAspectRatio {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
 pub struct KustoCodeSettingsContent {
     /// Folders that hold git checkouts, such as "~/Projects/mwc". Every folder directly inside one
-    /// that is a checkout is searched, and so is a folder that is itself a checkout. Row Details
-    /// shows the code a marker, a `Class.Method` in the message, or a call stack frame names.
+    /// that is a checkout is searched, and so is a folder that is itself a checkout. The Code
+    /// References panel shows the code a marker, a `Class.Method` in the message, or a call stack
+    /// frame names.
     ///
     /// Default: []
     pub roots: Option<Vec<String>>,
+
+    /// Where the Code References panel docks: "left" or "right". A dock shows one panel at a
+    /// time, so it is on the other side from Row Details to show both at once.
+    ///
+    /// Default: "left"
+    pub dock: Option<DockSide>,
 }
 
 /// How the Timeline tab of a trace is drawn.

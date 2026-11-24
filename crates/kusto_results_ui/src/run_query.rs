@@ -35,7 +35,6 @@ use crate::qualify_query;
 use crate::query_parameters::{self, ParameterFiles};
 use crate::results_panel::ResultsPanel;
 use crate::results_viewer::ResultsFile;
-use crate::row_details_panel::RowDetailsPanel;
 
 actions!(
     kusto,
@@ -912,7 +911,7 @@ pub(crate) async fn display(
                 });
                 workspace.open_panel::<ResultsPanel>(window, cx);
                 if has_result {
-                    workspace.open_panel::<RowDetailsPanel>(window, cx);
+                    crate::results_viewer::open_row_details(workspace, window, cx);
                 }
             })
             .log_err();
@@ -1197,6 +1196,8 @@ pub(crate) mod tests {
     use workspace::dock::Panel as _;
 
     use crate::ResultsViewer;
+    use crate::code_references::CodeReferences;
+    use crate::row_details_panel::RowDetailsPanel;
 
     use super::*;
 
@@ -1367,6 +1368,10 @@ pub(crate) mod tests {
                 RowDetailsPanel::new(FakeFs::new(cx.background_executor().clone()), window, cx)
             });
             workspace.add_panel(row_details, window, cx);
+            let code = cx.new(|cx| {
+                CodeReferences::new(FakeFs::new(cx.background_executor().clone()), cx)
+            });
+            workspace.add_panel(code, window, cx);
         });
         let editor = item
             .downcast::<Editor>()
@@ -1431,6 +1436,19 @@ pub(crate) mod tests {
                 && dock
                     .visible_panel()
                     .is_some_and(|panel| panel.persistent_name() == "Row Details Panel")
+        })
+    }
+
+    pub(crate) fn code_references_shown(
+        workspace: &Entity<Workspace>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        workspace.read_with(cx, |workspace, cx| {
+            let dock = workspace.left_dock().read(cx);
+            dock.is_open()
+                && dock
+                    .visible_panel()
+                    .is_some_and(|panel| panel.persistent_name() == "Code References Panel")
         })
     }
 
@@ -1509,10 +1527,15 @@ pub(crate) mod tests {
     async fn a_result_shown_in_the_panel_opens_row_details(cx: &mut TestAppContext) {
         let (workspace, _editor, _sent, cx) = setup(cx, 200, ANSWER).await;
         assert!(!row_details_shown(&workspace, cx));
+        assert!(!code_references_shown(&workspace, cx));
 
         run(&workspace, cx);
 
         assert!(row_details_shown(&workspace, cx));
+        assert!(
+            code_references_shown(&workspace, cx),
+            "the code is shown beside the row, in the other dock"
+        );
     }
 
     #[gpui::test]
@@ -1526,6 +1549,7 @@ pub(crate) mod tests {
 
         assert_eq!(results_viewers(&workspace, cx), 1);
         assert!(row_details_shown(&workspace, cx));
+        assert!(code_references_shown(&workspace, cx));
     }
 
     #[gpui::test]

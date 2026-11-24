@@ -43,6 +43,7 @@ use crate::grid::{GridOptions, ResultGrid, ResultGridEvent};
 use crate::query_view::{QueryView, parameter_values};
 use crate::statistics_view::StatisticsView;
 use crate::results_settings::ResultsSettings;
+use crate::code_references::{CodeReferences, ToggleCodeReferences};
 use crate::row_details_panel::{RowDetailsPanel, ToggleRowDetails};
 use crate::run_query::RerunQuery;
 use crate::sequence_view::SequenceView;
@@ -82,8 +83,24 @@ pub fn init(cx: &mut App) {
                 workspace.close_panel::<RowDetailsPanel>(window, cx);
             }
         });
+        workspace.register_action(|workspace, _: &ToggleCodeReferences, window, cx| {
+            if !workspace.toggle_panel_focus::<CodeReferences>(window, cx) {
+                workspace.close_panel::<CodeReferences>(window, cx);
+            }
+        });
     })
     .detach();
+}
+
+/// Opens Row Details with Code References beside it. Row Details is opened last so that it is the
+/// one shown when both are set to dock on the same side.
+pub(crate) fn open_row_details(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    workspace.open_panel::<CodeReferences>(window, cx);
+    workspace.open_panel::<RowDetailsPanel>(window, cx);
 }
 
 fn is_results_path(path: &RelPath) -> bool {
@@ -591,9 +608,7 @@ impl Item for ResultsViewer {
         let workspace = workspace.weak_handle();
         window.defer(cx, move |window, cx| {
             workspace
-                .update(cx, |workspace, cx| {
-                    workspace.open_panel::<RowDetailsPanel>(window, cx)
-                })
+                .update(cx, |workspace, cx| open_row_details(workspace, window, cx))
                 .log_err();
         });
     }

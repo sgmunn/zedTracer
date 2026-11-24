@@ -29,6 +29,7 @@ mod structured_view;
 mod waterfall_view;
 
 pub use activity_tree::{ActivityTree, ActivityTreeEvent};
+pub use code_references::{CodeReferences, ToggleCodeReferences};
 pub use filter_popover::{FilterChanged, FilterPopover};
 pub use grid::{ChildRow, GridOptions, ResultGrid, ResultGridEvent};
 pub use inspector_text::{InspectorEvent, InspectorPalette, InspectorText};

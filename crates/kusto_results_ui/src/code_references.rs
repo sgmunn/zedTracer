@@ -1,5 +1,5 @@
 //! The code behind the selected row of a trace: what to look up in the row, who looks it up, and
-//! the section of Row Details that lists what was found.
+//! the Code References panel that lists what was found.
 //!
 //! The lookup itself is `kusto_code`'s. This module feeds it the row, keeps it off the main
 //! thread, and opens a place it found.
@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use editor::Editor;
+use fs::Fs;
 use futures::FutureExt as _;
 use futures::future::Shared;
 use gpui::{
-    App, ClickEvent, Context, Entity, FontWeight, Modifiers, SharedString, Task, WeakEntity,
-    Window, px,
+    App, AppContext as _, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, Modifiers, Pixels, SharedString, Subscription, Task,
+    WeakEntity, Window, actions, px,
 };
 use gpui_util::ResultExt as _;
 use kusto_code::{
@@ -25,14 +27,21 @@ use kusto_results::trace_schema::{TraceColumns, matches_pattern};
 use kusto_results::{ResultSet, Table};
 use language::Point;
 use project::ProjectPath;
-use settings::Settings as _;
+use settings::{DockSide, Settings as _};
 use ui::prelude::*;
 use util::rel_path::RelPath;
+use workspace::dock::{DockPosition, Panel, PanelEvent};
 use workspace::notifications::DetachAndPromptErr as _;
 use workspace::{OpenOptions, OpenVisible, Pane, SplitDirection, Workspace};
 use worktree::Worktree;
 
 use crate::results_settings::ResultsSettings;
+use crate::row_details_panel::ActiveSelection;
+
+actions!(code_references, [ToggleCodeReferences]);
+
+const EMPTY_STATE: &str =
+    "Select a result row with a marker, a Class.Method message or a call stack to find its code.";
 
 /// A result with more distinct markers than this is not worth looking all of them up ahead.
 const MAX_PREFETCHED_MARKERS: usize = 500;
@@ -119,10 +128,10 @@ fn checkout_root(reference: &CodeRef) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// What the section says about the selected row.
+/// What the panel says about the selected row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodeState {
-    /// Nothing in the selection names code, so there is no section.
+    /// Nothing in the selection names code.
     Idle,
     /// The row names code, but no folder of checkouts is set.
     NotConfigured,
@@ -132,12 +141,6 @@ pub enum CodeState {
         repositories: usize,
     },
     Failed(String),
-}
-
-impl CodeState {
-    pub fn is_shown(&self) -> bool {
-        *self != CodeState::Idle
-    }
 }
 
 /// Where a place in the code is opened.
@@ -175,7 +178,10 @@ impl OpenIn {
 
 type SharedResolver = Shared<Task<Result<Arc<CodeResolver>, SharedString>>>;
 
+/// The Code References panel: the code behind the rows last selected in any results grid.
 pub struct CodeReferences {
+    focus_handle: FocusHandle,
+    fs: Arc<dyn Fs>,
     workspace: Option<WeakEntity<Workspace>>,
     state: CodeState,
     /// What the current state answers, so that asking again does nothing.
@@ -190,11 +196,33 @@ pub struct CodeReferences {
     /// The worktrees of the checkouts code was opened from. The project holds a worktree it did
     /// not open itself only weakly, and its language server would stop with the last tab.
     checkouts: Vec<Entity<Worktree>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl CodeReferences {
-    pub fn new() -> Self {
-        Self {
+    pub async fn load(
+        workspace: WeakEntity<Workspace>,
+        mut cx: AsyncWindowContext,
+    ) -> anyhow::Result<Entity<Self>> {
+        workspace.update_in(&mut cx, |workspace, _, cx| {
+            let fs = workspace.app_state().fs.clone();
+            let workspace = cx.weak_entity();
+            cx.new(|cx| {
+                let mut code = Self::new(fs, cx);
+                code.set_workspace(workspace);
+                code
+            })
+        })
+    }
+
+    pub fn new(fs: Arc<dyn Fs>, cx: &mut Context<Self>) -> Self {
+        let selection = ActiveSelection::shared(cx);
+        let subscriptions = vec![cx.observe(&selection, |this, selection, cx| {
+            this.follow(&selection, cx)
+        })];
+        let mut code = Self {
+            focus_handle: cx.focus_handle(),
+            fs,
             workspace: None,
             state: CodeState::Idle,
             requested: None,
@@ -205,7 +233,20 @@ impl CodeReferences {
             lookup: None,
             code_pane: None,
             checkouts: Vec::new(),
-        }
+            _subscriptions: subscriptions,
+        };
+        code.follow(&selection, cx);
+        code
+    }
+
+    fn follow(&mut self, selection: &Entity<ActiveSelection>, cx: &mut Context<Self>) {
+        let selection = selection.read(cx);
+        let (result, table_index, rows) = (
+            selection.result.clone(),
+            selection.table_index,
+            selection.rows.clone(),
+        );
+        self.select(result.as_ref(), table_index, &rows, cx);
     }
 
     /// Without a workspace the shell environment is not known, and a place cannot be opened.
@@ -624,18 +665,82 @@ fn title(reference: &CodeRef) -> String {
     }
 }
 
+impl EventEmitter<PanelEvent> for CodeReferences {}
+
+impl Focusable for CodeReferences {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Panel for CodeReferences {
+    fn persistent_name() -> &'static str {
+        "Code References Panel"
+    }
+
+    fn panel_key() -> &'static str {
+        "CodeReferencesPanel"
+    }
+
+    fn position(&self, _: &Window, cx: &App) -> DockPosition {
+        match ResultsSettings::get_global(cx).code_dock {
+            DockSide::Left => DockPosition::Left,
+            DockSide::Right => DockPosition::Right,
+        }
+    }
+
+    fn position_is_valid(&self, position: DockPosition) -> bool {
+        matches!(position, DockPosition::Left | DockPosition::Right)
+    }
+
+    fn set_position(&mut self, position: DockPosition, _: &mut Window, cx: &mut Context<Self>) {
+        settings::update_settings_file(self.fs.clone(), cx, move |settings, _| {
+            let dock = match position {
+                DockPosition::Left | DockPosition::Bottom => DockSide::Left,
+                DockPosition::Right => DockSide::Right,
+            };
+            settings
+                .kusto_results
+                .get_or_insert_default()
+                .code
+                .get_or_insert_default()
+                .dock = Some(dock);
+        });
+    }
+
+    fn default_size(&self, _: &Window, _: &App) -> Pixels {
+        px(360.)
+    }
+
+    fn icon(&self, _: &Window, _: &App) -> Option<IconName> {
+        Some(IconName::FileCode)
+    }
+
+    fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {
+        Some("Code References")
+    }
+
+    fn toggle_action(&self) -> Box<dyn gpui::Action> {
+        Box::new(ToggleCodeReferences)
+    }
+
+    fn activation_priority(&self) -> u32 {
+        10
+    }
+}
+
 impl Render for CodeReferences {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
         let hover_background = colors.element_hover;
         let note = |text: String, color: Color| {
-            Label::new(text)
-                .size(LabelSize::Small)
-                .color(color)
+            div()
+                .p_2()
+                .child(Label::new(text).color(color))
                 .into_any_element()
         };
         let (count, body) = match &self.state {
-            CodeState::Idle => (None, div().into_any_element()),
+            CodeState::Idle => (None, note(EMPTY_STATE.into(), Color::Muted)),
             CodeState::NotConfigured => (
                 None,
                 note(
@@ -658,8 +763,10 @@ impl Render for CodeReferences {
             CodeState::Found { references, .. } => (
                 Some(references.len()),
                 div()
-                    .id("row-details-code")
-                    .max_h(px(220.))
+                    .id("code-references-list")
+                    .flex_1()
+                    .min_h_0()
+                    .py_1()
                     .overflow_y_scroll()
                     .children(references.iter().enumerate().map(|(index, reference)| {
                         let opened = reference.clone();
@@ -709,26 +816,20 @@ impl Render for CodeReferences {
             ),
         };
 
-        // Most rows have a message to look for, so waiting and finding nothing take one line.
-        let compact = match &self.state {
-            CodeState::Looking => true,
-            CodeState::Found { references, .. } => references.is_empty(),
-            _ => false,
-        };
-        let section = v_flex().border_b_1().border_color(colors.border);
-        if compact {
-            return section.child(div().px_2().py_1().child(body));
-        }
-        section
+        v_flex()
+            .key_context("CodeReferencesPanel")
+            .track_focus(&self.focus_handle)
+            .size_full()
             .child(
                 h_flex()
-                    .px_2()
-                    .pt_2()
+                    .p_2()
                     .gap_1()
-                    .child(Label::new("Code").weight(FontWeight::SEMIBOLD))
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .child(Label::new("Code References").weight(FontWeight::SEMIBOLD))
                     .children(count.map(|count| Label::new(count.to_string()).color(Color::Muted))),
             )
-            .child(div().px_2().pb_2().child(body))
+            .child(body)
     }
 }
 

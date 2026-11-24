@@ -12,7 +12,8 @@ use gpui::{
 };
 use kusto_results::ResultSet;
 use kusto_results::inspector::{
-    InspectorDocument, InspectorSubject, JsonTokenKind, build_document, resolve_subject,
+    InspectorDocument, InspectorSubject, JsonTokenKind, StackFrameLink, build_document,
+    resolve_subject,
 };
 use settings::{DockSide, Settings as _};
 use ui::{Button, ButtonCommon, ButtonSize, Clickable, IconName, Label, prelude::*};
@@ -100,7 +101,7 @@ pub struct RowDetailsPanel {
     selection: Entity<ActiveSelection>,
     inspector: Entity<InspectorText>,
     find_editor: Entity<Editor>,
-    code: Entity<CodeReferences>,
+    workspace: Option<WeakEntity<Workspace>>,
     /// What the inspector currently shows, so a repeated selection does not reset its scroll.
     shown: InspectorDocument,
     headline: Vec<String>,
@@ -118,16 +119,33 @@ impl RowDetailsPanel {
             let workspace = cx.weak_entity();
             cx.new(|cx| {
                 let mut panel = Self::new(fs, window, cx);
-                panel.set_workspace(workspace, cx);
+                panel.set_workspace(workspace);
                 panel
             })
         })
     }
 
-    /// Lets the code section open a place it found, and look up with the project's environment.
-    pub fn set_workspace(&mut self, workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) {
-        self.code
-            .update(cx, |code, _| code.set_workspace(workspace));
+    /// The workspace whose Code References panel opens the files of a call stack.
+    pub fn set_workspace(&mut self, workspace: WeakEntity<Workspace>) {
+        self.workspace = Some(workspace);
+    }
+
+    fn open_frame(
+        &self,
+        frame: &StackFrameLink,
+        how: OpenIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) else {
+            return;
+        };
+        // The Code References panel opens the file so that it knows the checkouts and the pane
+        // code goes to, which a click on one of its own references uses as well.
+        let Some(code) = workspace.read(cx).panel::<CodeReferences>(cx) else {
+            return;
+        };
+        code.update(cx, |code, cx| code.open_frame(frame, how, window, cx));
     }
 
     pub fn new(fs: Arc<dyn Fs>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -138,9 +156,7 @@ impl RowDetailsPanel {
             editor.set_placeholder_text("Find in row", window, cx);
             editor
         });
-        let code = cx.new(|_| CodeReferences::new());
         let subscriptions = vec![
-            cx.observe(&code, |_, _, cx| cx.notify()),
             cx.observe_in(&selection, window, |this, _, window, cx| {
                 this.refresh(window, cx)
             }),
@@ -153,8 +169,7 @@ impl RowDetailsPanel {
             cx.subscribe_in(&inspector, window, |this, _, event, window, cx| {
                 let InspectorEvent::OpenFrame { frame, modifiers } = event;
                 if let Some(how) = OpenIn::from_modifiers(modifiers, cx) {
-                    this.code
-                        .update(cx, |code, cx| code.open_frame(frame, how, window, cx));
+                    this.open_frame(frame, how, window, cx);
                 }
             }),
             cx.subscribe_in(&find_editor, window, |this, _, event, window, cx| {
@@ -169,7 +184,7 @@ impl RowDetailsPanel {
             selection,
             inspector,
             find_editor,
-            code,
+            workspace: None,
             shown: InspectorDocument::default(),
             headline: Vec::new(),
             match_count: 0,
@@ -230,15 +245,6 @@ impl RowDetailsPanel {
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let selection = self.selection.read(cx);
-        let (result, table_index, rows) = (
-            selection.result.clone(),
-            selection.table_index,
-            selection.rows.clone(),
-        );
-        self.code.update(cx, |code, cx| {
-            code.select(result.as_ref(), table_index, &rows, cx)
-        });
         let selection = self.selection.read(cx);
         let headline = selection.headline();
         let document = selection
@@ -420,9 +426,6 @@ impl Render for RowDetailsPanel {
             .on_action(cx.listener(Self::cancel))
             .size_full()
             .child(header)
-            .when(self.code.read(cx).state().is_shown(), |panel| {
-                panel.child(self.code.clone())
-            })
             .when(has_subject, |panel| {
                 panel.child(
                     div()
@@ -834,11 +837,7 @@ mod tests {
         }
     }
 
-    fn select_row(
-        active: &Entity<ActiveSelection>,
-        row: usize,
-        cx: &mut gpui::VisualTestContext,
-    ) {
+    fn select_row(active: &Entity<ActiveSelection>, row: usize, cx: &mut gpui::VisualTestContext) {
         select_row_of(active, charge_card_result(), row, cx);
     }
 
@@ -859,11 +858,11 @@ mod tests {
 
     /// The lookup runs git on real threads, which the test executor does not wait for.
     fn finished_state(
-        panel: &Entity<RowDetailsPanel>,
+        code: &Entity<CodeReferences>,
         cx: &mut gpui::VisualTestContext,
     ) -> CodeState {
         for _ in 0..400 {
-            let state = panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone());
+            let state = code.read_with(cx, |code, _| code.state().clone());
             if !matches!(state, CodeState::Looking) {
                 return state;
             }
@@ -873,12 +872,14 @@ mod tests {
         panic!("the lookup did not finish");
     }
 
-    async fn panel_in_a_workspace(
+    /// Row Details and Code References in a workspace, each in its own dock.
+    async fn panels_in_a_workspace(
         fs: Arc<FakeFs>,
         cx: &mut TestAppContext,
     ) -> (
         Entity<Workspace>,
         Entity<RowDetailsPanel>,
+        Entity<CodeReferences>,
         &mut gpui::VisualTestContext,
     ) {
         cx.update(|cx| {
@@ -892,15 +893,24 @@ mod tests {
         let panel = cx.update(|window, cx| {
             cx.new(|cx| {
                 let mut panel = RowDetailsPanel::new(fs.clone(), window, cx);
-                panel.set_workspace(workspace.downgrade(), cx);
+                panel.set_workspace(workspace.downgrade());
                 panel
+            })
+        });
+        let code = cx.update(|_, cx| {
+            cx.new(|cx| {
+                let mut code = CodeReferences::new(fs.clone(), cx);
+                code.set_workspace(workspace.downgrade());
+                code
             })
         });
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.add_panel(panel.clone(), window, cx);
+            workspace.add_panel(code.clone(), window, cx);
+            workspace.open_panel::<CodeReferences>(window, cx);
             workspace.focus_panel::<RowDetailsPanel>(window, cx);
         });
-        (workspace, panel, cx)
+        (workspace, panel, code, cx)
     }
 
     /// Selecting a row lists the code its marker and message name in the checkouts of
@@ -918,7 +928,7 @@ mod tests {
             serde_json::json!({ "Checkout.cs": CHECKOUT }),
         )
         .await;
-        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        let (workspace, _details, code, cx) = panels_in_a_workspace(fs, cx).await;
         set_code_roots(&[root.path()], cx);
 
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
@@ -926,7 +936,7 @@ mod tests {
         let CodeState::Found {
             references,
             repositories,
-        } = finished_state(&panel, cx)
+        } = finished_state(&code, cx)
         else {
             panic!("the code was not found");
         };
@@ -934,7 +944,11 @@ mod tests {
         assert_eq!(
             references
                 .iter()
-                .map(|reference| (reference.kind, reference.line, reference.enclosing.as_deref()))
+                .map(|reference| (
+                    reference.kind,
+                    reference.line,
+                    reference.enclosing.as_deref()
+                ))
                 .collect::<Vec<_>>(),
             vec![
                 (CodeRefKind::LogLine, 12, Some("Charge")),
@@ -945,7 +959,6 @@ mod tests {
         );
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
-        let code = panel.read_with(cx, |panel, _| panel.code.clone());
         let first = references.first().expect("a reference").clone();
         cx.update(|window, cx| {
             code.update(cx, |code, cx| {
@@ -960,7 +973,11 @@ mod tests {
             let snapshot = editor.display_snapshot(cx);
             (
                 editor.text(cx),
-                editor.selections.newest::<language::Point>(&snapshot).head().row,
+                editor
+                    .selections
+                    .newest::<language::Point>(&snapshot)
+                    .head()
+                    .row,
             )
         });
         assert_eq!(text, CHECKOUT);
@@ -968,14 +985,14 @@ mod tests {
 
         select_row(&active, 1, cx);
         assert_eq!(
-            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone()),
+            code.read_with(cx, |code, _| code.state().clone()),
             CodeState::Idle,
-            "a row that names no code has no section"
+            "a row that names no code has nothing to look up"
         );
 
         select_row(&active, 2, cx);
         assert_eq!(
-            finished_state(&panel, cx),
+            finished_state(&code, cx),
             CodeState::Found {
                 references: Vec::new(),
                 repositories: 1
@@ -992,12 +1009,12 @@ mod tests {
         cx.executor().allow_parking();
         let root = tempfile::tempdir().expect("a temporary directory");
         checkout_with_the_source(&root.path().join("orders"));
-        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+        let (_workspace, _details, code, cx) =
+            panels_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         let other_names = || charge_card_result_named(["ActivityType", "EventText", "Host"]);
-        let state = |cx: &mut gpui::VisualTestContext| {
-            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone())
-        };
+        let state =
+            |cx: &mut gpui::VisualTestContext| code.read_with(cx, |code, _| code.state().clone());
 
         set_code_roots(&[root.path()], cx);
         select_row_of(&active, other_names(), 0, cx);
@@ -1019,7 +1036,7 @@ mod tests {
             cx,
         );
         select_row_of(&active, other_names(), 0, cx);
-        let CodeState::Found { references, .. } = finished_state(&panel, cx) else {
+        let CodeState::Found { references, .. } = finished_state(&code, cx) else {
             panic!("the code was not found");
         };
         let kinds: Vec<CodeRefKind> = references.iter().map(|reference| reference.kind).collect();
@@ -1048,7 +1065,7 @@ mod tests {
             serde_json::json!({ "Checkout.cs": CHECKOUT }),
         )
         .await;
-        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        let (workspace, panel, _code, cx) = panels_in_a_workspace(fs, cx).await;
         cx.simulate_resize(gpui::size(px(900.), px(700.)));
         set_code_roots(&[root.path()], cx);
 
@@ -1070,10 +1087,6 @@ mod tests {
         });
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         select_row_of(&active, result, 0, cx);
-        // The section of code above the inspector changes height when its lookup finishes, which
-        // would move the link between the press and the release of a click.
-        finished_state(&panel, cx);
-        cx.run_until_parked();
 
         let (inspector, shown) = panel.read_with(cx, |panel, _| {
             (panel.inspector().clone(), panel.shown.clone())
@@ -1203,7 +1216,7 @@ mod tests {
         .await;
         fs.insert_tree("/trace", serde_json::json!({ "trace.txt": "the trace" }))
             .await;
-        let (workspace, panel, cx) = panel_in_a_workspace(fs, cx).await;
+        let (workspace, panel, code, cx) = panels_in_a_workspace(fs, cx).await;
         cx.simulate_resize(gpui::size(px(900.), px(700.)));
         set_code_roots(&[root.path()], cx);
         workspace
@@ -1239,7 +1252,7 @@ mod tests {
         });
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         select_row_of(&active, result, 0, cx);
-        finished_state(&panel, cx);
+        finished_state(&code, cx);
         cx.run_until_parked();
         (workspace, panel, root, cx)
     }
@@ -1343,12 +1356,13 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn says_how_to_turn_the_code_section_on(cx: &mut TestAppContext) {
-        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+    async fn says_how_to_turn_the_code_lookup_on(cx: &mut TestAppContext) {
+        let (_workspace, _details, code, cx) =
+            panels_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         select_row(&active, 0, cx);
         assert_eq!(
-            panel.read_with(cx, |panel, cx| panel.code.read(cx).state().clone()),
+            code.read_with(cx, |code, _| code.state().clone()),
             CodeState::NotConfigured
         );
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1358,11 +1372,12 @@ mod tests {
     async fn names_a_folder_that_holds_no_checkouts(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let root = tempfile::tempdir().expect("a temporary directory");
-        let (_workspace, panel, cx) = panel_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
+        let (_workspace, _details, code, cx) =
+            panels_in_a_workspace(FakeFs::new(cx.executor()), cx).await;
         set_code_roots(&[root.path()], cx);
         let active = cx.update(|_, cx| ActiveSelection::shared(cx));
         select_row(&active, 0, cx);
-        let CodeState::Failed(message) = finished_state(&panel, cx) else {
+        let CodeState::Failed(message) = finished_state(&code, cx) else {
             panic!("an empty folder is not a success");
         };
         assert!(
@@ -1389,8 +1404,11 @@ mod tests {
         select_row(&active, 0, cx);
         assert!(
             matches!(
-                finished_state(&panel, cx),
-                CodeState::Found { repositories: 1, .. }
+                finished_state(&code, cx),
+                CodeState::Found {
+                    repositories: 1,
+                    ..
+                }
             ),
             "a failure is not remembered"
         );
