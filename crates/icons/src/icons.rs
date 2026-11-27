@@ -85,6 +85,7 @@ pub enum IconName {
     Crosshair,
     CursorIBeam,
     Dash,
+    DatabaseZap,
     Debug,
     DebugBreakpoint,
     DebugContinue,
